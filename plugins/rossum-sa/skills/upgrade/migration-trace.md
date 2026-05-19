@@ -1,6 +1,6 @@
 # Migration-Trace Convention
 
-A lightweight, grep-friendly way for the `upgrade` skill to leave breadcrumbs that the `test` skill (and humans doing triage) can follow.
+A lightweight, grep-friendly way for the `upgrade` skill to leave breadcrumbs that the `test-behavioral-equivalence` skill (and humans doing triage) can follow.
 
 ## Why
 
@@ -9,7 +9,7 @@ When an upgrade replaces a hook-driven transformation with a formula, a rule, or
 1. A value regression is detected in a test run and the triager needs to find the exact line of old logic the new artifact was supposed to replace.
 2. An analyst months later wonders "what *used* to happen here?" and the old hook has been disabled but not fully explained.
 
-A machine-readable trace inside the disabled artifact solves both. It lets `test` say "field X now differs in 4 annotations — it was migrated from `C07` on schema 1234567 (DE) (condition: `has_value({amount_paid})`)" instead of just "field X differs".
+A machine-readable trace inside the disabled artifact solves both. It lets `test-behavioral-equivalence` say "field X now differs in 4 annotations — it was migrated from `C07` on schema 1234567 (DE) (condition: `has_value({amount_paid})`)" instead of just "field X differs".
 
 ## The convention
 
@@ -21,7 +21,7 @@ For deprecated hooks whose logic has been migrated away:
 - Leave each row in its settings list (`settings.calculations`, `settings.mappings`, `settings.rules`, whatever the hook's own structure is) in place.
 - Add a `"//"` sibling key to each row with the migration trace line.
 
-`//` is already the de-facto JSON-comment idiom and both `prd2` and Rossum ignore it. The `test` skill picks it up with a simple recursive walk over every `//` key whose value matches the grammar below.
+`//` is already the de-facto JSON-comment idiom and both `prd2` and Rossum ignore it. The `test-behavioral-equivalence` skill picks it up with a simple recursive walk over every `//` key whose value matches the grammar below.
 
 ```json
 {
@@ -94,7 +94,7 @@ New-ID prefix registry:
 | `R`    | Native business rule                  | `R02`                                            |
 | `H`    | New hook (e.g. TxScript rewrite)      | `H03` or `hook:<id>` form                        |
 
-**Numbering is local to the source artifact.** `C07` only makes sense *inside* "Calculations hook 1000001". The test skill always qualifies by source when surfacing it to the user.
+**Numbering is local to the source artifact.** `C07` only makes sense *inside* "Calculations hook 1000001". The test-behavioral-equivalence skill always qualifies by source when surfacing it to the user.
 
 ### Suffix tokens
 
@@ -114,11 +114,11 @@ Rows that stay in an **active** hook carry descriptive-only `//` comments with a
 C00: OrderAmountLine default for item_price_export
 ```
 
-The test skill's parser ignores any `//` value that does not contain ` -> ` or `migration-trace:`. This lets the convention coexist with documentation comments that have always been there.
+The test-behavioral-equivalence skill's parser ignores any `//` value that does not contain ` -> ` or `migration-trace:`. This lets the convention coexist with documentation comments that have always been there.
 
 ### Intentional behavior changes
 
-If an upgrade is *not* behavior-preserving (rare, but happens — e.g. a rounding rule was wrong and got fixed), emit an explicit marker so the test skill down-ranks that field from "failure" to "expected delta":
+If an upgrade is *not* behavior-preserving (rare, but happens — e.g. a rounding rule was wrong and got fixed), emit an explicit marker so the test-behavioral-equivalence skill down-ranks that field from "failure" to "expected delta":
 
 ```
 C14 -> F08 on all schemas. INTENTIONAL-CHANGE: old rule rounded half-up, new rounds banker's. Cond: unconditional
@@ -128,7 +128,7 @@ Parser convention: any trace line containing the token `INTENTIONAL-CHANGE` (upp
 
 ## Parser (what downstream skills do)
 
-The `upgrade` skill does **not** emit a `migration-trace.json`. Downstream skills (`test`, `analyze`) parse breadcrumbs directly from the prd2 tree on each run. Pseudocode below is the reference grammar — the upgrade skill only needs to produce breadcrumbs that match it.
+The `upgrade` skill does **not** emit a `migration-trace.json`. Downstream skills (`test-behavioral-equivalence`, `analyze`) parse breadcrumbs directly from the prd2 tree on each run. Pseudocode below is the reference grammar — the upgrade skill only needs to produce breadcrumbs that match it.
 
 ```python
 import re, json, pathlib

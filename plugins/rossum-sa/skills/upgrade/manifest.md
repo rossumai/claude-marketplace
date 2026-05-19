@@ -1,6 +1,6 @@
 # Upgrade Manifest — Requirements
 
-The `upgrade` skill's output contract toward everything downstream (review, `test`, audit trail, humans). One file per upgrade, produced at the end of the upgrade phase, stored in the project root. The `test` skill reads it in Phase 0a to scope the run; the `analyze` skill can cross-reference it when auditing; a human reviewer uses the rendered markdown form as the change log.
+The `upgrade` skill's output contract toward everything downstream (review, `test-behavioral-equivalence`, audit trail, humans). One file per upgrade, produced at the end of the upgrade phase, stored in the project root. The `test-behavioral-equivalence` skill reads it in Phase 0a to scope the run; the `analyze` skill can cross-reference it when auditing; a human reviewer uses the rendered markdown form as the change log.
 
 ## Identity and location
 
@@ -63,7 +63,7 @@ Each item: `{axis, count, behavior_preserving, description}`.
 - `engine_swap` — dedicated engine switched.
 - `intentional_behavior_change` — a bug fix or policy change that is explicitly not behavior-preserving.
 
-`behavior_preserving` is a **per-axis boolean claim**. If any axis is `false`, the test skill treats the affected fields as expected-delta rather than regression.
+`behavior_preserving` is a **per-axis boolean claim**. If any axis is `false`, the test-behavioral-equivalence skill treats the affected fields as expected-delta rather than regression.
 
 ### 4. Migration traces — `migration_traces`
 
@@ -78,12 +78,12 @@ Test-skill behavior: if `coverage.untraced > 0`, it emits a warning during Phase
 
 ### 5. Test hints — `test_hints`
 
-Explicit guidance from the upgrade skill to the test skill. Optional but high-value. Every hint here spares the test skill from re-discovering scope through diff alone.
+Explicit guidance from the upgrade skill to the test-behavioral-equivalence skill. Optional but high-value. Every hint here spares the test-behavioral-equivalence skill from re-discovering scope through diff alone.
 
 | Key                         | Required | Type   | Notes                                                                                   |
 |-----------------------------|----------|--------|-----------------------------------------------------------------------------------------|
 | `corpus_recommendations`    | ⚠️ SHOULD | object | Per-axis and per-queue suggestions for sample selection (see below).                    |
-| `per_queue_coverage_floor`  | ⚠️ SHOULD | int    | Minimum annotations per touched queue the test skill should aim for. Default 10.         |
+| `per_queue_coverage_floor`  | ⚠️ SHOULD | int    | Minimum annotations per touched queue the test-behavioral-equivalence skill should aim for. Default 10.         |
 | `known_edge_cases`          | ⚠️ SHOULD | list   | Scenarios that must be represented in the corpus (e.g. "credit notes", "charges > 0", "multi-currency", "blanket PO"). Each item `{label, filter_hint}`. |
 | `fields_to_pin`             | ⚠️ SHOULD | list   | Field IDs whose output must be identical before/after — the "hot" regression surface.   |
 | `fields_expected_to_change` | ⚠️ SHOULD | list   | Field IDs where deltas are expected and should be reported as info, not regression.     |
@@ -122,7 +122,7 @@ out_of_scope_changes:
 
 ### 7. Export-architecture context — `export_architecture`
 
-Explicit capture of the Phase 0d prompt from the test skill so the upgrade skill commits the answer rather than asking the user again.
+Explicit capture of the Phase 0d prompt from the test-behavioral-equivalence skill so the upgrade skill commits the answer rather than asking the user again.
 
 | Key                    | Required | Type   | Notes                                                                         |
 |------------------------|----------|--------|-------------------------------------------------------------------------------|
@@ -130,11 +130,11 @@ Explicit capture of the Phase 0d prompt from the test skill so the upgrade skill
 | `poller_interval_min`  | ⚠️ required if `external_service_driven` or `hybrid` | int | Polling interval of the external service. |
 | `status_transition_api` | ⚠️ SHOULD | string | API or mechanism used by the external service to mark exported.              |
 | `mock_endpoint_available` | ⚠️ SHOULD | bool | Whether the test env has a mock SFTP/API target, so replay can complete.     |
-| `notes`                | ⚠️ SHOULD | string | Anything else the test skill needs (credentials sourcing, offline mode, etc.). |
+| `notes`                | ⚠️ SHOULD | string | Anything else the test-behavioral-equivalence skill needs (credentials sourcing, offline mode, etc.). |
 
 ### 8. Risk ranking — `risk`
 
-Optional but recommended. Lets the test skill weight corpus size and severity.
+Optional but recommended. Lets the test-behavioral-equivalence skill weight corpus size and severity.
 
 Each touched queue gets a risk score `low` / `medium` / `high` with a reason:
 
@@ -251,7 +251,7 @@ The `upgrade` skill must self-check before emitting the manifest:
 5. For every axis with `behavior_preserving: false`, the narrative `summary` explicitly calls out the intentional change.
 6. `export_architecture.pattern` is set (no defaulting).
 
-## What the `test` skill does with this
+## What the `test-behavioral-equivalence` skill does with this
 
 Phase 0a becomes deterministic:
 
