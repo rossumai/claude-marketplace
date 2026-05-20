@@ -81,6 +81,63 @@ t.automation_blocker("Reason message", t.field.field_id)
 return t.hook_response()
 ```
 
+## Creating / Replacing Line-Item Rows
+
+Line-item tables (e.g. `line_items_copied`, `line_items`) are multivalue fields. To add or replace rows you return an `operations` list in the hook response — TxScript's `t.field.<table>` is read-only for structural changes.
+
+Each operation has the shape:
+
+```python
+{
+    "op": "add" | "replace" | "remove",
+    "id": <multivalue_id>,        # the table multivalue field ID, NOT the row ID
+    "value": {                    # required for add/replace
+        "<child_schema_id>": {"content": {"value": "<str>"}},
+        ...
+    },
+    # optional: "tuple_id": <row_id>   # required for replace/remove of an existing row
+}
+```
+
+Pattern — wipe the table and insert one synthetic row from header values (single-line generator):
+
+```python
+def rossum_hook_request_handler(payload: dict) -> dict:
+    annotation = payload["annotation"]["content"]
+    line_items_mv_id = next(
+        f["id"] for f in _walk(annotation)
+        if f["schema_id"] == "line_items_copied"
+    )
+
+    # 1) remove every existing row
+    remove_ops = [
+        {"op": "remove", "id": line_items_mv_id, "tuple_id": tup["id"]}
+        for tup in _rows_of("line_items_copied", annotation)
+    ]
+
+    # 2) insert exactly one row built from header fields
+    add_op = {
+        "op": "add",
+        "id": line_items_mv_id,
+        "value": {
+            "item_amount_total_copied":  {"content": {"value": str(_header("amount_due", annotation))}},
+            "item_description_copied":   {"content": {"value": _header("description", annotation)}},
+        },
+    }
+
+    return {"operations": remove_ops + [add_op], "messages": []}
+```
+
+Gotchas (each one cost real iterations in past sessions):
+
+- **`id` is the multivalue (table) field ID**, not a row id. Get it from the table field, not from a row.
+- **`add` on an existing `tuple_id` returns HTTP 409.** If you're not sure a row exists, use `replace` with `tuple_id`, or `remove` then `add`.
+- **`replace` requires `tuple_id`**; `add` must NOT include `tuple_id`.
+- **`value` keys are schema IDs of the child fields**, wrapped as `{"content": {"value": ...}}`. Plain strings/numbers will be silently ignored.
+- Only ever push **strings** into `content.value` — even for numbers and dates. Coerce with `str(...)` or `f"{x:.2f}"` before emitting.
+- The user-facing `line_items` table is AI-managed; for a downstream working copy use a separate `line_items_copied` schema you fully own. Don't mutate `line_items` from a hook.
+- For debugging, write a transient `_dbg_op_count` / `_dbg_last_status` field into the schema and set it from the hook — far faster than re-running with extra logs.
+
 ## Best Practices
 
 ### Code Style
