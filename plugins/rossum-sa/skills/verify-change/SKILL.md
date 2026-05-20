@@ -117,11 +117,112 @@ The patch payload writes value only — page and position are left intact. This 
 
 ## Output Format
 
-(inline report template — written in Task 3)
+Inline chat report only — no file written. Two sections, terse.
+
+### Template
+
+```
+Annotation <id> (queue "<queue-name>", env "<env>")
+Trigger: <mode>  (<before-status> → <after-status> in <duration>)
+<warning line if hooks did not settle within timeout>
+
+Hook logs (N hooks fired):
+  <✓ or ✗> <hook-name> (<hook-type>, <duration_ms>ms)
+      <condensed stdout/stderr — first 3 lines max>
+      <full traceback if hook errored>
+
+Changed fields (N):
+  <schema_id>                 "<before>" → "<after>"      <classification tag if any>
+  <schema_id>                 +"<new message>"
+  automation_blocker          (added: "<text>")
+  automation_blocker          (removed: "<text>")
+```
+
+### Format rules
+
+- **Hook logs:**
+  - Glyph `✓` for `status: completed`, `✗` for `status: failed`, `⊘` for `status: skipped`.
+  - One line per hook with type and duration, then indented log body.
+  - Truncate stdout/stderr to first 3 non-empty lines unless the hook failed — failed hooks show the full traceback.
+  - Sort by start time ascending.
+- **Field diff:**
+  - Compare before-snapshot and after-snapshot on `(schema_id, row_index)` keys.
+  - Show only deltas. Identical fields are silent.
+  - Value diff: `"<before>" → "<after>"`. Trim to 40 chars per side; suffix with `…` on truncation.
+  - Message added: `+"<text>"`. Message removed: `-"<text>"`.
+  - automation_blocker added/removed: `(added: "<text>")` / `(removed: "<text>")`.
+  - Classification tags (optional, suffix in grey-ish): `(numeric_format)` when before/after parse to the same number; `(whitespace)` when only whitespace differs. **These are informational only — every byte-difference is still shown.**
+- **No verdict line.** This skill does not classify pass/fail. The user reads the diff and judges.
+
+### Examples
+
+**Toggle, all green:**
+
+```
+Annotation 12345 (queue "Test - DE", env "uat")
+Trigger: toggle  (postponed → to_review in 4.1s)
+
+Hook logs (2 hooks fired):
+  ✓ validate_invoice (function, 312ms)
+      [INFO] applied EU VAT check, 0 issues
+  ✓ format_dates (function, 88ms)
+
+Changed fields (2):
+  invoice_date                "2026-01-15" → "15.01.2026"   (locale_format)
+  invoice_total_vat           "21,00" → "21.00"             (numeric_format)
+```
+
+**Confirm with an export failure:**
+
+```
+Annotation 12345 (queue "Test - DE", env "uat")
+Trigger: confirm  (to_review → confirmed in 8.2s)
+
+Hook logs (3 hooks fired):
+  ✓ validate_invoice (function, 412ms)
+  ✓ post_to_coupa (webhook, 1.2s)
+      HTTP 200, response_id=cpa_889
+  ✗ notify_team (function, 60ms)
+      KeyError: 'recipient_email'
+      File "notify_team.py", line 14, in run
+          msg = build_email(field.recipient_email)
+        File "notify_team.py", line 22, in build_email
+          return f"To: {addr}"
+
+Changed fields (3):
+  status_log                  +"sent to coupa"
+  automation_blocker          (removed: "missing VAT")
+  recipient_email             ""      → "ap@acme.de"
+```
 
 ## State Management
 
-(cache file behavior — written in Task 3)
+The skill persists exactly one piece of state: the last-used annotation, env, and trigger mode. Location: `.rossum-verify/last.json` in the customer's project root.
+
+### Cache schema
+
+```json
+{
+  "annotation_id": 12345,
+  "env_name": "uat",
+  "trigger_mode": "toggle",
+  "ts": "2026-05-20T10:30:00Z"
+}
+```
+
+### Cache rules
+
+- **Write:** every successful run (any trigger mode) overwrites `.rossum-verify/last.json`. Failed runs (annotation 404, hook chain timeout, etc.) do **not** overwrite — the previous good entry stays usable.
+- **Read:** on invocation with no annotation argument. If the cache file is missing, malformed, or older than 7 days → ignore it and ask the user.
+- **Surface:** when reusing a cached annotation, always tell the user which one: *"Re-using annotation 12345 on env `uat` from last run — override?"* Proceed silently after a brief pause if no override comes.
+
+### Gitignore
+
+The customer's project must ignore `.rossum-verify/`. On first run, if the directory does not exist, create it and check whether `.gitignore` in the project root contains `.rossum-verify/`. If not, append the entry — but **only after telling the user**: *"Adding `.rossum-verify/` to `.gitignore` so the cache stays out of git."*
+
+### Cache scope
+
+One cache per project root. The skill assumes a 1:1 mapping between project directory and Rossum env+queue. If a customer juggles multiple envs from the same directory, they can override per-invocation via `--env=<name>` and the cache will follow.
 
 ## Common Errors and Gotchas
 
