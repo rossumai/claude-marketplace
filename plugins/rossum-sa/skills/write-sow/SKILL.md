@@ -90,9 +90,19 @@ The typical project duration is ~13 weeks. Use these rough estimates when assign
 
 Some deliverables can run in parallel (e.g., MDH setup alongside schema configuration). Reflect this in the Delivery Plan — parallel items can share the same "Depends On" predecessor rather than being sequential.
 
+## Cross-Referencing Deliverables
+
+Always reference deliverables by their **name**, never by number. Deliverable numbers shift whenever the list is reordered, copied between SOWs, or edited — but names are stable. This applies everywhere a deliverable is mentioned outside Section 2 itself:
+
+- **Section 3 (Delivery Plan)** — the "Deliverable" and "Depends On" columns must contain deliverable names (e.g., "Queue and Schema Configuration"), not "#1" or "Deliverable #1".
+- **Section 4 (Customer Cooperation)** — the "Required Before" column must contain the deliverable name (or "Project kickoff" for items needed before any work begins).
+- **Anywhere else** — prose references to a deliverable use the full name.
+
+Do not introduce a numbering scheme (no "Deliverable 1:", "#1", "D1") in Section 2 headings either — the heading is just the deliverable name.
+
 ## Customer Cooperation Guidance
 
-Section 4 (Customer Cooperation) is the single place for all items, resources, access, and actions required from the Customer. Each row in the table has a "Required Before" column that references a deliverable number from Section 2, tying each customer obligation to a specific point in the Delivery Plan. This makes it clear exactly when each item is needed — if Deliverable #3 is scheduled for week 4 in the Delivery Plan, any cooperation item marked "Deliverable #3" must be provided before week 4.
+Section 4 (Customer Cooperation) is the single place for all items, resources, access, and actions required from the Customer. Each row in the table has a "Required Before" column that names a deliverable from Section 2, tying each customer obligation to a specific point in the Delivery Plan. This makes it clear exactly when each item is needed — if "Master Data Hub Configuration" is scheduled for week 4 in the Delivery Plan, any cooperation item marked "Master Data Hub Configuration" must be provided before week 4.
 
 Populate the table by reviewing every deliverable and identifying what external input is needed. Each item must be:
 
