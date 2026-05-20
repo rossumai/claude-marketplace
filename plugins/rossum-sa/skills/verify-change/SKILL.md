@@ -60,7 +60,11 @@ Read-only. Two API calls:
 - `rossum_get_annotation` → status, queue URL, automation_blocker on the annotation.
 - `rossum_get_annotation_content` → full content tree (value, message, automation_blocker per datapoint).
 
-Hold the result in memory; do not write it to disk. Next iteration's snapshot replaces it.
+**Real customer annotations routinely exceed the MCP response size limit** (~25k tokens). When that happens, the MCP tool spills the response to a file path and returns the path instead of the content. In that case:
+
+- Save the file paths as `.rossum-verify/<run-ts>/before.json` and (later) `after.json`.
+- Diff them via a small Bash + Python script that extracts `(schema_id, row_index)` → `{value, messages, validation_sources}` from each snapshot and reports only the deltas. Don't try to load both files into the LLM context.
+- Smaller annotations (under the response limit) can stay in memory — the in-memory and on-disk paths produce the same diff.
 
 Record a `trigger_started_at` timestamp for the hook-log filter in step 6.
 
@@ -87,7 +91,7 @@ Render the inline report (see **Output Format**). No file is written. Two sectio
 
 | Mode | API sequence | Event fired | Use case |
 |------|--------------|-------------|----------|
-| `toggle` *(default)* | `PATCH /annotations/<id>` status → `postponed`, then status → `to_review` | `annotation_content.started` | Most validation/extraction hooks. The common case. |
+| `toggle` *(default)* | `PATCH /annotations/<id>` status → `postponed`, then status → `to_review` | `annotation_status.changed` (action=`changed`, new status=`to_review`) | Most validation/extraction hooks that subscribe to status changes. **Hooks that listen only to `annotation_content.started` will NOT fire** — that event is one-shot per annotation lifecycle (fired when the document first enters `to_review` from `importing`), not on every re-entry. Verified against `nxp.rossum.app` on 2026-05-20; see [`__shared/verification-rules.md`](../__shared/verification-rules.md). |
 | `confirm` | `POST /annotations/<id>/confirm` | `annotation_content.confirmed` + downstream export hooks | Approval-workflow hooks, export hooks, post-confirm validation. |
 | `patch <schema_id>=<value>` | `PATCH /annotations/<id>/content/<dp_id>` with `{"content": {"value": "<value>"}}` | `annotation_content.user_update` | Field-level format/validation hooks. |
 
@@ -106,8 +110,13 @@ Before the first `confirm` on a given annotation in a session:
 1. `rossum_get_queue` on the annotation's queue.
 2. `rossum_list_hooks` filtered by the queue, then `rossum_get_hook` on hooks whose `events` include `annotation_content.confirmed`.
 3. List each such hook by name and type (`function`, `webhook`, etc.). Webhooks pointing to external URLs and any hook named with `export`, `send`, `post`, `submit`, `notify`, `email`, `coupa`, `sap`, `netsuite`, etc. — call out by name.
-4. Check the queue name. If it does not match `test|sandbox|uat|dev` (case-insensitive substring), refuse with: *"Queue '<name>' does not look like a test queue. Confirm mode will fire real export hooks — say `override` to proceed anyway."*
-5. On `override` or test-queue pass, ask the explicit confirmation: *"Confirm annotation X? This will fire: [hook list]. Are export endpoints safe to fire here? (yes/no)"*
+4. Decide whether the *environment* is safe for confirm. Apply these signals in order; pass on the first match:
+   - **Host signal** — base URL host matches one of the env-level sandbox patterns: `sandbox.`, `.app` suffix on a Rossum tenant (e.g. `nxp.rossum.app` is the sandbox sibling of `nxp.rossum.ai`), or any host the user has previously approved (cached as `safe_envs` in `.rossum-verify/last.json`).
+   - **Queue-name signal** — queue name contains `test|sandbox|uat|dev` (case-insensitive substring).
+   - **No signal** — refuse with: *"Env `<host>` / queue `<name>` doesn't match any known sandbox pattern. Confirm mode will fire real export hooks. Say `override` to proceed, or `remember <host>` to add this host to the safe list."*
+
+   Many customer sandboxes use production-style queue names (regional codes like `AT61`, `US60`), so the queue-name check alone is insufficient — host-level patterns must be checked first.
+5. On `override`, `remember`, or any signal pass, ask the explicit confirmation: *"Confirm annotation X on env `<host>`? This will fire: [hook list]. Are export endpoints safe to fire here? (yes/no)"*
 
 ### Patch-mode argument
 
@@ -206,9 +215,12 @@ The skill persists exactly one piece of state: the last-used annotation, env, an
   "annotation_id": 12345,
   "env_name": "uat",
   "trigger_mode": "toggle",
-  "ts": "2026-05-20T10:30:00Z"
+  "ts": "2026-05-20T10:30:00Z",
+  "safe_envs": ["nxp.rossum.app", "sandbox.example.rossum.ai"]
 }
 ```
+
+`safe_envs` is the user's allowlist of hosts where confirm mode may fire without the no-sandbox-signal refusal — populated when the user says `remember <host>` in the confirm-mode gate. Empty by default.
 
 ### Cache rules
 
@@ -227,12 +239,13 @@ One cache per project root. The skill assumes a 1:1 mapping between project dire
 ## Common Errors and Gotchas
 
 - **Annotation is in `deleted` status after a `Duplicate Handling` hook ran.** Customer queues with a dedup hook on `annotation_content.initialize` auto-delete re-uploads. This skill never re-uploads, so it should be rare here — but if the cached annotation has been deleted by an external action, the skill must detect (`status: deleted`) and ask whether to restore (`PATCH status → to_review`) or pick a different annotation.
-- **Hooks fire only on status transitions to `to_review`.** A PATCH to `content/<dp_id>` in `patch` mode triggers `annotation_content.user_update`, which is a different event. If your hook listens only to `started`, `patch` mode will not fire it. Use `toggle` instead.
+- **Each trigger fires a specific event — match it to your hook's `events` list.** `toggle` fires `annotation_status.changed` (action=`changed`, new status=`to_review`). `patch` fires `annotation_content.user_update`. `confirm` fires `annotation_content.confirmed`. **`annotation_content.started` is one-shot per annotation lifecycle** (fires only when the document first enters `to_review` from `importing`/`initialize`) — no trigger mode in this skill re-fires it. A hook subscribed only to `annotation_content.started` cannot be re-tested without re-uploading the document. Before reporting "hook didn't fire", read the hook's `events` field and confirm at least one matches the trigger you used.
 - **`rossum_list_hook_logs` is asynchronous.** A log entry may not appear for up to ~2 seconds after the hook completes. If logs look short or empty immediately after the trigger, wait 2s and refetch.
 - **`confirm` against a queue with `validate` hooks may block the transition.** If a `validate` hook returns blocking messages, the status stays at `to_review` even though the API call returned 200. Detect this: if after `confirm` the status is still `to_review` and the hook log shows a `validate`-type hook with blocking messages, report it explicitly rather than calling the run a timeout.
 - **`patch` mode and formula-typed fields don't mix.** A field with `ui_configuration.type=formula` rejects PATCH with HTTP 400 (*"The computed datapoint X can only be updated from UI."*). Resolve the target's `ui_configuration.type` from `rossum_get_annotation_content` before sending; error out with a clear message if it's a formula field.
-- **The hook chain may modify fields the diff would otherwise miss.** Capture the after-snapshot promptly. Do **not** open the annotation in the Rossum UI between trigger and after-snapshot — opening it fires another `annotation_content.started`, which re-runs the chain and pollutes the diff.
+- **The hook chain may modify fields the diff would otherwise miss.** Capture the after-snapshot promptly. Do **not** open the annotation in the Rossum UI between trigger and after-snapshot — opening it fires UI-driven events that re-run hooks and pollute the diff.
 - **`prd2 push` may fail silently from the user's perspective if the env is wrong.** When the optional push step is run, capture `prd2`'s stdout/stderr and surface any errors before proceeding to step 3. Do not assume push succeeded just because the command returned 0 — read the output.
+- **Real customer annotations overflow the MCP response limit.** `rossum_get_annotation_content` on a real invoice with many line items routinely returns 30k+ lines / 1 MB+. The MCP tool spills the response to a file and returns the path. Don't try to load both before- and after-snapshots into context for diffing — write them to `.rossum-verify/<run-ts>/{before,after}.json` and use a small Python script to extract `(schema_id, row_index)` tuples and diff them. See step 3 of the workflow.
 
 ## When to Use Something Else
 
