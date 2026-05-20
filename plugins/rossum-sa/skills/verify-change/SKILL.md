@@ -151,7 +151,7 @@ Changed fields (N):
   - Value diff: `"<before>" → "<after>"`. Trim to 40 chars per side; suffix with `…` on truncation.
   - Message added: `+"<text>"`. Message removed: `-"<text>"`.
   - automation_blocker added/removed: `(added: "<text>")` / `(removed: "<text>")`.
-  - Classification tags (optional, suffix in grey-ish): `(numeric_format)` when before/after parse to the same number; `(whitespace)` when only whitespace differs. **These are informational only — every byte-difference is still shown.**
+  - Classification tags (optional, suffix in grey-ish): `(numeric_format)` when before/after parse to the same number; `(locale_format)` when the difference is a date/number locale (e.g., `"2026-01-15"` ↔ `"15.01.2026"`, `"21,00"` ↔ `"21.00"`); `(whitespace)` when only whitespace differs. **These are informational only — every byte-difference is still shown.**
 - **No verdict line.** This skill does not classify pass/fail. The user reads the diff and judges.
 
 ### Examples
