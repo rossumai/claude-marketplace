@@ -61,6 +61,7 @@ Each `--plugin-dir` loads one plugin; omit the ones you don't need.
 | `/rossum-sa:upgrade [path]` | Upgrade deprecated extensions to formula fields and bump old Python runtimes on function hooks to `python3.12` |
 | `/rossum-sa:test-behavioral-equivalence [path]` | Snapshot-replay-diff an implementation against a baseline env to verify a change preserved behavior |
 | `/rossum-sa:dead-code [path]` | Find unused hooks, formulas, rules, labels, and engines with a deterministic detector |
+| `/rossum-sa:verify-change [annotation-id]` | Inner dev loop: trigger one annotation through a deployed hook, show hook logs and changed fields. Use while iterating on a hook. |
 
 ### `nerossum`
 
