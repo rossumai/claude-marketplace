@@ -226,8 +226,22 @@ One cache per project root. The skill assumes a 1:1 mapping between project dire
 
 ## Common Errors and Gotchas
 
-(troubleshooting list — written in Task 4)
+- **Annotation is in `deleted` status after a `Duplicate Handling` hook ran.** Customer queues with a dedup hook on `annotation_content.initialize` auto-delete re-uploads. This skill never re-uploads, so it should be rare here — but if the cached annotation has been deleted by an external action, the skill must detect (`status: deleted`) and ask whether to restore (`PATCH status → to_review`) or pick a different annotation.
+- **Hooks fire only on status transitions to `to_review`.** A PATCH to `content/<dp_id>` in `patch` mode triggers `annotation_content.user_update`, which is a different event. If your hook listens only to `started`, `patch` mode will not fire it. Use `toggle` instead.
+- **`rossum_list_hook_logs` is asynchronous.** A log entry may not appear for up to ~2 seconds after the hook completes. If logs look short or empty immediately after the trigger, wait 2s and refetch.
+- **`confirm` against a queue with `validate` hooks may block the transition.** If a `validate` hook returns blocking messages, the status stays at `to_review` even though the API call returned 200. Detect this: if after `confirm` the status is still `to_review` and the hook log shows a `validate`-type hook with blocking messages, report it explicitly rather than calling the run a timeout.
+- **`patch` mode and formula-typed fields don't mix.** A field with `ui_configuration.type=formula` rejects PATCH with HTTP 400 (*"The computed datapoint X can only be updated from UI."*). Resolve the target's `ui_configuration.type` from `rossum_get_annotation_content` before sending; error out with a clear message if it's a formula field.
+- **The hook chain may modify fields the diff would otherwise miss.** Capture the after-snapshot promptly. Do **not** open the annotation in the Rossum UI between trigger and after-snapshot — opening it fires another `annotation_content.started`, which re-runs the chain and pollutes the diff.
+- **`prd2 push` may fail silently from the user's perspective if the env is wrong.** When the optional push step is run, capture `prd2`'s stdout/stderr and surface any errors before proceeding to step 3. Do not assume push succeeded just because the command returned 0 — read the output.
 
 ## When to Use Something Else
 
-(cross-references — written in Task 4)
+| Need | Skill |
+|------|-------|
+| "I just changed a hook — did it land and what does it do on this one doc?" | **this skill** (`verify-change`) |
+| "I just finished an upgrade — does the whole implementation still behave the same across a corpus?" | [`test-behavioral-equivalence`](../test-behavioral-equivalence/SKILL.md) |
+| "How do I push local hook code to UAT?" | [`prd-reference`](../prd-reference/SKILL.md) |
+| "What events does my hook need to subscribe to?" | [`txscript-reference`](../txscript-reference/SKILL.md) |
+| "How does Rossum's annotation lifecycle work?" | [`rossum-reference`](../rossum-reference/SKILL.md) |
+
+If the user describes a corpus, two-environment comparison, regression testing across queues, or "before I promote this", redirect to `test-behavioral-equivalence` and stop here. This skill is for **one annotation, one hook change, observe**.
