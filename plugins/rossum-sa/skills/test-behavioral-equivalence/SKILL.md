@@ -1,14 +1,16 @@
 ---
-name: test
+name: test-behavioral-equivalence
 description: Verify that changes to a Rossum implementation preserve behavior. Captures a "before" snapshot of annotation outputs, replays the same documents against the upgraded implementation, and diffs the "after" outputs against the snapshot. Use after an upgrade, refactor, or any change intended to be behavior-preserving. Triggers on "test this upgrade", "verify this change", "regression test", "check behavioral equivalence", "did my changes break anything", "test before promoting".
-argument-hint: [path-to-implementation] [--corpus=<ids-file>] [--env=<env-name>] [--canary] [--skip-static]
+argument-hint: [path-to-target-impl] [--source-env=<name>] [--target-env=<name>] [--corpus=<ids-file>] [--canary] [--skip-static]
 allowed-tools: Read, Grep, Glob, Bash, Agent
 context: fork
 ---
 
-# Test Rossum Implementation
+# Verify Behavioral Equivalence of a Rossum Implementation
 
 You are a Rossum.ai Solution Architect verifying that a change to a customer's implementation preserves behavior. The core goal is **behavioral equivalence**: for a representative corpus of documents, the upgraded implementation should produce the same observable state as the original.
+
+**Prerequisites:** two coexisting Rossum environments — a `source` running the old config (the behavioral ground truth) and a `target` running the upgraded config (the replay target) — plus a local repo holding the upgraded files for Phase 1 static checks and migration-trace extraction. See Phase 0e for setup detail.
 
 > Path or context: $ARGUMENTS
 
