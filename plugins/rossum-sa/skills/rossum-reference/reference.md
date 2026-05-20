@@ -985,6 +985,67 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 
 ---
 
+## Approval Workflows
+
+Approval workflows route documents through an ordered chain of decision steps. Each step has its own approvers, condition, and mode. The model is **workflow → ordered workflow_steps → workflow_step_users**.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET    | `/v1/workflows` | List workflows |
+| POST   | `/v1/workflows` | Create workflow |
+| GET    | `/v1/workflows/{id}` | Retrieve workflow (includes ordered `steps` URLs) |
+| PATCH  | `/v1/workflows/{id}` | Partial update (name, queues, steps order) |
+| DELETE | `/v1/workflows/{id}` | Delete workflow |
+| GET    | `/v1/workflow_steps` | List steps (filter by `workflow={id}`) |
+| POST   | `/v1/workflow_steps` | Create a step |
+| GET    | `/v1/workflow_steps/{id}?fields=*` | Retrieve full step incl. nested users |
+| PATCH  | `/v1/workflow_steps/{id}` | Update label / condition / mode / ordering |
+| DELETE | `/v1/workflow_steps/{id}` | Delete step |
+| GET    | `/v1/workflow_step_users` | List step↔user/group assignments |
+| POST   | `/v1/workflow_step_users` | Assign an approver (user or group) to a step |
+| DELETE | `/v1/workflow_step_users/{id}` | Unassign |
+
+### `workflow_step` key fields
+
+- `workflow` — parent workflow URL
+- `label` — UI name of the step (e.g. `UAT - Accounting`)
+- `ordering` — integer; lower runs first
+- `condition` — Rossum expression evaluated against the annotation, e.g. `field.amount_total > field.item_approver_threshold_accounting` (step is skipped when condition evaluates falsy)
+- `mode` — `all` (every assigned approver must approve) or `any` (first approver wins)
+- `automatic` — boolean; auto-approve when condition is false
+
+### Cloning a workflow (recipe)
+
+```
+GET  /v1/workflows/{id}                        # get steps order
+GET  /v1/workflow_steps?workflow={id}&fields=* # fetch full step bodies
+POST /v1/workflows                             # create new workflow shell
+# for each old step: POST /v1/workflow_steps with the new workflow URL,
+# then POST /v1/workflow_step_users to recreate assignments
+PATCH /v1/workflows/{new_id}                   # set queues
+```
+
+Always inspect a real step with `?fields=*` before cloning — the assistant has burned ~19 turns probing this surface blind.
+
+### Hook event triggers — decision table
+
+Pick the right event when you create a hook, otherwise it silently won't fire.
+
+| Event | Fires when | Use for |
+|-------|------------|---------|
+| `annotation_status.changed` | Annotation enters a new status (`to_review`, `reviewing`, `confirmed`, `rejected`, `exporting`, `exported`, `failed_export`, `purged`, `deleted`) | Anything keyed on workflow / status transitions: rejection notifications, per-level approval emails, single-line generator on `to_review`, post-export side effects |
+| `annotation_content.initialize` | Right after OCR, before user sees the doc | Pre-fill / seed fields, default values, suggest line items |
+| `annotation_content.user_update` | User edits a field in the UI | Live recalculation, formula-style cross-field updates, real-time validation messages |
+| `annotation_content.updated` | Any content change incl. API/import | Same as above when you also want to react to programmatic edits |
+| `annotation_content.started` | User opens an annotation for review | Show one-time info messages, lazy lookups |
+| `annotation_content.export` | Just before export payload is built | Last-mile transformations on the export representation |
+| `email.received` | Inbound email arrives in the inbox | Email parsing / routing hooks |
+| `invocation.manual` | Operator clicks "Run" on a function hook | One-off batch / cron-style tasks (combined with a queue list) |
+
+Common confusion: a **rejection notification belongs on `annotation_status.changed`** filtered to `to.status == "rejected"`, *not* on `annotation.rejected` (which is a Rule/Trigger event, not a hook event).
+
+---
+
 ## Dedicated Engines
 
 Custom AI models trained for specific document types or use cases.
