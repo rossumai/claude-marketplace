@@ -987,45 +987,53 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 
 ## Approval Workflows
 
-Approval workflows route documents through an ordered chain of decision steps. Each step has its own approvers, condition, and mode. The model is **workflow → ordered workflow_steps → workflow_step_users**.
+Approval workflows route documents through an ordered chain of decision steps. Each step has its own approvers, condition, type, and mode. The model is **workflow → ordered workflow_steps → workflow_runs**.
+
+**Verification note:** the read endpoints below were confirmed against a live Rossum instance (organization 113187, workflow 126). The write endpoints (POST/PATCH/DELETE) and `workflow_step_users` are *unverified* — they have NOT been observed working in real probes, and `/v1/workflow_step_users` returned **404** in one probe. **Confirm against the official API docs at <https://rossum.app/api/docs/openapi/guides/getting-started/#introduction> or with `prd2 pull` before writing code against them.**
+
+### Verified (read-only)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET    | `/v1/workflows` | List workflows |
-| POST   | `/v1/workflows` | Create workflow |
-| GET    | `/v1/workflows/{id}` | Retrieve workflow (includes ordered `steps` URLs) |
-| PATCH  | `/v1/workflows/{id}` | Partial update (name, queues, steps order) |
-| DELETE | `/v1/workflows/{id}` | Delete workflow |
-| GET    | `/v1/workflow_steps` | List steps (filter by `workflow={id}`) |
-| POST   | `/v1/workflow_steps` | Create a step |
-| GET    | `/v1/workflow_steps/{id}?fields=*` | Retrieve full step incl. nested users |
-| PATCH  | `/v1/workflow_steps/{id}` | Update label / condition / mode / ordering |
-| DELETE | `/v1/workflow_steps/{id}` | Delete step |
-| GET    | `/v1/workflow_step_users` | List step↔user/group assignments |
-| POST   | `/v1/workflow_step_users` | Assign an approver (user or group) to a step |
-| DELETE | `/v1/workflow_step_users/{id}` | Unassign |
+| GET    | `/v1/workflows/{id}` | Retrieve workflow (includes ordered `steps` URLs and linked queues) |
+| GET    | `/v1/workflow_steps?workflow={id}` | List steps for a workflow |
+| GET    | `/v1/workflow_steps/{id}` | Retrieve a single step (full body) |
+| GET    | `/v1/workflow_runs?annotation__queue={qid}` | List workflow runs (per annotation) — includes `current_step`, `workflow_status` (`approved` / `rejected` / in progress) |
 
-### `workflow_step` key fields
+### Unverified — confirm before use
 
+| Method | Endpoint | Status |
+|--------|----------|--------|
+| POST / PATCH / DELETE | `/v1/workflows` and `/v1/workflows/{id}` | not confirmed against a live instance |
+| POST / PATCH / DELETE | `/v1/workflow_steps` and `/v1/workflow_steps/{id}` | not confirmed; prefer `prd2 pull` + edit + `prd2 push` until verified |
+| any | `/v1/workflow_step_users` | **returned 404** in one probe — likely does not exist; approver assignments may live on the step object itself or via a different resource |
+
+### `workflow_step` real fields (from a verified GET response)
+
+- `id` — integer
+- `url` — self URL
+- `organization` — organization URL
 - `workflow` — parent workflow URL
-- `label` — UI name of the step (e.g. `UAT - Accounting`)
+- **`name`** — UI label of the step (e.g. `"District Director"`). NOT `label`.
 - `ordering` — integer; lower runs first
-- `condition` — Rossum expression evaluated against the annotation, e.g. `field.amount_total > field.item_approver_threshold_accounting` (step is skipped when condition evaluates falsy)
-- `mode` — `all` (every assigned approver must approve) or `any` (first approver wins)
-- `automatic` — boolean; auto-approve when condition is false
+- `type` — observed value: `"approval"`
+- `mode` — observed values: `"all"` (every assigned approver must approve), `"any"` (likely — confirm)
+- `condition` — Rossum expression object evaluated against the annotation. Two observed shapes:
+  - Plain map form: `{"field.approver_threshold_level_1": ""}` — equality match against a schema field
+  - MongoDB-style: `{"$expr": {"$gte": ["$field.item_max_price", 0]}}` — supports `$gte`/`$lte`/`$gt`/`$lt`/`$eq` etc.
+  When the condition evaluates falsy the step is skipped.
 
-### Cloning a workflow (recipe)
+Fields *not* observed in any GET response and previously documented in error: `label`, `automatic`. Do not rely on these without verifying against the OpenAPI spec.
 
-```
-GET  /v1/workflows/{id}                        # get steps order
-GET  /v1/workflow_steps?workflow={id}&fields=* # fetch full step bodies
-POST /v1/workflows                             # create new workflow shell
-# for each old step: POST /v1/workflow_steps with the new workflow URL,
-# then POST /v1/workflow_step_users to recreate assignments
-PATCH /v1/workflows/{new_id}                   # set queues
-```
+### Approach to changing a workflow
 
-Always inspect a real step with `?fields=*` before cloning — the assistant has burned ~19 turns probing this surface blind.
+Until POST/PATCH on workflow_steps is verified end-to-end, the safe path is:
+
+1. `prd2 pull` the source environment to get the workflow + steps as JSON.
+2. Edit locally (rename, reorder, change condition).
+3. `prd2 push --indexed-only -f` after explicit user approval.
+
+Direct API writes are possible but unverified — probe with a throwaway workflow on a non-production environment first.
 
 ### Hook event triggers — decision table
 

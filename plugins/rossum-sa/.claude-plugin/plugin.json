@@ -1,7 +1,7 @@
 {
   "name": "rossum-sa",
   "description": "Claude Code plugin for Rossum.ai workflows",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "author": {
     "name": "mrtnzlml"
   },

@@ -8,6 +8,10 @@ user-invocable: false
 
 This skill provides comprehensive reference documentation for the Rossum.ai document automation platform. For complete details, see [reference.md](reference.md).
 
+## Verification Rule (read first)
+
+**Do not make assumptions. All technical decisions must be grounded in verified facts, and when uncertain you must ask before acting.** API endpoints, field names, hook events, and `operations` payloads must be verified against the official docs at <https://rossum.app/api/docs/openapi/guides/getting-started/#introduction> or a live read-only probe before being written into code or documentation. If you must guess, label the claim *Unverified — confirm before relying on this*. Full rationale in [`../__shared/verification-rules.md`](../__shared/verification-rules.md).
+
 ## Safety Rules
 
 **Do not call write/mutating API tools without explicit user approval.** This applies to all `rossum_create_*`, `rossum_patch_*`, `rossum_delete_*` tools, all `data_storage` write tools (insert, update, delete, replace, bulk_write, drop), and `prd2 push`/`prd2 deploy` commands. Read-only tools (list, get, find, aggregate, whoami) are fine without confirmation. When in doubt, describe what you intend to do and ask first.
