@@ -21,4 +21,6 @@ Use this knowledge when:
 - Enabling fuzzy search on datasets
 - Debugging matching hook configurations
 
+> **Mandatory pre-flight for any `$search` query.** Before shipping or debugging a `$search` stage, list the search indexes on the collection (`data_storage_list_search_indexes`) and confirm the named index exists and maps every field you reference. A missing or misnamed index returns zero results silently with `status: completed` — the hardest MDH failure mode to diagnose. Full recipe in [mdh-matching-queries.md → Atlas Search Index Pre-flight](mdh-matching-queries.md#atlas-search-index-pre-flight-run-before-shipping-any-search-query).
+
 When writing or debugging queries, if the dataset structure is not already known from context, try to discover it using the `rossum-api` MCP tools: `data_storage_list_collections` to find available collections and `data_storage_aggregate` with `[{"$sample": {"size": 1}}]` to retrieve a sample record. Fall back to asking the user only if the MCP tools are not available.
