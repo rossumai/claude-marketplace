@@ -2653,7 +2653,10 @@ def handle_validate_content(request_id, arguments):
     "'annotation_content.started' plus any status-listening hooks. Slower; use when soft "
     "validate is not enough.\n"
     "  - 'reupload': fetch source PDF → upload to same queue → poll past 'importing' → "
-    "auto-restore if dedup-deleted. Use when iterating on initialize hooks or OCR-adjacent "
+    "auto-restore if the new annotation lands in 'deleted' (defensive: handles customer-custom "
+    "dedup hooks that PATCH status:deleted on initialize. The stock Rossum Duplicate Handling "
+    "extension only flags duplicates, it does not transition status — so this branch typically "
+    "does not fire on stock setups). Use when iterating on initialize hooks or OCR-adjacent "
     "logic. Produces a NEW annotation ID (returned in response).\n"
     "Always returns the compact merged view (metadata + fields + tables + blocker + recent "
     "hook logs) plus a _refire section describing what was done. Raw payload cached to "
@@ -2841,7 +2844,13 @@ def handle_refire_annotation(request_id, arguments):
             if new_ann.get("status") not in ("importing", "created"):
                 break
             time.sleep(3)
-        # 6. dedup auto-restore
+        # 6. Dedup auto-restore — defensive for customer-custom hooks that PATCH
+        # status:deleted on annotation_content.initialize. The stock Duplicate
+        # Handling extension does not transition status (its valid actions are
+        # fill_field, forward_annotation, mark_duplicate, show_message,
+        # stop_automation, apply_label), so this branch typically does not fire.
+        # When a customer customization does delete, restoring keeps the
+        # iteration loop alive.
         if isinstance(new_ann, dict) and new_ann.get("status") == "deleted":
             refire_meta["dedup_restore"] = True
             restore = _http_request(

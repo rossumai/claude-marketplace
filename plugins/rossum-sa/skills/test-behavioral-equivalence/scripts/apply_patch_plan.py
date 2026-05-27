@@ -38,11 +38,16 @@ Encapsulates the API quirks discovered in real runs:
    success, the script reads the response body's `content.value` and compares
    against the requested value.
 
-6. Dedup auto-delete: many customer queues have a duplicate-detection hook that
-   auto-deletes annotations matching previously-uploaded documents. If the
-   pre-PATCH GET sees `status: "deleted"` despite a recent upload, this script
-   PATCHes status back to `to_review` and proceeds (the dedup hook does not
-   re-fire on status change).
+6. Dedup auto-restore (defensive — customer-custom only): some customer queues
+   have a *custom* hook on `annotation_content.initialize` that PATCHes
+   `status: deleted` for re-uploaded duplicate documents. The stock Rossum
+   Duplicate Handling extension does NOT delete (its valid actions are
+   fill_field, forward_annotation, mark_duplicate, show_message,
+   stop_automation, apply_label — none transition status), so this branch
+   typically does not fire on stock setups. When a customer customization
+   does delete, the pre-PATCH GET sees `status: "deleted"` despite a recent
+   upload, and the script PATCHes back to `to_review` to proceed (dedup does
+   not re-fire on status change).
 
 7. **Formula re-evaluation requires `POST /content/validate` while the
    annotation is in `reviewing` status.** Per-dp PATCH and

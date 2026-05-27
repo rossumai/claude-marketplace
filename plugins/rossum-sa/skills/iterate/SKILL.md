@@ -109,7 +109,7 @@ PATCH status `postponed → to_review`, wait, then read. Slower than validate (o
 rossum_refire_annotation(annotation_id=<id>, mode="reupload", poll_timeout=180)
 ```
 
-Fetches the source PDF, uploads it to the same queue, polls past `importing`, auto-restores from `deleted` (dedup workaround). **Returns a new annotation ID** in `_refire.target_annotation_id` — record the mapping in your task list. Use only when your change touches OCR or `annotation_content.initialize` hooks.
+Fetches the source PDF, uploads it to the same queue, polls past `importing`, and defensively auto-restores from `deleted` if a custom customer dedup hook transitioned the new annotation (see Gotchas — the stock Duplicate Handling extension does not delete). **Returns a new annotation ID** in `_refire.target_annotation_id` — record the mapping in your task list. Use only when your change touches OCR or `annotation_content.initialize` hooks.
 
 ### Direct PATCH + validate
 
@@ -149,7 +149,7 @@ Look for:
 
 - **`cancel` is automatic in `mode="validate"`** — the MCP tool wraps cancel in try/finally. If you ever call `rossum_start_annotation` standalone, you MUST call `rossum_cancel_annotation` afterwards (the start tool's success message includes a reminder).
 - **`content/validate` actions must include the trigger your hook listens on.** If the hook only listens on `started` and you send `actions=["user_update"]`, the hook will not fire. Cross-check the hook's `events` array against the actions list.
-- **Duplicate Handling auto-delete.** Many customer queues have a `Duplicate Handling` hook on `annotation_content.initialize` that auto-deletes re-uploads of the same PDF. `mode="reupload"` already detects `status: deleted` and restores via PATCH; if you upload manually, replicate that check.
+- **Custom dedup hooks may auto-delete re-uploads (defensive).** Some customer queues have a custom hook on `annotation_content.initialize` that PATCHes `status: deleted` for duplicate documents. The **stock Rossum Duplicate Handling extension does NOT do this** — its valid actions are `fill_field`, `forward_annotation`, `mark_duplicate`, `show_message`, `stop_automation`, `apply_label`; none transition status. (`mark_duplicate` flags the annotation but leaves it in `to_review`.) For customer-custom delete patterns, `mode="reupload"` defensively detects `status: deleted` after upload and restores via PATCH. If you upload manually, replicate that check.
 - **`reviewing` lock blocks other writes.** Between start and cancel the annotation is locked to the calling user. Don't try to PATCH content from another caller in that window.
 - **Engine re-extraction is not triggered by status toggle.** Only the hook chain re-runs. If your change touches OCR or extraction itself, use `mode="reupload"` — toggle will not produce different captured values.
 - **Hook outputs are unstable on re-open.** If you open the annotation in the Rossum UI between re-fires, that itself fires `annotation_content.started` again and may overwrite your last-seen state. Capture immediately after each re-fire.
