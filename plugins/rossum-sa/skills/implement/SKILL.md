@@ -256,6 +256,8 @@ Create a task list with one task per applicable phase to track progress.
    - Verify export sends correct payload
    - Verify response parsing captures returned values
 
+   For the tight inner loop on a single annotation — "did my hook/formula/rule produce the right value on this document?" — hand off to the `iterate` skill. It owns the re-fire primitives (soft re-fire via `content/validate`, status toggle, re-upload) and the iterate-edit-push-retest cadence. Ask the user for an annotation ID when this phase opens.
+
 2. **Fix issues** found during testing. Iterate on schema, MDH queries, serverless functions, and rules as needed.
 
 3. **Promote to UAT.** Use `prd2 deploy` to push configs from dev to UAT. **Confirm with user before executing — this modifies the UAT environment.**
