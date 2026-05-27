@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, extract documents, and generate SOWs, all from your terminal.
 
-7 skills · 9 reference packs · 53 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+8 skills · 9 reference packs · 58 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -59,6 +59,7 @@ Each `--plugin-dir` loads one plugin; omit the ones you don't need.
 | `/rossum-sa:implement` | Plan and execute an integration project end-to-end |
 | `/rossum-sa:refine-deployment [deploy-file] [impl-path]` | Enhance prd2 deploy files with target IDs and attribute overrides |
 | `/rossum-sa:upgrade [path]` | Upgrade deprecated extensions to formula fields and bump old Python runtimes on function hooks to `python3.12` |
+| `/rossum-sa:iterate [annotation-id]` | Tight inner loop on a deliverable — re-fire a hook/formula/rule against one annotation and check the result until the goal is met |
 | `/rossum-sa:test-behavioral-equivalence [path]` | Snapshot-replay-diff an implementation against a baseline env to verify a change preserved behavior |
 | `/rossum-sa:dead-code [path]` | Find unused hooks, formulas, rules, labels, and engines with a deterministic detector |
 
@@ -146,9 +147,14 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status) |
 | `rossum_list_annotations` | List annotations in a queue (filter by status) |
 | `rossum_search_annotations` | Search annotations across queues (filter by status, date range, workspace) |
-| `rossum_get_annotation` | Get annotation metadata, messages, and state |
+| `rossum_get_annotation` | Compact merged view: metadata + extracted fields + tables + resolved automation_blocker items + recent hook logs in one call. Caches raw payload to `.rossum-cache/annotations/<id>.json`. |
+| `rossum_get_annotation_meta` | Raw annotation metadata only (status, timestamps, URLs) — use when you want the unprojected resource |
+| `rossum_get_annotation_content` | Raw content tree (extracted data) — use when you need the unprojected nested structure |
 | `rossum_patch_annotation` | ✏️ Update annotation status or metadata (confirm, reject, export) |
-| `rossum_get_annotation_content` | Get extracted data from an annotation |
+| `rossum_start_annotation` | ✏️ Start a review session (transitions to `reviewing`, locks to caller) |
+| `rossum_cancel_annotation` | ✏️ Cancel a review session (releases the lock) |
+| `rossum_validate_content` | ✏️ Fire the hook chain via `content/validate` with specified actions |
+| `rossum_refire_annotation` | ✏️ Inner-loop re-fire primitive (`mode=validate\|toggle\|reupload`) with try/finally cancel, dedup auto-restore, and merged compact response |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
 | `rossum_get_inbox` | Get inbox details (email address, config) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |
