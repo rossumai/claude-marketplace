@@ -1,0 +1,81 @@
+{
+  // ─── Python ───────────────────────────────────────────────────────────────
+  "python.defaultInterpreterPath": "python3",
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.terminal.activateEnvironment": true,
+
+  // ─── Ruff (formatter + linter, replaces black/isort/flake8) ───────────────
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  // ─── Markdown (lots of skill docs here) ───────────────────────────────────
+  "[markdown]": {
+    "editor.defaultFormatter": "DavidAnson.vscode-markdownlint",
+    "editor.formatOnSave": false,
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "strings": "off",
+      "other": "off"
+    }
+  },
+  "markdownlint.config": {
+    "MD013": false,
+    "MD024": { "siblings_only": true },
+    "MD033": false,
+    "MD041": false
+  },
+
+  // ─── JSON (plugin.json, marketplace.json, MDH configs) ────────────────────
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2
+  },
+
+  // ─── Editor defaults ──────────────────────────────────────────────────────
+  "editor.rulers": [100],
+  "editor.renderWhitespace": "boundary",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": true,
+
+  // ─── Search/explorer noise reduction ──────────────────────────────────────
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/*.pyc": true,
+    "**/.DS_Store": true
+  },
+  "search.exclude": {
+    "**/__pycache__": true,
+    "**/.rossum-verify": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/.test-runs": true
+  },
+
+  // ─── Files to associate with specific languages ──────────────────────────
+  "files.associations": {
+    "**/.claude-plugin/*.json": "jsonc",
+    "**/plugins/*/skills/**/*.md": "markdown",
+    "**/CLAUDE.md": "markdown"
+  },
+
+  // ─── Git ──────────────────────────────────────────────────────────────────
+  "git.autofetch": true,
+  "git.confirmSync": false
+}
