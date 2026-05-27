@@ -107,6 +107,56 @@ Values from extracted document fields are injected via placeholders:
 
 Schema IDs come from queue schema fields where `category` is `"datapoint"`. Only the `id` value of datapoint-category fields should be used as placeholders.
 
+#### Placeholder field type restrictions
+
+MDH placeholders resolve to **stringifiable** values. The following types are **not supported** as placeholder sources and will fail the query with:
+
+```
+Error in configuration: Matching using a Rossum field of type 'DatapointType.<TYPE>' is not supported
+```
+
+| Schema `type` | Supported as `{placeholder}`? | Workaround if it isn't |
+|---|---|---|
+| `string` | ✅ | — |
+| `number` | ✅ | — |
+| `enum` | ✅ (the value's `id`) | — |
+| `date` | ❌ **NOT supported** | Add a string formula proxy (see below) |
+| `button` | ❌ | n/a (no value to inject) |
+
+##### Workaround: string formula proxy for date fields
+
+If you need to feed a date value into an MDH query (for example, a duplicate-detection window keyed off `date_issue`), add a hidden string formula field that materialises the ISO string from the date field, and point the query at the proxy:
+
+```jsonc
+// schema.json — add alongside the date field
+{
+  "id": "date_issue_iso",
+  "label": "Date issue (ISO string for MDH)",
+  "category": "datapoint",
+  "type": "string",
+  "hidden": true,
+  "disable_prediction": true,
+  "ui_configuration": {"type": "formula", "edit": "disabled"},
+  "formula": "def to_iso(d):\n    if d is None:\n        return ''\n    if isinstance(d, datetime.datetime):\n        d = d.date()\n    return d.strftime('%Y-%m-%d')\n\nto_iso(field.date_issue)"
+}
+```
+
+Then in the MDH query:
+
+```jsonc
+// ❌ errors: 'DatapointType.DATE is not supported'
+{"$dateFromString": {"dateString": "{date_issue}"}}
+
+// ✅ works
+{"$dateFromString": {"dateString": "{date_issue_iso}"}}
+```
+
+The proxy is `hidden: true` so reviewers don't see it; it exists purely to feed MDH.
+
+##### Annotation-side duplicate detection still works on date fields
+
+This restriction only affects **MDH placeholders** (the `{schema_id}` syntax that interpolates the value into a MongoDB query against an MDH dataset). Querying annotations via Rossum's built-in MongoDB index (e.g. `{"field.date_issue.date": {"$gte": ..., "$lte": ...}}` from a custom hook) reads the date directly and does NOT need a string proxy.
+
 ---
 
 ## Query Design Rules

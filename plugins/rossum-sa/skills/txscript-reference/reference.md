@@ -56,6 +56,111 @@ value = t.field.document_id
 t.field.document_id = "INV-12345"
 ```
 
+#### Writing to date-typed fields
+
+A schema field with `"type": "date"` (e.g. `date_issue`, `date_due`, custom Normalized fields) must receive a **Python `date`/`datetime` object** or a **bare ISO `YYYY-MM-DD` string** — NEVER the schema's display-format string (`DD.MM.YY`, `MM/DD/YYYY`, etc.). Writing a display-format string fails silently: TxScript emits the operation, Rossum can't parse it, the field stays empty, no error surfaces.
+
+```python
+from datetime import date, datetime
+
+# ✅ Works — date object
+t.field.date_issue_normalized = date(2026, 1, 28)
+
+# ✅ Works — datetime object (time component dropped)
+t.field.date_issue_normalized = datetime(2026, 1, 28, 12, 0)
+
+# ✅ Works — ISO yyyy-mm-dd string
+t.field.date_issue_normalized = "2026-01-28"
+
+# ❌ FAILS SILENTLY — display-format string, even if it matches the schema's `format`
+t.field.date_issue_normalized = "28.01.26"
+```
+
+The schema's `format` property (`DD.MM.YY`, `MM/DD/YYYY`, etc.) only controls how Rossum **renders** a stored date in the UI; it does NOT control the format you write. Storage is always ISO.
+
+Copying from one date field to another — use `setattr` and pass the underlying date object (NOT the display string from `content.value`):
+
+```python
+src = t.field.date_issue                          # Python date object
+setattr(t.field, "date_issue_normalized", src)    # writes the underlying date
+```
+
+If you're reading from a raw payload content tree (when `t.field` isn't available), use `content.get("normalized_value")` — which is the ISO string — NOT `content.get("value")`, which is the display variant.
+
+#### Reading datapoint metadata (OCR raw text, confidence, position, etc.)
+
+`t.field.<id>` returns a value object that quacks like the underlying Python type (str, date, float). To reach the OCR metadata, use the `.attr` proxy:
+
+```python
+field_val = t.field.date_issue                          # date or NoneValue
+raw_ocr   = field_val.attr.rir_raw_text                 # OCR raw text, e.g. "08/01/2026"
+confidence = field_val.attr.rir_confidence              # float
+field_id   = field_val.attr.id                          # datapoint id
+position   = field_val.attr.position                    # [x1, y1, x2, y2] or None
+```
+
+`field_val.attr.<name>` resolves against `field.attrs["content"]` first, then `field.attrs`, then the schema. So any OCR-side key (`rir_text`, `rir_raw_text`, `rir_page`, `rir_position`, `rir_confidence`, `ocr_text`, `ocr_raw_text`) is reachable via `.attr.<name>`.
+
+Don't dereference these via an intermediate variable — operations on the value container lose the `.attr` accessor:
+
+```python
+# ✅ direct access keeps metadata reachable
+raw = t.field.date_issue.attr.rir_raw_text
+
+# ❌ losing the container drops .attr
+x = t.field.date_issue
+x = x.strip()              # x is now plain str — .attr is gone
+raw = x.attr.rir_raw_text  # AttributeError
+```
+
+#### Empty / missing field detection
+
+A schema datapoint that's defined but has no extracted value comes back as a `NoneValue` wrapper — **not Python `None`**. Don't rely on naive `is None` checks:
+
+```python
+v = t.field.date_due
+
+# ❌ wrong — NoneValue is not None
+if v is None:
+    ...
+
+# ❌ wrong — str(NoneValue) returns the literal string "None"
+if not str(v):
+    ...
+
+# ✅ use the helper
+from txscript import is_empty
+if is_empty(v):
+    ...
+
+# ✅ or check against the falsy semantics built into NoneValue
+if not v:
+    ...
+```
+
+Writing the captured value into another field without an empty check leaves you with literal `"None"` strings on the target. Always guard with `is_empty(...)`.
+
+#### Reading vs walking the raw payload content tree
+
+`payload["content"]` is **not guaranteed to be populated** on every event. In particular it's often empty on `annotation_content.updated` and `annotation_content.started`. Hooks that walk the raw tree (`for dp in content_tree:`) end up doing nothing on those events.
+
+**Prefer `t.field.<id>`** for all field reads (and `t.field.<id>.attr.<name>` for metadata). `t = TxScript.from_payload(payload)` populates the field accessor regardless of whether the event payload shipped the full content tree.
+
+```python
+# ✅ event-agnostic
+for sid in ("date_issue", "date_due"):
+    v = getattr(t.field, sid, None)
+    if is_empty(v):
+        continue
+    raw = v.attr.rir_raw_text or ""
+    # ... logic ...
+
+# ❌ misses dates on events where payload.content is empty
+for dp in get_content_tree(payload):
+    if dp.get("schema_id") in ("date_issue", "date_due"):
+        ...
+```
+
 ### Utility Functions
 | Function | Description |
 |----------|-------------|
@@ -70,6 +175,8 @@ t.show_warning("Warning message", t.field.field_id)          # Yellow warning
 t.show_error("Error message", t.field.field_id)              # Red error
 ```
 
+The second argument is the field the message is attached to (so the reviewer sees a marker on that field in the UI). Either pass a real field reference or omit the argument entirely — **don't pass `None`**, that breaks the call silently and the hook may not visibly run. If you need to inspect whether a hook fired at all, check the per-hook Logs tab in Rossum admin → Extensions; `t.show_info` messages also appear there alongside any `print(...)` output.
+
 ### Automation Control
 ```python
 # Block automation (prevents auto-export)
@@ -80,6 +187,28 @@ t.automation_blocker("Reason message", t.field.field_id)
 ```python
 return t.hook_response()
 ```
+
+### Event Triggers (`events:` in hook config)
+
+A serverless function reacts to one or more annotation events. Pick the right set based on when your logic needs to run:
+
+| Event | Fires when | Notes |
+|-------|------------|-------|
+| `annotation_content.initialize` | First time content lands on the annotation (after initial extraction, or after a re-extract triggered by `PATCH status=importing`) | The reliable "every annotation eventually fires this" event |
+| `annotation_content.started` | Annotation enters review (status transitions to `reviewing`) | Use for setup logic that should run when a reviewer opens the doc |
+| `annotation_content.updated` | Server-side content updates (e.g. another hook wrote a field) | Catches hook-to-hook chains |
+| `annotation_content.user_update` | User edits a field in the UI | **Deprecated as of mid-2025** — prefer `updated`; UI edits still fire `updated` |
+
+To re-fire a hook on an existing annotation (e.g. after changing the hook config), trigger a re-extract via the API:
+
+```http
+PATCH /api/v1/annotations/{id}
+Content-Type: application/json
+
+{"status": "importing", "rir_poll_id": null, "messages": []}
+```
+
+This resets the annotation to `importing`, extraction re-runs, and `annotation_content.initialize` fires again — with the new hook config in effect. Old hook messages on the annotation are NOT auto-cleared by a successful re-run; passing `"messages": []` in the PATCH wipes them so the customer sees a fresh state.
 
 ## Creating / Replacing Line-Item Rows
 
