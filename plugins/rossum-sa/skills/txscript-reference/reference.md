@@ -383,7 +383,7 @@ A **Rule** (`POST /v1/rules`) defines a single boolean `trigger_condition` that,
 }
 ```
 
-`action.id` is a non-empty string identifying the action within the rule. The API does not constrain the format — common patterns include short semantic kebab-case slugs (`ca-gst-msg`, `sh-iban`), `<convention>N-msg`/`-block` pairs (e.g. `brv47-msg` from legacy migrations), and UUIDs. Any unique-within-rule string works.
+`action.id` is a non-empty string identifying the action within the rule. The API does not constrain the format — any string unique within the rule works. Use whichever convention is consistent within your project (semantic slugs, indexed pairs, UUIDs all work). Keep ids stable across rule versions if you care about diff readability.
 
 ## trigger_condition expression language
 
