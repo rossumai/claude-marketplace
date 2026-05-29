@@ -1,6 +1,18 @@
-# Rossum Transaction Scripts (TxScripts) & Serverless Functions Guide
+# Rossum Field-Expression Reference: TxScript, Rules, Formulas
 
 ## Overview
+
+Rossum has three surfaces where you write Python-flavored expressions over annotation data:
+
+| Surface | Where | What runs | Use for |
+|---|---|---|---|
+| **TxScript serverless hook** | `.py` file next to a hook JSON | Full Python 3.12 in AWS Lambda, with the `TxScript` helper class | Complex multi-field validation, API calls, MongoDB lookups, multi-step enrichment, mutating line items |
+| **Native Rossum Rule** | `Rule.trigger_condition` (string) + `Rule.actions` (array) on the Rule entity (`POST /v1/rules`) | A boolean Python expression evaluated at validation time | Single-shot validations that show a message, add an automation blocker, or show/hide a field |
+| **Schema-field formula** | `formulas/<field_id>.py` next to `schema.json` | A Python expression (single-line or multi-line; last expression returns) that derives the field's value from other fields | Computing one field from others, normalizing values, conditional defaults |
+
+All three share the same Python sublanguage and helpers. They differ in *evaluation context*: hooks run on hook events with full I/O, Rules run at validation time and emit actions, Formulas run whenever inputs change and produce a value.
+
+The TxScript hook section (immediately below) is the original audience of this reference. The Rule and Formula sections are at the bottom of the file.
 
 Rossum serverless functions (hooks) run as AWS Lambda functions in a Python 3.12 runtime. The `txscript` module provides a high-level API for interacting with document annotations during processing events.
 
@@ -335,3 +347,237 @@ Key field conventions used in Rossum schemas:
 | `item_amount_total` | Line item total | number |
 
 The `rir_field_names` attribute in schema maps OCR predictions to internal field IDs.
+
+---
+
+# Native Rossum Rule reference
+
+> **Note — not the same as Business Rules Validation.** The BRV extension covered in `rossum-reference` uses a different `{field}`-brace expression engine (e.g. `has_value({document_id})`). Native Rules use Python-style `field.X` attribute access (e.g. `is_empty(field.document_id)`). The two are independent surfaces; do not mix syntaxes.
+
+A **Rule** (`POST /v1/rules`) defines a single boolean `trigger_condition` that, when evaluated to `True` at validation time, emits one or more `actions` (messages, automation blockers, show/hide toggles).
+
+## Rule JSON shape
+
+```json
+{
+  "id": <auto-assigned by API; do not rely on client-supplied id>,
+  "name": "Human-readable label",
+  "description": "Optional free-text",
+  "enabled": true,
+  "trigger_condition": "<Python boolean expression — fires when TRUE>",
+  "actions": [
+    { "id": "<arbitrary stable slug>", "enabled": true,
+      "type": "show_message",
+      "event": "validation",
+      "payload": { "type": "error|warning|info",
+                   "content": "<message text>",
+                   "schema_id": "<field to anchor the message on>" } },
+    { "id": "<arbitrary stable slug>", "enabled": true,
+      "type": "add_automation_blocker",
+      "event": "validation",
+      "payload": { "content": "<blocker text>",
+                   "schema_id": "<field to anchor the blocker on>" } }
+  ],
+  "queues": ["https://api.elis.rossum.ai/api/v1/queues/<id>", ...],
+  "organization": "https://api.elis.rossum.ai/api/v1/organizations/<id>"
+}
+```
+
+`action.id` is a non-empty string identifying the action within the rule. The API does not constrain the format — any string unique within the rule works. Use whichever convention is consistent within your project (semantic slugs, indexed pairs, UUIDs all work). Keep ids stable across rule versions if you care about diff readability.
+
+## trigger_condition expression language
+
+A subset of Python. The expression evaluates to a boolean; the rule fires when it is `True`. The expression must NOT have side effects.
+
+**Available built-ins:**
+
+| Helper | Purpose | Example |
+|---|---|---|
+| `field.<schema_id>` | Read a field value | `field.amount_total` |
+| `field.<line_item_id>` | In a line-item rule: the current line's value | `field.item_total_base` |
+| `field.<line_item_id>.all_values` | List of values across all lines | `sum(field.item_total_base.all_values)` |
+| `is_empty(x)` | True if `x` is `None`, `""`, or `"<not captured>"` sentinel | `is_empty(field.document_id)` |
+| `is_set(x)` | Inverse of `is_empty` | `is_set(field.payment_reference)` |
+| `default_to(x, default)` | Return `x` if not empty, else `default` | `default_to(field.amount_rounding, 0)` |
+| `len(x)` | List/string length | `len(field.line_items)` |
+| `sum(x)`, `min(x)`, `max(x)` | Standard aggregations | `sum(field.item_total_base.all_values)` |
+| `any(x)`, `all(x)` | Standard boolean aggregations over a list | `any(is_empty(x) for x in field.item_account_segment_1.all_values)` |
+| `abs(x)` | Absolute value | `abs(a - b) >= 0.01` |
+| `bool(x)`, `str(x)`, `int(x)`, `float(x)` | Type coercion | `bool(re.search(p, str(field.x)))` |
+| `re.search(pattern, string)` | Regex search (returns Match or None) | `re.search('^AU.{4,}', str(field.x))` |
+| `date.today()` | Today's date for comparisons | `field.date_issue > date.today()` |
+
+`field.<id>` resolves to:
+- A scalar (str / int / float / date) for header fields
+- Inside a line-item rule context: the current row's scalar
+- `field.<line_item_id>.all_values`: a list across all line items (use for header rules that aggregate over the table)
+
+**Line-item rule semantics.** When a rule is attached to a line-item field (e.g. `schema_id: "item_order_id"` in the message payload), the trigger evaluates **once per line item** and fires per row. `field.item_X` is the current row. Aggregations require `.all_values`.
+
+## Polarity: `trigger_condition` is the FIRE predicate
+
+`trigger_condition` is the **fire** predicate — the rule fires (emits actions) when the expression evaluates to `True`. Read the rule's `message` text to confirm intent: the message describes the **problem state**, and `trigger_condition` should be `True` in that state.
+
+Example — a rule that requires `item_order_id` to start with `"AU"`:
+```python
+# Rule fires (and shows the error) when the ID is non-empty AND does not start with AU
+trigger_condition = (
+    "not is_empty(field.item_order_id) and "
+    "not bool(re.search('^AU.{4,}', str(field.item_order_id)))"
+)
+# message: "PO number must start with AU"
+# actions: show_message(error) + add_automation_blocker on item_order_id
+```
+
+Two common ways to get polarity wrong:
+- **Porting a check whose source expresses the OK state.** If you have an expression that means "the data is good", invert it before putting it into `trigger_condition`.
+- **Problem-indicator fields.** Some schema fields are populated *only when there's a problem* — common naming conventions include `*_tag`, `*_mismatch_tag`, `*_match`, `*_inactive`, `*_indicator`, `*_issue`. For these, the rule fires on `not is_empty(field.X)`, not on `is_empty(...)`. Read the field name and the rule message text together: if the message describes a *problem* (e.g. "Fraudulent supplier detected", "ELE name mismatch") and the field name reads like a positive-detection marker, the fire condition is `not is_empty(...)`.
+
+In either case, the rule's `message` text reads naturally in the fire state — use that as the primary disambiguation when the field-naming convention isn't conclusive.
+
+## Defensive `not is_empty(field.X)` guard convention
+
+Native Rule expressions are evaluated against arbitrary field values, including empty/None. Several common operators raise or produce surprising results on empty input:
+
+| Operator | Empty behavior | Guard needed? |
+|---|---|---|
+| `re.search(p, x)` | Raises TypeError if `x` is None | **Yes**, wrap in `not is_empty(field.X) and` |
+| Numeric `>`, `<`, `+`, `-` | Compares/concatenates `None` → error or surprise | **Yes**, or use `default_to(field.X, 0)` |
+| Equality `==` to a non-empty literal | Empty value never equals a non-empty literal — guard is redundant but idiomatic | Optional; canonical conventions include it |
+| `is_empty` / `is_set` | Designed for empty inputs | **No**, this *is* the guard |
+| `field.X.all_values` aggregations (`sum`, `len`) | `sum([])` = 0, `len([])` = 0 — safe | **No** for length, but guard each value if you'll do arithmetic on it |
+
+Ground-truth Rossum rules consistently include the defensive `not is_empty(field.X)` prefix even when logically redundant (e.g. before `field.X == 'literal'`). Mirror that convention so a downstream reader doesn't have to mentally prove the guard isn't needed.
+
+## Rule.actions — types and payload shape
+
+Three action types are commonly used at validation time:
+
+**`show_message`** — surface a banner on the annotation:
+```json
+{ "id": "rule-slug-msg", "enabled": true, "type": "show_message", "event": "validation",
+  "payload": {
+    "type": "error" | "warning" | "info",   // banner severity
+    "content": "Free-text message shown to the user",
+    "schema_id": "field_to_anchor_on"        // where the banner attaches
+  } }
+```
+
+**`add_automation_blocker`** — prevent automatic export of the annotation:
+```json
+{ "id": "rule-slug-block", "enabled": true, "type": "add_automation_blocker", "event": "validation",
+  "payload": {
+    "content": "Free-text reason; same as the show_message content by convention",
+    "schema_id": "field_to_anchor_on"
+  } }
+```
+
+**`show_hide_field`** — toggle field visibility based on the trigger:
+```json
+{ "id": "rule-slug-sh", "enabled": true, "type": "show_hide_field", "event": "validation",
+  "payload": {
+    "schema_id": "primary_field_id",          // legacy single-id form
+    "schema_ids": ["field_a", "field_b"]      // newer multi-id form (preferred)
+  } }
+```
+The field(s) listed are **shown** when the rule fires and **hidden** when it does not.
+
+`schema_ids` (plural array) is the canonical payload key — every existing rule with a `show_hide_field` action carries it. `schema_id` (singular) is a legacy key that older rules also carry alongside `schema_ids` (typically with the same primary field name). For new rules, emit only `schema_ids`. When patching a rule that already has both keys, preserve both to avoid an unintended schema-shape change.
+
+### Conventional action pairings
+
+The patterns that recur across well-formed Rossum rules:
+
+1. **Message + blocker pair.** When a rule warrants an automation blocker (`automation_blocker: true` on the source), it almost always also has a `show_message` with the same `content` and `schema_id`. The user sees the banner; export is also halted. If the source check carries an `automation_blocker: true`, emit both actions — don't pick one.
+2. **Tag-fire + reveal pair.** When the trigger is `not is_empty(field.<X>_tag)` (a "tag" field populated by MDH or another hook only when there's a problem), pair the `show_message` with a `show_hide_field` revealing `<X>_tag` and related context fields. Tag fields are conventionally hidden by default and become visible when populated — the `show_hide_field` action is what makes them visible.
+3. **Document-type → hidden-section.** When the trigger gates on `field.document_type == '...'` (e.g. credit note vs. invoice), pair it with a `show_hide_field` revealing the section relevant to that document type.
+
+A single rule may combine pairings (e.g. a tag-fire rule with a message+blocker+reveal triplet). Pair conventions are additive — pick whichever apply.
+
+---
+
+# Schema-field formula expressions
+
+A schema-field formula derives a field's value from other fields. It's a Python expression (or multi-expression block) that evaluates whenever its inputs change.
+
+## Where formulas live
+
+Locally:
+```
+queues/<Queue Name>_[<id>]/
+├── schema.json                 # the schema — `formula` property per field is stripped on pull
+└── formulas/
+    └── <field_id>.py           # the formula source — edit THIS file
+```
+
+`prd2 pull` extracts `schema.json[fields].formula` strings into `formulas/<field_id>.py`. `prd2 push` merges them back. **Never edit the `formula` property inside `schema.json` directly.**
+
+## Formula shape
+
+Single-expression formula (most common):
+```python
+default_to(field.payment_reference, "")
+```
+
+Multi-expression formula — intermediate `name = …` bindings; the **last expression** is the field's value:
+```python
+ds = default_to(field.po_line_description_match, field.supplier_default_item_desc_match)
+if not is_empty(field.item_order_item_match):
+    ds
+elif field.item_prepaid == "Yes":
+    ds + " - " + " - ".join(p for p in [str(field.item_date_prepaid_start)[:7],
+                                          str(field.item_date_prepaid_end)[:7]] if p)
+else:
+    ds
+```
+
+Last-expression-returns means the formula reads like a normal Python REPL session: name your intermediates, return the final value.
+
+## Header vs. line-item formulas
+
+| Schema-field type | Evaluation context | `field.X` semantics |
+|---|---|---|
+| Header field formula | Once per annotation | `field.X` = the annotation-level value |
+| Line-item field formula | Once per line item | `field.item_X` = current row's value; `field.X` (header field) still resolves |
+| Header formula reading line items | Per annotation, aggregating | Use `field.item_X.all_values` for the list, then `sum()` / `len()` / list-comp |
+
+The `len(field.line_items) > 0` guard is the canonical "any rows present?" check before computing a line-item-derived header value.
+
+## Helper inventory
+
+(Same helpers as Rule trigger_condition — they share the runtime.)
+
+| Helper | Purpose | Example |
+|---|---|---|
+| `default_to(x, default)` | Return `x` if non-empty, else `default` | `default_to(field.item_quantity, 1)` |
+| `is_empty(x)` / `is_set(x)` | Empty / non-empty test | `is_empty(field.payment_reference)` |
+| `len(x)` | List/string length | `len(field.line_items)` |
+| `sum`, `min`, `max`, `any`, `all` | Standard aggregations | `sum(field.item_total_base.all_values)` |
+| `str(x)`, `int(x)`, `float(x)`, `bool(x)` | Type coercion | `str(field.item_date_prepaid_start)[:7]` |
+| `re.search`, `re.sub`, `re.match` | Regex | `re.sub(r'[^0-9]', '', field.iban)` |
+| `date.today()`, `timedelta(...)` | Date arithmetic | `field.date_issue + timedelta(days=30)` |
+
+## The "absorb" pattern
+
+When a helper formula field is consumed by **exactly one** downstream formula, you can **inline** its definition into the consumer to reduce schema field count. Pattern:
+
+```python
+# Before:  separate field `desc_start` with its own formula, then `description_export` reading field.desc_start
+# After: define `ds` locally in `description_export` itself
+
+ds = default_to(field.po_line_description_match,
+                field.supplier_default_item_desc_match,
+                field.sender_match if is_set(field.sender_match) else None)
+# … then use `ds` directly in the rest of this formula
+```
+
+The absorbed helper field can be deleted from the schema. The trade-off is readability vs. schema cardinality: absorb when the helper is short and used in one place; keep separate when the helper is reused or non-trivial.
+
+This pattern is named "absorb" because the consumer formula absorbs the producer's definition. It's not a Rossum-specific construct — it's a refactoring move enabled by formulas being arbitrary Python expressions.
+
+## Multi-variant formulas across queues
+
+A schema field can have different formulas across queues (when queues share a schema family but diverge in details — e.g. an IT/FR variant of a date-aggregation formula). Each queue's local `formulas/<field_id>.py` is independent.
+
+There is **no** built-in "switch on queue.id inside a formula" — queue identity isn't a value the formula language exposes. If the divergence is data-driven (depends on a field value), inline the branching inside one formula; if it's policy-driven (depends on which queue this is), emit per-queue formula files.
+

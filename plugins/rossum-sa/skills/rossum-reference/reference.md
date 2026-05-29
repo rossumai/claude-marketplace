@@ -1328,6 +1328,8 @@ The Master Data Hub matches extracted document data against uploaded reference d
 
 Validates extracted data using an expression engine. Runs at end of extension chain to prevent confirmation/automation of invalid documents.
 
+> See also: the native **Rossum Rule** entity (`POST /v1/rules`) offers similar functionality at the platform level (a `trigger_condition` expression plus `actions`). See the [`txscript-reference`](../txscript-reference/SKILL.md) skill for the native Rule expression language and JSON shape.
+
 **Configuration**:
 ```json
 {
