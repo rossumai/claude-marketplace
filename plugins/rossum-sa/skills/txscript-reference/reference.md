@@ -352,6 +352,8 @@ The `rir_field_names` attribute in schema maps OCR predictions to internal field
 
 # Native Rossum Rule reference
 
+> **Note — not the same as Business Rules Validation.** The BRV extension covered in `rossum-reference` uses a different `{field}`-brace expression engine (e.g. `has_value({document_id})`). Native Rules use Python-style `field.X` attribute access (e.g. `is_empty(field.document_id)`). The two are independent surfaces; do not mix syntaxes.
+
 A **Rule** (`POST /v1/rules`) defines a single boolean `trigger_condition` that, when evaluated to `True` at validation time, emits one or more `actions` (messages, automation blockers, show/hide toggles).
 
 ## Rule JSON shape
@@ -381,7 +383,7 @@ A **Rule** (`POST /v1/rules`) defines a single boolean `trigger_condition` that,
 }
 ```
 
-`action.id` is a cosmetic stable slug — any string works. Use a short semantic kebab-case slug like `ca-po-ioid-msg` or `<rule-slug>-msg`/`-block`. It just needs to be unique within the rule and stable across rule versions.
+`action.id` is a non-empty string identifying the action within the rule. The API does not constrain the format — common patterns include short semantic kebab-case slugs (`ca-gst-msg`, `sh-iban`), `<convention>N-msg`/`-block` pairs (e.g. `brv47-msg` from legacy migrations), and UUIDs. Any unique-within-rule string works.
 
 ## trigger_condition expression language
 
@@ -478,7 +480,9 @@ Three action types are commonly used at validation time:
     "schema_ids": ["field_a", "field_b"]      // newer multi-id form (preferred)
   } }
 ```
-The field(s) listed are **shown** when the rule fires and **hidden** when it does not. (The legacy `schema_id` singular and the newer `schema_ids` array may both appear in older rules — keep both for backward compatibility when patching.)
+The field(s) listed are **shown** when the rule fires and **hidden** when it does not.
+
+`schema_ids` (plural array) is the canonical payload key — every existing rule with a `show_hide_field` action carries it. `schema_id` (singular) is a legacy key that older rules also carry alongside `schema_ids` (typically with the same primary field name). For new rules, emit only `schema_ids`. When patching a rule that already has both keys, preserve both to avoid an unintended schema-shape change.
 
 ### Conventional action pairings
 
