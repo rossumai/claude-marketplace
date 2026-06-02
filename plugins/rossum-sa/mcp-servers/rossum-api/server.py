@@ -496,6 +496,10 @@ _ANNOTATION_FIELDS = ("id", "queue", "status", "document", "modifier", "modified
 _QUEUE_FIELDS = ("id", "name", "workspace", "schema", "hooks", "status", "dedicated_engine")
 _HOOK_FIELDS = ("id", "name", "type", "events", "queues", "active", "run_after", "token_owner")
 _RULE_FIELDS = ("id", "name", "enabled", "queues")
+_RULE_EXEC_LOG_FIELDS = (
+    "rule_id", "rule_name", "queue_id", "annotation_id", "trigger_event",
+    "execution_result", "execution_error", "created_at", "request_id",
+)
 _SCHEMA_FIELDS = ("id", "name", "queues")
 _WORKSPACE_FIELDS = ("id", "name", "organization", "queues", "autopilot")
 _CONNECTOR_FIELDS = ("id", "name", "queues", "service_url", "authorization_type", "asynchronous")
@@ -2197,7 +2201,7 @@ def handle_get_rule(request_id, arguments):
             },
             "description": {
                 "type": "string",
-                "description": "Free-text description of what the rule does and why.",
+                "description": "Free-text description of what the rule does and why (max 255 characters).",
             },
             "enabled": {
                 "type": "boolean",
@@ -2268,7 +2272,7 @@ def handle_create_rule(request_id, arguments):
             },
             "description": {
                 "type": "string",
-                "description": "New description.",
+                "description": "New description (max 255 characters).",
             },
             "enabled": {
                 "type": "boolean",
@@ -2326,6 +2330,74 @@ def handle_patch_rule(request_id, arguments):
 )
 def handle_delete_rule(request_id, arguments):
     _rossum_delete(request_id, f"/api/v1/rules/{arguments['rule_id']}")
+
+
+@_tool(
+    "rossum_list_rules_execution_logs",
+    "Lists rule execution logs (/v1/rules_execution_logs) — the per-evaluation record of when "
+    "business rules ran, whether their trigger_condition fired, and any errors. The rule analog of "
+    "rossum_list_hook_logs; use it to debug why a rule did or did not fire on a given annotation. "
+    "Filter by rule, queue, annotation, trigger event, execution result, or time range. Compacted to "
+    "{rule_id, rule_name, queue_id, annotation_id, trigger_event, execution_result, execution_error, "
+    "created_at, request_id} — call without a pick to inspect full trigger_condition_values/actions via the API.",
+    {
+        "type": "object",
+        "properties": {
+            "rule_id": {
+                "type": "integer",
+                "description": "Filter by rule ID.",
+            },
+            "queue_id": {
+                "type": "integer",
+                "description": "Filter by queue ID.",
+            },
+            "annotation_id": {
+                "type": "integer",
+                "description": "Filter by annotation ID.",
+            },
+            "trigger_event": {
+                "type": "string",
+                "description": "Filter by trigger event (e.g. 'validation').",
+            },
+            "execution_result": {
+                "type": "string",
+                "description": "Filter by outcome: 'success', 'failure', or 'partial_success'.",
+            },
+            "created_at_after": {
+                "type": "string",
+                "description": "Only logs created at or after this ISO 8601 timestamp (e.g. '2026-01-15T00:00:00Z').",
+            },
+            "created_at_before": {
+                "type": "string",
+                "description": "Only logs created at or before this ISO 8601 timestamp.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum entries to return (default: 20, max: 200). This endpoint is high-volume — filter by rule/queue/annotation rather than raising this.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_list_rules_execution_logs(request_id, arguments):
+    max_results = min(arguments.get("max_results", 20), 200)
+    params = [("page_size", min(max_results, 100))]
+    for arg_key, query_key in (
+        ("rule_id", "rule"),
+        ("queue_id", "queue"),
+        ("annotation_id", "annotation"),
+        ("trigger_event", "trigger_event"),
+        ("execution_result", "execution_result"),
+        ("created_at_after", "created_at_after"),
+        ("created_at_before", "created_at_before"),
+    ):
+        if arg_key in arguments:
+            params.append((query_key, arguments[arg_key]))
+    _rossum_list(
+        request_id, "/api/v1/rules_execution_logs", params,
+        max_results=max_results, pick_fields=_RULE_EXEC_LOG_FIELDS,
+    )
 
 
 @_tool(
