@@ -28,6 +28,9 @@ against the live API. For each tool:
      create_search_index → list_search_indexes (verify) → drop_search_index.
    - Hooks: create_hook → get_hook (verify) → patch_hook (change name/active) →
      get_hook (verify patch) → delete_hook.
+   - Rules: create_rule (disabled, trivial trigger_condition like "False", attached to a real queue) →
+     get_rule (verify) → patch_rule (change name/trigger_condition, keep disabled) →
+     get_rule (verify patch) → delete_rule → get_rule (expect 404).
    - Users: create_user (inactive, with a throwaway username) → list_users (verify) →
      confirm the user appears. No delete endpoint exists, so set is_active=false on creation.
 3. Verify that list endpoints handle API pagination correctly (the Rossum API returns paginated

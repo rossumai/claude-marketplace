@@ -495,6 +495,7 @@ _HOOK_LOG_FIELDS = (
 _ANNOTATION_FIELDS = ("id", "queue", "status", "document", "modifier", "modified_at", "confirmed_at", "exported_at")
 _QUEUE_FIELDS = ("id", "name", "workspace", "schema", "hooks", "status", "dedicated_engine")
 _HOOK_FIELDS = ("id", "name", "type", "events", "queues", "active", "run_after", "token_owner")
+_RULE_FIELDS = ("id", "name", "enabled", "queues")
 _SCHEMA_FIELDS = ("id", "name", "queues")
 _WORKSPACE_FIELDS = ("id", "name", "organization", "queues", "autopilot")
 _CONNECTOR_FIELDS = ("id", "name", "queues", "service_url", "authorization_type", "asynchronous")
@@ -2137,6 +2138,197 @@ def handle_patch_hook(request_id, arguments):
 
 
 @_tool(
+    "rossum_list_rules",
+    "Lists Rossum business rules (/v1/rules). A rule evaluates a boolean trigger_condition (a Rossum "
+    "formula) at validation time and, when True, emits actions such as automation blockers, messages, "
+    "or field show/hide toggles. Filter by queue to see only rules attached to a specific queue.",
+    {
+        "type": "object",
+        "properties": {
+            "queue": {
+                "type": "integer",
+                "description": "Filter by queue ID — return only rules attached to this queue.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_list_rules(request_id, arguments):
+    params = [("page_size", 100)]
+    if "queue" in arguments:
+        params.append(("queue", arguments["queue"]))
+    _rossum_list(request_id, "/api/v1/rules", params, pick_fields=_RULE_FIELDS)
+
+
+@_tool(
+    "rossum_get_rule",
+    "Retrieves full details of a single Rossum business rule including its trigger_condition, "
+    "actions, and attached queues. Use rossum_list_rules first to find rule IDs.",
+    {
+        "type": "object",
+        "required": ["rule_id"],
+        "properties": {
+            "rule_id": {
+                "type": "integer",
+                "description": "The rule ID.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_get_rule(request_id, arguments):
+    _rossum_get(request_id, f"/api/v1/rules/{arguments['rule_id']}")
+
+
+@_tool(
+    "rossum_create_rule",
+    "Creates a new Rossum business rule (/v1/rules). The rule evaluates trigger_condition (a Rossum "
+    "formula — a boolean Python expression) at validation time and, when it is True, emits its actions "
+    "(e.g. add_automation_blocker, show_message, show_hide_field). This is a write operation.",
+    {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Display name for the rule.",
+            },
+            "description": {
+                "type": "string",
+                "description": "Free-text description of what the rule does and why.",
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "Whether the rule is enabled (default: true).",
+            },
+            "trigger_condition": {
+                "type": "string",
+                "description": (
+                    "A Rossum formula — a boolean Python expression evaluated at validation time. "
+                    "The rule fires (emits its actions) when this evaluates to True, e.g. "
+                    "\"not is_empty(field.duplicate_order_match)\"."
+                ),
+            },
+            "actions": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "Actions emitted when the rule fires. Each action is "
+                    "{\"id\": <unique non-empty string>, \"enabled\": true, \"type\": <action type>, "
+                    "\"event\": \"validation\", \"payload\": {...}}. type is one of add_automation_blocker, "
+                    "show_message, show_hide_field. payload for show_message / add_automation_blocker: "
+                    "{\"content\": <text>, \"schema_id\": <field id>}; for show_hide_field: "
+                    "{\"schema_ids\": [<field id>, ...]} (fields are shown when the rule fires, hidden otherwise)."
+                ),
+            },
+            "queue_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Queue IDs to attach this rule to. Omit to create unattached.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_create_rule(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {
+        "name": arguments["name"],
+        "enabled": arguments.get("enabled", True),
+        "queues": [f"{base_url}/api/v1/queues/{qid}" for qid in arguments.get("queue_ids", [])],
+    }
+    for key in ("description", "trigger_condition", "actions"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, "/api/v1/rules", body)
+
+
+@_tool(
+    "rossum_patch_rule",
+    "Updates an existing Rossum business rule. Only provide the fields you want to change — "
+    "unspecified fields are left untouched. Use this to edit the trigger_condition, toggle the "
+    "enabled state, replace actions, or reassign queues without recreating the rule. "
+    "This is a write operation.",
+    {
+        "type": "object",
+        "required": ["rule_id"],
+        "properties": {
+            "rule_id": {
+                "type": "integer",
+                "description": "The rule ID to update.",
+            },
+            "name": {
+                "type": "string",
+                "description": "New display name.",
+            },
+            "description": {
+                "type": "string",
+                "description": "New description.",
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "Enable or disable the rule.",
+            },
+            "trigger_condition": {
+                "type": "string",
+                "description": "Updated trigger_condition (Rossum formula — boolean Python expression; fires when True).",
+            },
+            "actions": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Replace the full actions list (see rossum_create_rule for the action shape).",
+            },
+            "queue_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Replace attached queues (full list, not additive).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_rule(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    rule_id = arguments["rule_id"]
+    body = {}
+    for key in ("name", "description", "enabled", "trigger_condition", "actions"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "queue_ids" in arguments:
+        body["queues"] = [f"{base_url}/api/v1/queues/{qid}" for qid in arguments["queue_ids"]]
+    _rossum_patch(request_id, f"/api/v1/rules/{rule_id}", body)
+
+
+@_tool(
+    "rossum_delete_rule",
+    "Deletes a Rossum business rule from the organization. "
+    "This is a destructive operation that cannot be undone.",
+    {
+        "type": "object",
+        "required": ["rule_id"],
+        "properties": {
+            "rule_id": {
+                "type": "integer",
+                "description": "The rule ID to delete.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_rule(request_id, arguments):
+    _rossum_delete(request_id, f"/api/v1/rules/{arguments['rule_id']}")
+
+
+@_tool(
     "rossum_get_schema",
     "Retrieves the full schema definition of a queue. The schema defines all datapoints "
     "(fields), sections, multivalue (table) structures, and their validation rules.",
@@ -3126,7 +3318,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.15.0"},
+                    "serverInfo": {"name": "rossum-api", "version": "0.16.0"},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "
