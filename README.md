@@ -62,6 +62,7 @@ Each `--plugin-dir` loads one plugin; omit the ones you don't need.
 | `/rossum-sa:iterate [annotation-id]` | Tight inner loop on a deliverable — re-fire a hook/formula/rule against one annotation and check the result until the goal is met |
 | `/rossum-sa:test-behavioral-equivalence [path]` | Snapshot-replay-diff an implementation against a baseline env to verify a change preserved behavior |
 | `/rossum-sa:dead-code [path]` | Find unused hooks, formulas, rules, labels, and engines with a deterministic detector |
+| `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 
 ### `nerossum`
 
