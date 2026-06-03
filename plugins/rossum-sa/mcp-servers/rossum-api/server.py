@@ -2141,6 +2141,136 @@ def handle_patch_hook(request_id, arguments):
     _rossum_patch(request_id, f"/api/v1/hooks/{hook_id}", body)
 
 
+_ANNOTATION_HOOK_EVENTS = {"annotation_content", "annotation_status"}
+
+
+def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
+    """Find an annotation URL on one of the hook's queues for payload generation.
+
+    Returns the annotation URL, "" if the hook has no usable annotation (caller
+    should surface a guidance error), or None if a request failed (error already sent).
+    """
+    hook = _http_request(request_id, f"{base_url}/api/v1/hooks/{hook_id}")
+    if hook is None:
+        return None
+    for queue_url in hook.get("queues") or []:
+        params = urlencode([
+            ("queue", _url_to_id(queue_url)),
+            ("page_size", 1),
+            ("status", "to_review,confirmed,exported,importing"),
+        ])
+        listing = _http_request(request_id, f"{base_url}/api/v1/annotations?{params}")
+        if listing is None:
+            return None
+        results = listing.get("results") or []
+        if results:
+            return results[0].get("url")
+    return ""
+
+
+@_tool(
+    "rossum_test_hook",
+    "Tests a single hook in isolation: auto-generates a realistic payload for the given event/action "
+    "and executes the hook against it — without uploading a document, running the full hook chain, or "
+    "mutating any annotation (it is a dry-run). Optionally override the hook's config (e.g. pass "
+    "config.code) to try unsaved changes. Returns the hook's response: messages, operations, automation "
+    "blockers, or the error/traceback if it raised. The rule analog is the validation pipeline; for an "
+    "end-to-end re-fire against a real annotation use rossum_refire_annotation instead. This executes "
+    "hook code, which can have side effects (webhook hooks POST externally, function hooks call APIs via "
+    "their token_owner), so it is a write operation.",
+    {
+        "type": "object",
+        "required": ["hook_id", "event", "action"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "The hook ID to test.",
+            },
+            "event": {
+                "type": "string",
+                "description": "Event type: 'annotation_content', 'annotation_status', 'email', 'invocation', or 'upload'.",
+            },
+            "action": {
+                "type": "string",
+                "description": (
+                    "Action for the event. Valid event.action pairs: "
+                    "annotation_content.{initialize, started, updated, user_update, confirm, export}, "
+                    "annotation_status.changed, upload.created, email.received, "
+                    "invocation.{manual, scheduled, interface}."
+                ),
+            },
+            "annotation_id": {
+                "type": "integer",
+                "description": (
+                    "Annotation used to build the payload (for annotation_content / annotation_status "
+                    "events). If omitted for those events, an annotation is auto-resolved from the hook's "
+                    "queues; pass it explicitly (see rossum_list_annotations) to target a specific document."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "description": "Annotation status in the generated payload (annotation events; default 'to_review').",
+            },
+            "previous_status": {
+                "type": "string",
+                "description": "Previous status in the generated payload (annotation events; default 'importing').",
+            },
+            "config": {
+                "type": "object",
+                "description": (
+                    "Override the hook's config for this test run only (not persisted) — e.g. "
+                    "{\"code\": \"def rossum_hook_request_handler(payload):\\n    ...\"} to dry-run unsaved code."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_test_hook(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    hook_id = arguments["hook_id"]
+    gen_body = {"event": arguments["event"], "action": arguments["action"]}
+    if arguments["event"] in _ANNOTATION_HOOK_EVENTS:
+        annotation_id = arguments.get("annotation_id")
+        if annotation_id is not None:
+            annotation_url = f"{base_url}/api/v1/annotations/{annotation_id}"
+        else:
+            annotation_url = _resolve_annotation_url_for_hook(request_id, base_url, hook_id)
+            if annotation_url is None:
+                return
+            if not annotation_url:
+                return tool_result(
+                    request_id,
+                    f"Event '{arguments['event']}' needs an annotation, but none were found on hook "
+                    f"{hook_id}'s queues. Pass annotation_id explicitly (find one via "
+                    "rossum_list_annotations) or upload a document to one of its queues first.",
+                    is_error=True,
+                )
+        gen_body["annotation"] = annotation_url
+        gen_body["status"] = arguments.get("status", "to_review")
+        gen_body["previous_status"] = arguments.get("previous_status", "importing")
+
+    payload = _http_request(
+        request_id, f"{base_url}/api/v1/hooks/{hook_id}/generate_payload",
+        method="POST", body=gen_body,
+    )
+    if payload is None:
+        return
+
+    test_body = {"payload": payload}
+    if "config" in arguments:
+        test_body["config"] = arguments["config"]
+    result = _http_request(
+        request_id, f"{base_url}/api/v1/hooks/{hook_id}/test",
+        method="POST", body=test_body,
+    )
+    if result is not None:
+        tool_result(request_id, json.dumps(result, indent=2))
+
+
 @_tool(
     "rossum_list_rules",
     "Lists Rossum business rules (/v1/rules). A rule evaluates a boolean trigger_condition (a Rossum "
@@ -3392,7 +3522,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.16.0"},
+                    "serverInfo": {"name": "rossum-api", "version": "0.17.0"},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "
