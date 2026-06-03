@@ -2201,6 +2201,7 @@ def handle_get_rule(request_id, arguments):
             },
             "description": {
                 "type": "string",
+                "maxLength": 255,
                 "description": "Free-text description of what the rule does and why (max 255 characters).",
             },
             "enabled": {
@@ -2272,6 +2273,7 @@ def handle_create_rule(request_id, arguments):
             },
             "description": {
                 "type": "string",
+                "maxLength": 255,
                 "description": "New description (max 255 characters).",
             },
             "enabled": {
@@ -2333,7 +2335,7 @@ def handle_delete_rule(request_id, arguments):
 
 
 @_tool(
-    "rossum_list_rules_execution_logs",
+    "rossum_list_rule_execution_logs",
     "Lists rule execution logs (/v1/rules_execution_logs) — the per-evaluation record of when "
     "business rules ran, whether their trigger_condition fired, and any errors. The rule analog of "
     "rossum_list_hook_logs; use it to debug why a rule did or did not fire on a given annotation. "
@@ -2380,7 +2382,7 @@ def handle_delete_rule(request_id, arguments):
     },
     annotations=_READ_ONLY,
 )
-def handle_list_rules_execution_logs(request_id, arguments):
+def handle_list_rule_execution_logs(request_id, arguments):
     max_results = min(arguments.get("max_results", 20), 200)
     params = [("page_size", min(max_results, 100))]
     for arg_key, query_key in (

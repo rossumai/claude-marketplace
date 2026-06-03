@@ -150,7 +150,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_create_rule` | ✏️ Create a new business rule (trigger_condition + actions) |
 | `rossum_patch_rule` | ✏️ Update an existing rule (trigger_condition, enabled, actions, queues) |
 | `rossum_delete_rule` | ⚠️ Delete a business rule |
-| `rossum_list_rules_execution_logs` | List rule execution logs (filter by rule, queue, annotation, event, result, time) |
+| `rossum_list_rule_execution_logs` | List rule execution logs (filter by rule, queue, annotation, event, result, time) |
 | `rossum_list_annotations` | List annotations in a queue (filter by status) |
 | `rossum_search_annotations` | Search annotations across queues (filter by status, date range, workspace) |
 | `rossum_get_annotation` | Compact merged view: metadata + extracted fields + tables + resolved automation_blocker items + recent hook logs in one call. Caches raw payload to `.rossum-cache/annotations/<id>.json`. |
