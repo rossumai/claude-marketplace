@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, extract documents, and generate SOWs, all from your terminal.
 
-8 skills · 9 reference packs · 58 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+8 skills · 9 reference packs · 64 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -146,6 +146,12 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues) |
 | `rossum_get_hook_secret_keys` | List secret key names on a hook |
 | `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status) |
+| `rossum_list_rules` | List business rules (filter by queue) |
+| `rossum_get_rule` | Get full rule details (trigger_condition, actions, queues) |
+| `rossum_create_rule` | ✏️ Create a new business rule (trigger_condition + actions) |
+| `rossum_patch_rule` | ✏️ Update an existing rule (trigger_condition, enabled, actions, queues) |
+| `rossum_delete_rule` | ⚠️ Delete a business rule |
+| `rossum_list_rule_execution_logs` | List rule execution logs (filter by rule, queue, annotation, event, result, time) |
 | `rossum_list_annotations` | List annotations in a queue (filter by status) |
 | `rossum_search_annotations` | Search annotations across queues (filter by status, date range, workspace) |
 | `rossum_get_annotation` | Compact merged view: metadata + extracted fields + tables + resolved automation_blocker items + recent hook logs in one call. Caches raw payload to `.rossum-cache/annotations/<id>.json`. |
