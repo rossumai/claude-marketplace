@@ -39,7 +39,7 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 |-------|----------------|
 | 0 — Discovery | Credentials, org URL, Coupa hook settings, dataset selection |
 | 1 — Pre-flight | Disable hooks, create/clear collections, create indexes |
-| 2 — Script Setup | Configure and place `coupa_bulk_import.py` |
+| 2 — Script Setup | Place `coupa_bulk_import.py`, create `coupa_bulk_import.config.json`, smoke-test |
 | 3 — Replication | Launch jobs, monitor progress, handle token expiry |
 | 4 — Completion | Verify counts, register with MDH, re-enable hooks |
 
@@ -128,39 +128,52 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
 ## Phase 2: Script Setup
 
-**Goal:** `coupa_bulk_import.py` present in the working directory with correct credentials and DATASETS configuration.
+**Goal:** `coupa_bulk_import.py` present in the working directory with a populated `coupa_bulk_import.config.json` next to it.
+
+> The script itself contains no credentials or dataset definitions. The same `coupa_bulk_import.py` runs unchanged for every customer — all per-customer values live in the gitignored config file beside it. Do not edit the script to configure a run; edit the config.
 
 **Steps:**
 
-1. **Place the script.** Copy `coupa_bulk_import.py` (bundled with this skill) into the working directory, or use an existing copy if already present.
+1. **Place the bundled files.** Copy both `coupa_bulk_import.py` and `coupa_bulk_import.config.example.json` (bundled with this skill) into the working directory.
 
-2. **Configure script constants.** Edit the constants at the top of `coupa_bulk_import.py`:
+2. **Create the config file.** Copy the example to `coupa_bulk_import.config.json` and fill in the values from Phase 0:
 
-   ```python
-   COUPA_CLIENT_ID     = "<from hook settings>"
-   COUPA_CLIENT_SECRET = "<from hook settings>"
-   COUPA_BASE_URL      = "<from hook settings, e.g. https://customer.coupahost.com>"
-
-   ROSSUM_TOKEN   = "<current bearer token>"
-   ROSSUM_DS_URL  = "<org_url>/svc/data-storage/api/v1"
-   ROSSUM_API_URL = "<org_url>/api/v1"
-   ```
-
-   If `--username` and `--password` will be passed at runtime, `ROSSUM_TOKEN` is used only as an initial value — the script refreshes it automatically on every 401.
-
-3. **Configure DATASETS.** Build the `DATASETS` dict from the hook settings discovered in Phase 0. Each entry:
-
-   ```python
-   "<key>": {
-       "endpoint":   "api/<coupa_endpoint>",
-       "collection": "<dataset_name_from_hook>",
-       "id_key":     "id",
-       "scope":      "<oauth_scope_from_hook>",
-       "fields":     [<field_list_from_hook_exactly_as_configured>],
+   ```json
+   {
+     "coupa": {
+       "base_url":      "<from hook settings, e.g. https://customer.coupahost.com>",
+       "client_id":     "<from hook settings>",
+       "client_secret": "<from hook settings>"
+     },
+     "rossum": {
+       "api_url": "<org_url>/api/v1",
+       "ds_url":  "<org_url>/svc/data-storage/api/v1",
+       "token":   "<bearer token; refreshed automatically if --username/--password is passed at runtime>"
+     },
+     "ds_batch_size": 5000,
+     "datasets": {
+       "<key>": {
+         "endpoint":   "api/<coupa_endpoint>",
+         "collection": "<dataset_name_from_hook>",
+         "id_key":     "id",
+         "scope":      "<oauth_scope_from_hook>",
+         "fields":     [<field_list_from_hook_exactly_as_configured>]
+       }
+     }
    }
    ```
 
-   The `fields` list must exactly mirror the hook's field configuration — it is the projection sent to the Coupa API.
+   Each dataset's `fields` list must exactly mirror the corresponding hook's field configuration — it is the projection sent to the Coupa API.
+
+3. **Gitignore the runtime files.** Add the following to the project's `.gitignore` so credentials and run state never leak into version control:
+
+   ```
+   coupa_bulk_import.config.json
+   coupa_import_state*.json
+   logs/
+   ```
+
+   Only `coupa_bulk_import.config.example.json` (placeholder template) should be checked in.
 
 4. **Smoke-test the configuration** before starting the full load:
 
@@ -168,7 +181,9 @@ This skill has 5 phases. Work through them in order — each phase produces conc
    python3 -u coupa_bulk_import.py --dataset <key> --limit 1
    ```
 
-**Artifact:** `coupa_bulk_import.py` present, configured, and smoke-tested.
+   If the config path is non-standard, pass `--config <path>`.
+
+**Artifact:** `coupa_bulk_import.py` + `coupa_bulk_import.config.json` present, gitignored, and smoke-tested.
 
 ---
 
@@ -311,6 +326,7 @@ Always create indexes on **empty** collections. See `data-storage-reference` for
 
 ### Related skills
 
+- `coupa-baseline-reference` — canonical Coupa Integration Baseline (CIB) knowledge: schema, hook shapes, MDH matching, export pipeline. Concept definitions for Coupa hooks and datasets live there; this skill links to them rather than redefining
 - `data-storage-reference` — full REST API reference for Data Storage (find, aggregate, insert, index management)
 - `mdh-reference` — MDH dataset management API and matching hook configuration
 - `prd-reference` — prd2 CLI usage for credential setup and config deployment

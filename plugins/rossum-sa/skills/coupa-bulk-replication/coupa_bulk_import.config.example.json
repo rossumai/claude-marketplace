@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy to coupa_bulk_import.config.json and fill in. The real config file must be gitignored — it contains credentials.",
+
+  "coupa": {
+    "base_url":      "https://<customer>.coupahost.com",
+    "client_id":     "<from Coupa Webhook Import hook settings>",
+    "client_secret": "<from Coupa Webhook Import hook settings>"
+  },
+
+  "rossum": {
+    "api_url": "https://<org>.rossum.app/api/v1",
+    "ds_url":  "https://<org>.rossum.app/svc/data-storage/api/v1",
+    "token":   "<bearer token; used as initial value, refreshed at runtime if --username/--password is passed>"
+  },
+
+  "ds_batch_size": 5000,
+
+  "datasets": {
+    "purchase_orders": {
+      "endpoint":   "api/purchase_orders",
+      "collection": "purchase_orders",
+      "id_key":     "id",
+      "scope":      "core.purchase_order.read",
+      "fields": [
+        "id", "created_at", "updated_at", "po_number", "status",
+        {"supplier": ["id", "name", "display_name", "number"]}
+      ]
+    }
+  }
+}

@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, extract documents, and generate SOWs, all from your terminal.
 
-7 skills · 9 reference packs · 53 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+8 skills · 9 reference packs · 53 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -60,6 +60,7 @@ Each `--plugin-dir` loads one plugin; omit the ones you don't need.
 | `/rossum-sa:refine-deployment [deploy-file] [impl-path]` | Enhance prd2 deploy files with target IDs and attribute overrides |
 | `/rossum-sa:upgrade [path]` | Upgrade deprecated extensions to formula fields and bump old Python runtimes on function hooks to `python3.12` |
 | `/rossum-sa:dead-code [path]` | Find unused hooks, formulas, rules, labels, and engines with a deterministic detector |
+| `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 
 ### `nerossum`
 

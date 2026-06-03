@@ -22,8 +22,12 @@ Usage:
         --username user@example.com --password secret
 
 Configuration:
-    Edit the constants below before running.  Fill in credentials from your
-    Coupa Webhook Import hook settings and your Rossum org URL.
+    All credentials, URLs, and dataset definitions live in
+    coupa_bulk_import.config.json next to this script (override with --config).
+    See coupa_bulk_import.config.example.json for the schema.
+
+    The script itself contains no credentials — same .py runs for every
+    customer; per-customer values live in the gitignored config file.
 """
 
 from __future__ import annotations
@@ -39,43 +43,66 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ── Credentials — fill in before running ────────────────────────────────────────
+# ── Configuration — populated by load_config() at startup ───────────────────────
+#
+# These module-level names are filled from coupa_bulk_import.config.json
+# (or whichever --config path the user passes). Nothing customer-specific
+# is hardcoded in this file.
 
-COUPA_CLIENT_ID     = "<coupa_client_id>"
-COUPA_CLIENT_SECRET = "<coupa_client_secret>"
-COUPA_BASE_URL      = "https://<customer>.coupahost.com"
+COUPA_CLIENT_ID:     str = ""
+COUPA_CLIENT_SECRET: str = ""
+COUPA_BASE_URL:      str = ""
 
-ROSSUM_TOKEN   = "<rossum_bearer_token>"
-ROSSUM_DS_URL  = "https://<org>.rossum.app/svc/data-storage/api/v1"
-ROSSUM_API_URL = "https://<org>.rossum.app/api/v1"   # for token refresh
+ROSSUM_TOKEN:   str = ""
+ROSSUM_DS_URL:  str = ""
+ROSSUM_API_URL: str = ""
 
 STATE_FILE    = Path("coupa_import_state.json")  # overridden by --state-file
 DS_BATCH_SIZE = 5000                              # records per insert_many call
 
-# ── Dataset definitions — mirror your Coupa Webhook Import hook settings ─────────
-#
-# Each key maps to one Coupa endpoint.  The `fields` list must exactly match the
-# field projection configured in the corresponding Rossum import hook.
-#
-# Example entry — replace or extend with your actual datasets:
-#
-# DATASETS: dict[str, dict] = {
-#     "purchase_orders": {
-#         "endpoint":   "api/purchase_orders",
-#         "collection": "purchase_orders",   # Data Storage collection name
-#         "id_key":     "id",
-#         "scope":      "core.purchase_order.read",
-#         "fields": [
-#             "id", "created_at", "updated_at", "po_number", "status",
-#             {"supplier": ["id", "name", "display_name", "number"]},
-#             # ... add all fields from your hook configuration
-#         ],
-#     },
-# }
+DATASETS: dict[str, dict] = {}
 
-DATASETS: dict[str, dict] = {
-    # TODO: populate from your Coupa Webhook Import hook settings
-}
+
+def load_config(path: Path) -> None:
+    """Populate module-level configuration from a JSON file."""
+    global COUPA_CLIENT_ID, COUPA_CLIENT_SECRET, COUPA_BASE_URL
+    global ROSSUM_TOKEN, ROSSUM_DS_URL, ROSSUM_API_URL
+    global DS_BATCH_SIZE, DATASETS
+
+    if not path.exists():
+        raise SystemExit(
+            f"Config file not found: {path}\n"
+            "Copy coupa_bulk_import.config.example.json to "
+            f"{path.name} and fill it in."
+        )
+
+    cfg = json.loads(path.read_text())
+
+    coupa = cfg.get("coupa") or {}
+    COUPA_CLIENT_ID     = coupa.get("client_id", "")
+    COUPA_CLIENT_SECRET = coupa.get("client_secret", "")
+    COUPA_BASE_URL      = (coupa.get("base_url") or "").rstrip("/")
+
+    rossum = cfg.get("rossum") or {}
+    ROSSUM_TOKEN   = rossum.get("token", "")
+    ROSSUM_DS_URL  = (rossum.get("ds_url") or "").rstrip("/")
+    ROSSUM_API_URL = (rossum.get("api_url") or "").rstrip("/")
+
+    DS_BATCH_SIZE = int(cfg.get("ds_batch_size", 5000))
+    DATASETS      = cfg.get("datasets") or {}
+
+    required = {
+        "coupa.base_url":      COUPA_BASE_URL,
+        "coupa.client_id":     COUPA_CLIENT_ID,
+        "coupa.client_secret": COUPA_CLIENT_SECRET,
+        "rossum.api_url":      ROSSUM_API_URL,
+        "rossum.ds_url":       ROSSUM_DS_URL,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        raise SystemExit(f"Missing required config keys: {', '.join(missing)}")
+    if not DATASETS:
+        raise SystemExit(f"Config file {path} defines no datasets")
 
 
 # ── Rossum auth ──────────────────────────────────────────────────────────────────
@@ -303,10 +330,15 @@ def main() -> None:
         description="Bulk-import Coupa master data into Rossum Data Storage."
     )
     parser.add_argument(
+        "--config",
+        default="coupa_bulk_import.config.json",
+        metavar="PATH",
+        help="Configuration JSON (default: coupa_bulk_import.config.json next to this script)",
+    )
+    parser.add_argument(
         "--dataset",
-        choices=[*DATASETS, "all"],
         default="all",
-        help="Dataset to import (default: all)",
+        help="Dataset key from the config, or 'all' (default: all)",
     )
     parser.add_argument(
         "--limit",
@@ -340,6 +372,14 @@ def main() -> None:
         help="Rossum password for automatic token refresh",
     )
     args = parser.parse_args()
+
+    load_config(Path(args.config))
+
+    if args.dataset != "all" and args.dataset not in DATASETS:
+        raise SystemExit(
+            f"Unknown dataset '{args.dataset}'. "
+            f"Available in {args.config}: {', '.join(sorted(DATASETS)) or '(none)'}"
+        )
 
     if args.state_file:
         state_path = Path(args.state_file)
