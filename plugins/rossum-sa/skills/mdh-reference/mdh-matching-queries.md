@@ -107,6 +107,56 @@ Values from extracted document fields are injected via placeholders:
 
 Schema IDs come from queue schema fields where `category` is `"datapoint"`. Only the `id` value of datapoint-category fields should be used as placeholders.
 
+#### Placeholder field type restrictions
+
+MDH placeholders resolve to **stringifiable** values. The following types are **not supported** as placeholder sources and will fail the query with:
+
+```
+Error in configuration: Matching using a Rossum field of type 'DatapointType.<TYPE>' is not supported
+```
+
+| Schema `type` | Supported as `{placeholder}`? | Workaround if it isn't |
+|---|---|---|
+| `string` | ✅ | — |
+| `number` | ✅ | — |
+| `enum` | ✅ (the value's `id`) | — |
+| `date` | ❌ **NOT supported** | Add a string formula proxy (see below) |
+| `button` | ❌ | n/a (no value to inject) |
+
+##### Workaround: string formula proxy for date fields
+
+If you need to feed a date value into an MDH query (for example, a duplicate-detection window keyed off `date_issue`), add a hidden string formula field that materialises the ISO string from the date field, and point the query at the proxy:
+
+```jsonc
+// schema.json — add alongside the date field
+{
+  "id": "date_issue_iso",
+  "label": "Date issue (ISO string for MDH)",
+  "category": "datapoint",
+  "type": "string",
+  "hidden": true,
+  "disable_prediction": true,
+  "ui_configuration": {"type": "formula", "edit": "disabled"},
+  "formula": "def to_iso(d):\n    if d is None:\n        return ''\n    if isinstance(d, datetime.datetime):\n        d = d.date()\n    return d.strftime('%Y-%m-%d')\n\nto_iso(field.date_issue)"
+}
+```
+
+Then in the MDH query:
+
+```jsonc
+// ❌ errors: 'DatapointType.DATE is not supported'
+{"$dateFromString": {"dateString": "{date_issue}"}}
+
+// ✅ works
+{"$dateFromString": {"dateString": "{date_issue_iso}"}}
+```
+
+The proxy is `hidden: true` so reviewers don't see it; it exists purely to feed MDH.
+
+##### Annotation-side duplicate detection still works on date fields
+
+This restriction only affects **MDH placeholders** (the `{schema_id}` syntax that interpolates the value into a MongoDB query against an MDH dataset). Querying annotations via Rossum's built-in MongoDB index (e.g. `{"field.date_issue.date": {"$gte": ..., "$lte": ...}}` from a custom hook) reads the date directly and does NOT need a string proxy.
+
 ---
 
 ## Query Design Rules
@@ -120,18 +170,19 @@ Schema IDs come from queue schema fields where `category` is `"datapoint"`. Only
 ### DO
 
 1. Prefer exact matching before fuzzy matching. Never do exact matching on names/addresses — use fuzzy for those.
-2. When `$search` is used:
+2. **Run the Atlas Search Index Pre-flight before shipping any `$search` query.** Confirm the named index exists on the collection and that every field referenced in the `$search` stage is mapped in the index. A missing or misnamed index makes `$search` return zero results silently — no error, hook log reads `status: completed`. See [Atlas Search Index Pre-flight](#atlas-search-index-pre-flight-run-before-shipping-any-search-query).
+3. When `$search` is used:
    - Always follow with `$limit` (default 20 unless use case requires otherwise).
    - Capture score via `$addFields: { "__score": { "$meta": "searchScore" } }`.
    - Filter low-confidence matches with a score threshold.
    - Combine multiple strategies: use `phrase` and `text` searches with appropriate `slop` and `fuzzy` settings.
-3. In fuzzy search, combine relevant parameters in `compound` queries using `must`, `should`, and `filter`.
-4. Boost only `must` clauses in compound search — never boost `should`.
-5. If regex behavior is needed, use `$search` with `regex` operator and a keyword analyzer index.
-6. Use `$project` to return only attributes needed for document mapping.
-7. Use JSON-compatible syntax with double-quoted keys and string values.
-8. Place `$match` or `$search` early to reduce the candidate set quickly.
-9. Keep pipelines deterministic.
+4. In fuzzy search, combine relevant parameters in `compound` queries using `must`, `should`, and `filter`.
+5. Boost only `must` clauses in compound search — never boost `should`.
+6. If regex behavior is needed, use `$search` with `regex` operator and a keyword analyzer index.
+7. Use `$project` to return only attributes needed for document mapping.
+8. Use JSON-compatible syntax with double-quoted keys and string values.
+9. Place `$match` or `$search` early to reduce the candidate set quickly.
+10. Keep pipelines deterministic.
 
 ### DON'T
 
@@ -819,6 +870,48 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 ```
 
 **Key technique:** The double `$setWindowFields` + `$cond` logic removes the "Please select" placeholder only when an exact match exists. Combined with `multiple_matches_found: best_match`, the exact match auto-selects when found; otherwise the empty placeholder is selected, forcing user choice.
+
+---
+
+## Atlas Search Index Pre-flight (run before shipping any `$search` query)
+
+A `$search` stage against a missing or misnamed Atlas Search index does **not** error out. It returns zero results, and the hook log shows `status: completed`. A query that "works" in your editor will silently return nothing in production, and the failure mode looks like "no matches found" rather than "broken query" — the hardest class of MDH bug to diagnose. This historically cost real time on Eurofins and other deployments; the pre-flight closes it at build time.
+
+**Run this every time you author, modify, or debug a query that contains `$search`.** It is two API calls and prevents hours of downstream debugging.
+
+### Step 1: List the search indexes on the collection
+
+```
+data_storage_list_search_indexes(collection_name="<your-collection>")
+```
+
+Confirm each `index` name referenced in your `$search` stages appears in the response. Index names are case-sensitive. Typos (`vendor_name_idx` vs `vendor_name_index`) silently fall through.
+
+### Step 2: Verify field mappings
+
+For each named index, inspect its `mappings.fields` (returned by the same `data_storage_list_search_indexes` call):
+
+- Every field you reference in `$search` (under `path`, `compound.must.path`, `compound.should.path`, etc.) **must** appear in `mappings.fields`.
+- Field names are case-sensitive — `Supplier_Name` and `SUPPLIER_NAME` are different indexes.
+- For `$search` with `regex`, the field must be mapped with a keyword analyzer (`"analyzer": "lucene.keyword"`). The default analyzer will silently no-op on regex queries.
+- For `text` and `phrase` queries, the default analyzer is usually correct — but verify rather than assume.
+
+### Step 3: If anything is missing, create or update the index
+
+If the index doesn't exist or the field mapping is wrong, use `data_storage_create_search_index` to create one with the right mappings, or drop and recreate (`data_storage_drop_search_index` + `data_storage_create_search_index`) if the existing one is wrong. Creation is asynchronous — wait until the index status is `READY` before re-running the query.
+
+### Step 4: Smoke-test the query
+
+Run the full aggregation pipeline against the collection with a known-good input. Confirm non-empty results. If results are empty:
+
+- Re-check that the index analyzer matches the query type (`regex` needs keyword; `text`/`phrase` needs default).
+- Re-check that the field path in the query matches the indexed field name exactly (case + spelling).
+- Try the same query without `$search` (substitute `$match` on the same field) to verify the data exists.
+- Try `$search` with `compound.should` only and no threshold to see the raw hit set.
+
+### When Atlas Search shouldn't be used at all
+
+If you only ever do exact matching, no index is needed — use `$match` directly. `$search` is for fuzzy/scored matching. Don't pull in `$search` just because it's there.
 
 ---
 

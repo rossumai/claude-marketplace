@@ -5,6 +5,7 @@ import json
 import re
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlencode, urlparse
@@ -265,6 +266,67 @@ def _http_request(request_id, url, *, method="GET", body=None, parse_json=True):
         return None
 
 
+def _http_request_silent(url, *, method="GET"):
+    """Like _http_request but never sends a tool_result on failure. Returns the HTTP
+    status code (int) on any HTTP-level outcome, or None on network/SSL error.
+    Used for finally-cancel and other best-effort cleanup paths."""
+    token = _cached_token
+    if not token:
+        return None
+    req = urllib.request.Request(
+        url, data=None, headers={"Authorization": f"Bearer {token}"}, method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=_ssl_context) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return None
+
+
+def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_type=None):
+    """POST raw bytes (e.g. multipart upload). Returns parsed JSON or None (error sent)."""
+    token = _cached_token
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = urllib.request.Request(url, data=raw_body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
+            data = resp.read()
+            if not data:
+                return {}
+            return json.loads(data.decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else str(e)
+        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        return None
+    except Exception as e:
+        tool_result(request_id, f"Error: {e}", is_error=True)
+        return None
+
+
+def _http_get_bytes(request_id, url):
+    """GET that returns raw bytes (for downloading PDFs etc). None on error (already sent)."""
+    token = _cached_token
+    if not token:
+        return None
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else str(e)
+        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        return None
+    except Exception as e:
+        tool_result(request_id, f"Error: {e}", is_error=True)
+        return None
+
+
 def _data_storage_call(request_id, path, body):
     """POST to a Data Storage API endpoint."""
     base_url, _ = _ensure_connection(request_id)
@@ -446,6 +508,218 @@ _EMAIL_THREAD_FIELDS = (
     "has_new_replies", "created_at", "last_email_created_at",
     "annotation_counts", "labels",
 )
+
+
+# --- Compact annotation view ---
+
+# Most-specific source wins; reflects how Rossum populates `validation_sources`.
+_SOURCE_PRIORITY = (
+    "human", "formula", "connector", "rules",
+    "data_matching", "score", "NA",
+)
+
+
+def _id_from_url(url):
+    """Extract the trailing integer from a Rossum API URL, or return None."""
+    if not url or not isinstance(url, str):
+        return None
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def _best_source(validation_sources):
+    """Reduce a validation_sources list to the most-specific entry."""
+    if not validation_sources:
+        return None
+    sources = set(validation_sources)
+    for candidate in _SOURCE_PRIORITY:
+        if candidate in sources:
+            return candidate
+    return validation_sources[0]
+
+
+def _compact_datapoint(node, *, include_ocr=True, verbose=False):
+    """Project a single datapoint node to its useful subset.
+
+    Default keys: value, ocr (if distinct), normalized, src, score (when score-sourced).
+    Verbose also adds: page, position, options.
+    """
+    content = node.get("content") or {}
+    value = content.get("value")
+    ocr = content.get("ocr_text")
+    normalized = content.get("normalized_value")
+    source = _best_source(node.get("validation_sources"))
+
+    projected = {"value": value}
+    if include_ocr and ocr and ocr != value:
+        projected["ocr"] = ocr
+    if normalized not in (None, "", value):
+        projected["normalized"] = normalized
+    if source:
+        projected["src"] = source
+    if source == "score":
+        score = content.get("rir_confidence")
+        if score is not None:
+            projected["score"] = score
+    if verbose:
+        page = content.get("page")
+        if page is not None:
+            projected["page"] = page
+        position = content.get("position")
+        if position:
+            projected["position"] = position
+        options = node.get("options")
+        if options:
+            projected["options"] = [
+                o.get("value") if isinstance(o, dict) else o for o in options
+            ]
+    return projected
+
+
+def _walk_compact_content(content_tree, *, fields=None, include_ocr=True, verbose=False):
+    """Walk a Rossum content tree and return ({field schema_id -> value}, {table schema_id -> rows})."""
+    fields_filter = set(fields) if fields else None
+    flat_fields = {}
+    tables = {}
+
+    def visit(node):
+        category = node.get("category")
+        if category == "section":
+            for child in node.get("children") or ():
+                visit(child)
+        elif category == "datapoint":
+            schema_id = node.get("schema_id")
+            if not schema_id:
+                return
+            if fields_filter is not None and schema_id not in fields_filter:
+                return
+            flat_fields[schema_id] = _compact_datapoint(
+                node, include_ocr=include_ocr, verbose=verbose
+            )
+        elif category == "multivalue":
+            schema_id = node.get("schema_id")
+            if not schema_id:
+                return
+            rows = []
+            for tuple_node in node.get("children") or ():
+                if tuple_node.get("category") != "tuple":
+                    continue
+                row = {}
+                for cell in tuple_node.get("children") or ():
+                    if cell.get("category") != "datapoint":
+                        continue
+                    cell_schema = cell.get("schema_id")
+                    if not cell_schema:
+                        continue
+                    if fields_filter is not None and cell_schema not in fields_filter:
+                        continue
+                    row[cell_schema] = _compact_datapoint(
+                        cell, include_ocr=include_ocr, verbose=verbose
+                    )
+                rows.append(row)
+            tables[schema_id] = {"count": len(rows), "rows": rows}
+
+    for top in content_tree or ():
+        visit(top)
+    return flat_fields, tables
+
+
+def _compact_blocker(blocker_payload):
+    """Project an automation_blocker resource into its useful items."""
+    if not blocker_payload or not isinstance(blocker_payload, dict):
+        return None
+    items = []
+    for item in blocker_payload.get("content") or ():
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "type": item.get("type"),
+            "level": item.get("level"),
+            "schema_id": item.get("schema_id"),
+            "content": item.get("content"),
+            "details": item.get("details"),
+        })
+    if not items:
+        return None
+    return {"id": blocker_payload.get("id"), "items": items}
+
+
+def _compact_hook_log(entry):
+    """Project a hook log entry into its useful subset."""
+    timing = entry.get("timing") or {}
+    start = entry.get("start") or timing.get("start")
+    end = entry.get("end") or timing.get("end")
+    took_ms = None
+    if start and end:
+        try:
+            # Both are ISO 8601 timestamps; subtract for milliseconds.
+            from datetime import datetime
+            t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            t1 = datetime.fromisoformat(end.replace("Z", "+00:00"))
+            took_ms = int((t1 - t0).total_seconds() * 1000)
+        except (ValueError, TypeError):
+            pass
+    return {
+        "hook_id": entry.get("hook_id"),
+        "event": entry.get("event"),
+        "action": entry.get("action"),
+        "status": entry.get("status"),
+        "log_level": entry.get("log_level"),
+        "timestamp": entry.get("timestamp"),
+        "took_ms": took_ms,
+        "message": entry.get("message"),
+    }
+
+
+def _cache_full_payload(annotation_id, payload):
+    """Write the raw merged payload to .rossum-cache/annotations/<aid>.json (CWD-relative).
+
+    Returns the path string (relative if it lives under CWD, absolute otherwise),
+    or None on failure. The cache is best-effort — failures must not break the response.
+    """
+    try:
+        import os
+        cache_dir = os.path.join(os.getcwd(), ".rossum-cache", "annotations")
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, f"{annotation_id}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+        try:
+            return os.path.relpath(path, os.getcwd())
+        except ValueError:
+            return path
+    except OSError:
+        return None
+
+
+def _build_annotation_compact_response(
+    annotation, content_tree, blocker_payload, hook_log_entries,
+    *, view="compact", fields=None,
+):
+    """Assemble the merged compact response for rossum_get_annotation."""
+    include_ocr = True
+    verbose = (view == "verbose")
+    flat_fields, tables = _walk_compact_content(
+        content_tree, fields=fields, include_ocr=include_ocr, verbose=verbose,
+    )
+    compact = {
+        "annotation_id": annotation.get("id"),
+        "status": annotation.get("status"),
+        "queue_id": _id_from_url(annotation.get("queue")),
+        "document_id": _id_from_url(annotation.get("document")),
+        "modifier_id": _id_from_url(annotation.get("modifier")),
+        "modified_at": annotation.get("modified_at"),
+        "confirmed_at": annotation.get("confirmed_at"),
+        "exported_at": annotation.get("exported_at"),
+        "labels": annotation.get("labels") or [],
+        "metadata": annotation.get("metadata") or {},
+        "blocker": _compact_blocker(blocker_payload),
+        "messages": annotation.get("messages") or [],
+        "fields": flat_fields,
+        "tables": tables,
+        "recent_hooks": [_compact_hook_log(e) for e in (hook_log_entries or ())],
+    }
+    return compact
 
 
 # --- Tools ---
@@ -2026,10 +2300,13 @@ def handle_get_document(request_id, arguments):
 
 
 @_tool(
-    "rossum_get_annotation",
-    "Retrieves full metadata of a single annotation including status, messages (validation "
-    "errors and automation blockers), metadata (hook state flags), timestamps, and email info. "
-    "Use rossum_list_annotations first to find annotation IDs.",
+    "rossum_get_annotation_meta",
+    "Retrieves the raw annotation metadata only (status, timestamps, queue/document/modifier "
+    "URLs, automation_blocker URL, hook-state metadata, email info). Does NOT include extracted "
+    "content or the resolved blocker items. Use this when you specifically need the unprojected "
+    "annotation resource. For the common 'tell me everything useful about annotation X' case, "
+    "use rossum_get_annotation — it returns a compact view that merges metadata + content + "
+    "blocker items + recent hook logs in one call.",
     {
         "type": "object",
         "required": ["annotation_id"],
@@ -2043,8 +2320,144 @@ def handle_get_document(request_id, arguments):
     },
     annotations=_READ_ONLY,
 )
-def handle_get_annotation(request_id, arguments):
+def handle_get_annotation_meta(request_id, arguments):
     _rossum_get(request_id, f"/api/v1/annotations/{arguments['annotation_id']}")
+
+
+@_tool(
+    "rossum_get_annotation",
+    "Compact merged view of an annotation: metadata + extracted fields + tables + resolved "
+    "automation_blocker items + recent hook logs, all in one response. Drops noisy fields "
+    "(connector/ocr positions, time_spent, redundant URLs, raw confidence text) by default to "
+    "keep the payload small. The full raw payload is written to "
+    ".rossum-cache/annotations/<annotation_id>.json under the current working directory — "
+    "Read that file if you need positions, OCR coordinates, raw RIR text, or any field this "
+    "view drops. Use this as the default way to inspect an annotation; fall back to "
+    "rossum_get_annotation_meta / rossum_get_annotation_content for unprojected access.",
+    {
+        "type": "object",
+        "required": ["annotation_id"],
+        "properties": {
+            "annotation_id": {
+                "type": "integer",
+                "description": "The annotation ID.",
+            },
+            "view": {
+                "type": "string",
+                "enum": ["compact", "verbose"],
+                "description": (
+                    "compact (default): value, ocr (when distinct), normalized, src, score. "
+                    "verbose: also includes page, position, options for enum fields."
+                ),
+            },
+            "fields": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of schema_ids to include. Filters both top-level fields "
+                    "and row cells inside tables. Useful when you only care about a few fields."
+                ),
+            },
+            "hook_logs": {
+                "type": "integer",
+                "description": (
+                    "Number of most-recent hook log entries to include (default 10, max 50). "
+                    "Pass 0 to skip the hook-log fetch entirely for a faster call."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_get_annotation(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    annotation_id = arguments["annotation_id"]
+    view = arguments.get("view", "compact")
+    fields = arguments.get("fields")
+    hook_logs_n = arguments.get("hook_logs", 10)
+    if hook_logs_n is None:
+        hook_logs_n = 10
+    hook_logs_n = max(0, min(int(hook_logs_n), 50))
+
+    # 1. annotation metadata
+    annotation = _http_request(request_id, f"{base_url}/api/v1/annotations/{annotation_id}")
+    if annotation is None:
+        return
+
+    # 2. content tree
+    content_resp = _http_request(
+        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/content"
+    )
+    if content_resp is None:
+        return
+    content_tree = (
+        content_resp.get("results")
+        if isinstance(content_resp, dict) and "results" in content_resp
+        else content_resp
+    )
+    if not isinstance(content_tree, list):
+        content_tree = []
+
+    # 3. blocker (optional — only if URL present)
+    blocker_payload = None
+    blocker_url = annotation.get("automation_blocker")
+    if blocker_url:
+        blocker_payload = _http_request(request_id, blocker_url)
+        if blocker_payload is None:
+            # Error already sent. Bail out silently — caller saw the HTTP error.
+            return
+
+    # 4. recent hook logs (optional)
+    hook_log_entries = []
+    if hook_logs_n > 0:
+        params = urlencode([
+            ("annotation", annotation_id),
+            ("page_size", hook_logs_n),
+            ("ordering", "-timestamp"),
+        ])
+        hook_logs_resp = _http_request(
+            request_id, f"{base_url}/api/v1/hooks/logs?{params}"
+        )
+        if hook_logs_resp is None:
+            return
+        hook_log_entries = (
+            hook_logs_resp.get("results", []) if isinstance(hook_logs_resp, dict) else []
+        )
+
+    # 5. assemble compact response
+    compact = _build_annotation_compact_response(
+        annotation, content_tree, blocker_payload, hook_log_entries,
+        view=view, fields=fields,
+    )
+
+    # 6. cache the raw merged payload for "give me everything" follow-ups
+    raw_payload = {
+        "annotation": annotation,
+        "content": content_tree,
+        "automation_blocker": blocker_payload,
+        "hook_logs": hook_log_entries,
+    }
+    cache_path = _cache_full_payload(annotation_id, raw_payload)
+    compact["_meta"] = {
+        "view": view,
+        "fields_filter": fields,
+        "hook_logs_returned": len(hook_log_entries),
+        "full_payload_cache": cache_path,
+        "hint": (
+            "Compact view — value/ocr/normalized/src/score per field. For positions, OCR "
+            "coordinates, raw RIR text, full hook payloads, or anything else: Read the file "
+            "at full_payload_cache (it has annotation + content + automation_blocker + "
+            "hook_logs merged), or call this tool again with view=\"verbose\" / "
+            "rossum_get_annotation_content for the raw content tree."
+            if cache_path else
+            "Compact view. Cache write failed (no writable CWD). For more detail call this "
+            "tool with view=\"verbose\" or rossum_get_annotation_content."
+        ),
+    }
+    tool_result(request_id, json.dumps(compact, indent=2))
 
 
 @_tool(
@@ -2088,6 +2501,430 @@ def handle_patch_annotation(request_id, arguments):
         if key in arguments:
             body[key] = arguments[key]
     _rossum_patch(request_id, f"/api/v1/annotations/{annotation_id}", body)
+
+
+@_tool(
+    "rossum_start_annotation",
+    "Starts a review session on an annotation — transitions to 'reviewing' status and "
+    "locks the annotation to the calling user. Fires 'annotation_content.started' hook events. "
+    "Use as part of an inner-loop iteration; remember to call rossum_cancel_annotation "
+    "afterwards to release the lock (otherwise no other user can edit the annotation). "
+    "For the typical 'start → validate → cancel' soft re-fire, prefer rossum_refire_annotation "
+    "with mode='validate' — it handles cancel-in-finally automatically.",
+    {
+        "type": "object",
+        "required": ["annotation_id"],
+        "properties": {
+            "annotation_id": {
+                "type": "integer",
+                "description": "The annotation ID to start.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_start_annotation(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    annotation_id = arguments["annotation_id"]
+    status_code = _http_request(
+        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/start",
+        method="POST", parse_json=False,
+    )
+    if status_code is None:
+        return
+    if 200 <= status_code < 300:
+        tool_result(
+            request_id,
+            f"Annotation {annotation_id} started — status now 'reviewing', locked to caller. "
+            f"Remember to call rossum_cancel_annotation to release the lock.",
+        )
+    else:
+        tool_result(request_id, f"Start returned HTTP {status_code}.", is_error=True)
+
+
+@_tool(
+    "rossum_cancel_annotation",
+    "Cancels a review session on an annotation — releases the 'reviewing' lock and returns "
+    "the annotation to 'to_review' status. Mandatory after rossum_start_annotation, even on "
+    "the error path. Tolerates HTTP 409 (already not in reviewing) silently.",
+    {
+        "type": "object",
+        "required": ["annotation_id"],
+        "properties": {
+            "annotation_id": {
+                "type": "integer",
+                "description": "The annotation ID to cancel.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_cancel_annotation(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    annotation_id = arguments["annotation_id"]
+    # Use silent path so 409 (not in reviewing) does not surface as an error.
+    status_code = _http_request_silent(
+        f"{base_url}/api/v1/annotations/{annotation_id}/cancel", method="POST",
+    )
+    if status_code is None:
+        tool_result(request_id, "Cancel failed (network/SSL error).", is_error=True)
+        return
+    if status_code == 409:
+        tool_result(request_id, f"Annotation {annotation_id} was not in reviewing — nothing to cancel (HTTP 409).")
+        return
+    if not (200 <= status_code < 300):
+        tool_result(request_id, f"Cancel returned HTTP {status_code}.", is_error=True)
+        return
+    tool_result(request_id, f"Annotation {annotation_id} cancelled (HTTP {status_code}).")
+
+
+@_tool(
+    "rossum_validate_content",
+    "Fires the hook chain against an annotation by POSTing to /content/validate with the "
+    "specified actions. Returns the freshly computed datapoints projected to the same compact "
+    "shape as rossum_get_annotation (value, ocr, normalized, src, score). This does NOT take "
+    "or release a reviewing lock — the annotation must already be in a valid state for "
+    "validation. For the typical iterate-on-deliverable flow, prefer rossum_refire_annotation "
+    "with mode='validate' — it wraps start/validate/cancel correctly.",
+    {
+        "type": "object",
+        "required": ["annotation_id"],
+        "properties": {
+            "annotation_id": {
+                "type": "integer",
+                "description": "The annotation ID.",
+            },
+            "actions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Hook actions to fire. Common values: 'user_update' (rules and field-update "
+                    "hooks), 'started' (lazy-lookup hooks). Default ['user_update', 'started']."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_validate_content(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    annotation_id = arguments["annotation_id"]
+    actions = arguments.get("actions") or ["user_update", "started"]
+    resp = _http_request(
+        request_id,
+        f"{base_url}/api/v1/annotations/{annotation_id}/content/validate",
+        method="POST", body={"actions": actions},
+    )
+    if resp is None:
+        return
+    updated = resp.get("updated_datapoints", []) if isinstance(resp, dict) else []
+    projected = {}
+    for node in updated:
+        sid = node.get("schema_id")
+        if sid:
+            projected[sid] = _compact_datapoint(node)
+    result = {
+        "annotation_id": annotation_id,
+        "actions": actions,
+        "updated_datapoints_count": len(updated),
+        "updated_datapoints": projected,
+        "raw_messages": resp.get("messages", []) if isinstance(resp, dict) else [],
+    }
+    tool_result(request_id, json.dumps(result, indent=2))
+
+
+@_tool(
+    "rossum_refire_annotation",
+    "Re-fire an annotation through the hook chain — the main inner-loop iteration primitive. "
+    "Three modes:\n"
+    "  - 'validate' (default, fastest): start → content/validate(actions) → cancel-in-finally. "
+    "Fires hooks listening on 'user_update' and 'started' actions. Returns the resulting "
+    "compact annotation view (same shape as rossum_get_annotation).\n"
+    "  - 'toggle': PATCH status postponed → to_review → wait → read. Fires "
+    "'annotation_content.started' plus any status-listening hooks. Slower; use when soft "
+    "validate is not enough.\n"
+    "  - 'reupload': fetch source PDF → upload to same queue → poll past 'importing' → "
+    "auto-restore if the new annotation lands in 'deleted' (defensive: handles customer-custom "
+    "dedup hooks that PATCH status:deleted on initialize. The stock Rossum Duplicate Handling "
+    "extension only flags duplicates, it does not transition status — so this branch typically "
+    "does not fire on stock setups). Use when iterating on initialize hooks or OCR-adjacent "
+    "logic. Produces a NEW annotation ID (returned in response).\n"
+    "Always returns the compact merged view (metadata + fields + tables + blocker + recent "
+    "hook logs) plus a _refire section describing what was done. Raw payload cached to "
+    ".rossum-cache/annotations/<aid>.json.",
+    {
+        "type": "object",
+        "required": ["annotation_id"],
+        "properties": {
+            "annotation_id": {
+                "type": "integer",
+                "description": "The source annotation ID to re-fire.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["validate", "toggle", "reupload"],
+                "description": "Re-fire pattern (default: 'validate').",
+            },
+            "actions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "validate mode only — hook actions to fire. "
+                    "Default ['user_update', 'started']."
+                ),
+            },
+            "wait_seconds": {
+                "type": "integer",
+                "description": "toggle mode only — seconds to wait between to_review and read-back (default 15).",
+            },
+            "poll_timeout": {
+                "type": "integer",
+                "description": "reupload mode only — max seconds to wait for the new annotation to leave 'importing' (default 180).",
+            },
+            "view": {
+                "type": "string",
+                "enum": ["compact", "verbose"],
+                "description": "Projection of the final response (default 'compact').",
+            },
+            "fields": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional schema_id filter applied to the final compact view.",
+            },
+            "hook_logs": {
+                "type": "integer",
+                "description": "Number of recent hook log entries in the final response (default 10, max 50, 0 to skip).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_refire_annotation(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    annotation_id = arguments["annotation_id"]
+    mode = arguments.get("mode", "validate")
+    view = arguments.get("view", "compact")
+    fields = arguments.get("fields")
+    hook_logs_n = arguments.get("hook_logs", 10)
+    if hook_logs_n is None:
+        hook_logs_n = 10
+    hook_logs_n = max(0, min(int(hook_logs_n), 50))
+
+    refire_meta = {"mode": mode, "source_annotation_id": annotation_id}
+    target_aid = annotation_id
+
+    if mode == "validate":
+        actions = arguments.get("actions") or ["user_update", "started"]
+        # start (returns 204 No Content)
+        start_status = _http_request(
+            request_id, f"{base_url}/api/v1/annotations/{annotation_id}/start",
+            method="POST", parse_json=False,
+        )
+        if start_status is None or not (200 <= start_status < 300):
+            if start_status is not None:
+                tool_result(request_id, f"Start returned HTTP {start_status}.", is_error=True)
+            return
+        try:
+            # validate
+            validate_resp = _http_request(
+                request_id,
+                f"{base_url}/api/v1/annotations/{annotation_id}/content/validate",
+                method="POST", body={"actions": actions},
+            )
+            if validate_resp is None:
+                return
+            refire_meta["actions"] = actions
+            updated = validate_resp.get("updated_datapoints", []) if isinstance(validate_resp, dict) else []
+            refire_meta["updated_datapoints_count"] = len(updated)
+        finally:
+            # cancel — silent, tolerate 409 (already not in reviewing)
+            _http_request_silent(
+                f"{base_url}/api/v1/annotations/{annotation_id}/cancel", method="POST",
+            )
+
+    elif mode == "toggle":
+        wait_seconds = int(arguments.get("wait_seconds", 15))
+        for next_status in ("postponed", "to_review"):
+            patch_resp = _http_request(
+                request_id, f"{base_url}/api/v1/annotations/{annotation_id}",
+                method="PATCH", body={"status": next_status},
+            )
+            if patch_resp is None:
+                return
+        refire_meta["wait_seconds"] = wait_seconds
+        time.sleep(wait_seconds)
+
+    elif mode == "reupload":
+        poll_timeout = int(arguments.get("poll_timeout", 180))
+        # 1. fetch source annotation
+        source_ann = _http_request(
+            request_id, f"{base_url}/api/v1/annotations/{annotation_id}",
+        )
+        if source_ann is None:
+            return
+        document_url = source_ann.get("document")
+        queue_url = source_ann.get("queue")
+        if not document_url or not queue_url:
+            tool_result(request_id, "Source annotation missing document or queue URL.", is_error=True)
+            return
+        # 2. document → content URL + filename
+        document = _http_request(request_id, document_url)
+        if document is None:
+            return
+        content_url = document.get("content")
+        original_name = document.get("original_file_name") or f"refire_{annotation_id}.pdf"
+        if not content_url:
+            tool_result(request_id, "Document missing content URL.", is_error=True)
+            return
+        # 3. download PDF bytes (raw, no JSON parse)
+        pdf_bytes = _http_get_bytes(request_id, content_url)
+        if pdf_bytes is None:
+            return
+        # 4. multipart upload
+        queue_id = queue_url.rstrip("/").rsplit("/", 1)[-1]
+        upload_url = f"{base_url}/api/v1/queues/{queue_id}/upload"
+        boundary = f"----refire-{int(time.time())}"
+        pre = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="content"; filename="{original_name}"\r\n'
+            f"Content-Type: application/pdf\r\n\r\n"
+        ).encode()
+        post = f"\r\n--{boundary}--\r\n".encode()
+        body = pre + pdf_bytes + post
+        upload_resp = _http_request_raw(
+            request_id, upload_url, method="POST", raw_body=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+        )
+        if upload_resp is None:
+            return
+        # Rossum's upload response shape: {"annotation": "<URL>", "document": "<URL>",
+        # "results": [{"annotation": "<URL>", "document": "<URL>"}]}.
+        # Older shapes may use "annotations" (plural list). Try in priority order.
+        new_url = None
+        if isinstance(upload_resp, dict):
+            top_ann = upload_resp.get("annotation")
+            if isinstance(top_ann, str):
+                new_url = top_ann
+            if not new_url:
+                results = upload_resp.get("results") or upload_resp.get("annotations") or []
+                if results:
+                    first = results[0]
+                    if isinstance(first, str):
+                        new_url = first
+                    elif isinstance(first, dict):
+                        new_url = first.get("annotation") or first.get("url")
+        if not new_url:
+            tool_result(
+                request_id,
+                f"Upload response missing annotation URL: {upload_resp!r}",
+                is_error=True,
+            )
+            return
+        target_aid = int(new_url.rstrip("/").rsplit("/", 1)[-1])
+        refire_meta["target_annotation_id"] = target_aid
+        # 5. poll past 'importing'
+        deadline = time.time() + poll_timeout
+        new_ann = {}
+        while time.time() < deadline:
+            new_ann = _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}")
+            if new_ann is None:
+                return
+            if new_ann.get("status") not in ("importing", "created"):
+                break
+            time.sleep(3)
+        # 6. Dedup auto-restore — defensive for customer-custom hooks that PATCH
+        # status:deleted on annotation_content.initialize. The stock Duplicate
+        # Handling extension does not transition status (its valid actions are
+        # fill_field, forward_annotation, mark_duplicate, show_message,
+        # stop_automation, apply_label), so this branch typically does not fire.
+        # When a customer customization does delete, restoring keeps the
+        # iteration loop alive.
+        if isinstance(new_ann, dict) and new_ann.get("status") == "deleted":
+            refire_meta["dedup_restore"] = True
+            restore = _http_request(
+                request_id, f"{base_url}/api/v1/annotations/{target_aid}",
+                method="PATCH", body={"status": "to_review"},
+            )
+            if restore is None:
+                return
+
+    else:
+        tool_result(request_id, f"Unknown mode: {mode!r}", is_error=True)
+        return
+
+    # Build compact response for the final annotation (same shape as rossum_get_annotation)
+    annotation = _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}")
+    if annotation is None:
+        return
+    content_resp = _http_request(
+        request_id, f"{base_url}/api/v1/annotations/{target_aid}/content"
+    )
+    if content_resp is None:
+        return
+    content_tree = (
+        content_resp.get("results")
+        if isinstance(content_resp, dict) and "results" in content_resp
+        else content_resp
+    )
+    if not isinstance(content_tree, list):
+        content_tree = []
+    blocker_payload = None
+    blocker_url = annotation.get("automation_blocker")
+    if blocker_url:
+        blocker_payload = _http_request(request_id, blocker_url)
+        if blocker_payload is None:
+            return
+    hook_log_entries = []
+    if hook_logs_n > 0:
+        params = urlencode([
+            ("annotation", target_aid),
+            ("page_size", hook_logs_n),
+            ("ordering", "-timestamp"),
+        ])
+        hook_logs_resp = _http_request(
+            request_id, f"{base_url}/api/v1/hooks/logs?{params}",
+        )
+        if hook_logs_resp is None:
+            return
+        hook_log_entries = (
+            hook_logs_resp.get("results", []) if isinstance(hook_logs_resp, dict) else []
+        )
+    compact = _build_annotation_compact_response(
+        annotation, content_tree, blocker_payload, hook_log_entries,
+        view=view, fields=fields,
+    )
+    raw_payload = {
+        "annotation": annotation,
+        "content": content_tree,
+        "automation_blocker": blocker_payload,
+        "hook_logs": hook_log_entries,
+    }
+    cache_path = _cache_full_payload(target_aid, raw_payload)
+    compact["_refire"] = refire_meta
+    compact["_meta"] = {
+        "view": view,
+        "fields_filter": fields,
+        "hook_logs_returned": len(hook_log_entries),
+        "full_payload_cache": cache_path,
+        "hint": (
+            f"Refire {mode!r} completed. Compact view of target annotation {target_aid}. "
+            "For raw payload (positions, OCR coords, full hook logs): Read the file at "
+            "full_payload_cache, or call with view='verbose'."
+        ),
+    }
+    tool_result(request_id, json.dumps(compact, indent=2))
 
 
 @_tool(
@@ -2289,7 +3126,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.12.0"},
+                    "serverInfo": {"name": "rossum-api", "version": "0.15.0"},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "

@@ -5,20 +5,21 @@ A flexible, multi-stage engine for integrating Rossum with external APIs. Config
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [Settings Structure](#settings-structure)
-3. [Variable Templating](#variable-templating)
-4. [Evaluate Phase](#evaluate-phase)
-5. [Get Content Phase](#get-content-phase)
-6. [Call API Phase](#call-api-phase)
-7. [Authentication](#authentication)
-8. [Response Handlers](#response-handlers)
-9. [Advanced Features](#advanced-features)
-10. [Common Patterns](#common-patterns)
-11. [SFTP Export Pattern](#sftp-export-pattern)
-12. [Complete Examples](#complete-examples)
-13. [Migration from Pipeline v1](#migration-from-pipeline-v1)
-14. [Field Reference](#field-reference)
-15. [Troubleshooting](#troubleshooting)
+2. [Prerequisites](#prerequisites)
+3. [Settings Structure](#settings-structure)
+4. [Variable Templating](#variable-templating)
+5. [Evaluate Phase](#evaluate-phase)
+6. [Get Content Phase](#get-content-phase)
+7. [Call API Phase](#call-api-phase)
+8. [Authentication](#authentication)
+9. [Response Handlers](#response-handlers)
+10. [Advanced Features](#advanced-features)
+11. [Common Patterns](#common-patterns)
+12. [SFTP Export Pattern](#sftp-export-pattern)
+13. [Complete Examples](#complete-examples)
+14. [Migration from Pipeline v1](#migration-from-pipeline-v1)
+15. [Field Reference](#field-reference)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -39,6 +40,38 @@ Stage 1 ──> Stage 2 ──> Stage 3 ──> ...
 - **Three-phase stages** — evaluate → get_content → call_api (all optional)
 - **Property context** — intermediate data stored and passed between stages
 - **Token caching** — OAuth tokens cached in hook secrets, auto-refreshed on 401
+
+---
+
+## Prerequisites
+
+The Request Processor runs as a serverless function hook. Several org-level and hook-level settings must be correct before any `settings` JSON can work — symptoms manifest as timeouts, missing payload fields, or generic export errors that look nothing like configuration mistakes.
+
+### Org-level: external egress restriction
+
+External HTTPS egress from hook Lambdas may be disabled at the organization level — on some orgs, hooks can only call back into the Rossum API by default, and all other outbound traffic is silently dropped at the TCP layer.
+
+**Symptom:** Connect timeouts to every non-Rossum host (OAuth providers, customer APIs, third-party services). No HTTP error — the request never establishes a connection.
+
+**Fix:** Contact Rossum support to enable external egress for the organization. Hooks require redeploy after the change to inherit the new permission.
+
+To confirm the diagnosis before opening a ticket: add a temporary `call_api` stage targeting `https://httpbin.org/get`. A Lambda timeout with no HTTP status (`FunctionException: Read timeout on endpoint URL...`) confirms egress is blocked; a 200 response means the issue is elsewhere.
+
+### Hook-level: `token_owner` for Rossum API access
+
+Function hooks that use `{payload.rossum_authorization_token}` (e.g. SFTP Export, or OAuth flows that cache tokens via `update_hook_secrets`) require `token_owner` to be set on the hook. Without it, the token field is absent from the payload.
+
+**Symptom:** `KeyError: 'rossum_authorization_token'` on first invocation; OAuth flow cannot persist `update_hook_secrets`.
+
+**Fix:** Set `token_owner` to a user URL when creating the hook, or PATCH it onto an existing hook.
+
+### Hook-level: `sideload: ["schemas"]`
+
+The Request Processor requires schema sideloading on the hook. (Response handlers also depend on the schema being present — see the [`schema_id` target callout](#response-handlers) below.)
+
+**Symptom:** `PayloadError: Schema sideloading must be enabled!`
+
+**Fix:** Add `"sideload": ["schemas"]` to the hook config.
 
 ---
 
@@ -103,7 +136,7 @@ When a variable resolves to a URL, use `.@` to fetch its content:
 **Rules:**
 - `.url` ending → returns URL string (no fetch)
 - `.@` operator → fetches the URL content (mandatory for accessing properties of fetched objects)
-- Works with any valid URL (must have scheme + netloc)
+- **Restricted to the hook's parent domain.** The fetch is allowed only when the URL's hostname shares the same final two dot-separated components as the hook's `base_url` (e.g. a hook on `elis.rossum.ai` can fetch anything ending in `rossum.ai`, including `api.elis.rossum.ai`; it cannot fetch `httpbin.org` or `*.rossum.app`). URLs that don't match return `None` silently — use a `call_api` stage with an explicit request to fetch from third-party hosts.
 
 ### Function Wrappers
 
@@ -490,6 +523,10 @@ Process API responses and extract/store data.
 | `schema_id` | Write to a document field | Dicts stored as JSON string, numbers as string |
 | `property` | Store in property context | Available in later stages via `{property.key}` |
 | `document_relation` | Save response as new Rossum document | Creates/updates relation with given key |
+
+> **Important — `schema_id` targets must already exist in the schema.** Response handlers with `target_type: "schema_id"` use Python `setattr` on the annotation field tree. If `target_key` names a field that does not exist, the handler raises `AttributeError`, `exception_occurred` becomes true, and the export fails with the generic Automation Blocker message `"Some exception occurred during during export pipeline"` *(verbatim — the duplicated "during" is in the source)* — with no hint about which field is missing.
+>
+> Before referencing fields like `api1_status_code` or `api1_response_body` in a response handler, add them as schema fields with `ui_configuration.type: "data"` (hidden from the UI). The `"data"` type also avoids the "field has no extraction source" validation warning that `"captured"` would trigger for hook-populated fields.
 
 ### Value Extractors (ValueConfig)
 
@@ -1232,6 +1269,10 @@ Format: `{"context_path": {"$operator": "query"}}`
 ### Status Code Comparison Fails
 **Problem:** Evaluate condition on status code doesn't match.
 **Fix:** Status codes stored as strings in fields. Use `{"$in": ["200", "201"]}` not `{"$in": [200, 201]}`.
+
+### Connect Timeouts to External Hosts
+**Problem:** Every call to a non-Rossum host hangs and times out at the TCP layer. No HTTP status. No body. Identical curl from your laptop succeeds.
+**Fix:** External HTTPS egress may be disabled at the org level. Contact Rossum support to enable it, then redeploy affected hooks. See [Prerequisites](#prerequisites).
 
 ## Best Practices
 

@@ -12,10 +12,10 @@ You are a Rossum.ai Solution Architect upgrading a customer's implementation fro
 
 > Path or context: $ARGUMENTS
 
-**The output of this skill is the upgrade manifest** (`UPGRADE-<project>-<date>.yaml` + rendered `.md`) **plus the in-place migration-trace breadcrumbs.** Downstream skills (`test`, `analyze`, `review`) read these to know what changed and how to verify it. See:
+**The output of this skill is the upgrade manifest** (`UPGRADE-<project>-<date>.yaml` + rendered `.md`) **plus the in-place migration-trace breadcrumbs.** Downstream skills (`test-behavioral-equivalence`, `analyze`, `review`) read these to know what changed and how to verify it. See:
 
 - [manifest.md](manifest.md) — manifest schema and validation rules.
-- [migration-trace.md](migration-trace.md) — the `//`-comment and `migration-trace:` header convention, plus the grammar the `test` skill's parser expects.
+- [migration-trace.md](migration-trace.md) — the `//`-comment and `migration-trace:` header convention, plus the grammar the `test-behavioral-equivalence` skill's parser expects.
 
 ## Scope
 
@@ -87,7 +87,7 @@ If the code uses none of the above, the runtime bump is a pure `config.runtime` 
 
 ## Phase 3: Leave Migration-Trace Breadcrumbs
 
-For **every** migration you execute, leave two breadcrumbs — one on the old artifact, one on the new — so the `test` skill can join regressions back to the original logic without fuzzy field-name matching. Full grammar in [migration-trace.md](migration-trace.md); the essentials:
+For **every** migration you execute, leave two breadcrumbs — one on the old artifact, one on the new — so the `test-behavioral-equivalence` skill can join regressions back to the original logic without fuzzy field-name matching. Full grammar in [migration-trace.md](migration-trace.md); the essentials:
 
 ### Forward traces (on the deprecated artifact)
 
@@ -129,7 +129,7 @@ Native rule: prepend the trace to the `description` field:
 
 ### Intentional behavior changes
 
-If the new artifact deliberately does something different (e.g. a rounding bug fix), add the token `INTENTIONAL-CHANGE` to the trace line. The `test` skill down-ranks matches with this token from regression to expected delta:
+If the new artifact deliberately does something different (e.g. a rounding bug fix), add the token `INTENTIONAL-CHANGE` to the trace line. The `test-behavioral-equivalence` skill down-ranks matches with this token from regression to expected delta:
 
 ```
 C14 -> F08 on all schemas. INTENTIONAL-CHANGE: old rule rounded half-up, new rounds banker's. Cond: unconditional
@@ -141,7 +141,7 @@ After writing the breadcrumbs, mentally run the grammar from [migration-trace.md
 
 ## Phase 4: Produce the Upgrade Manifest
 
-The manifest is the skill's **output contract**. Downstream skills (`test`, `analyze`, `review`) read it instead of re-diffing prd2 pulls. Produce two files, stored in the project root (next to `prd_config.yaml` if prd2 is used):
+The manifest is the skill's **output contract**. Downstream skills (`test-behavioral-equivalence`, `analyze`, `review`) read it instead of re-diffing prd2 pulls. Produce two files, stored in the project root (next to `prd_config.yaml` if prd2 is used):
 
 1. **`UPGRADE-<project>-<yyyy-mm-dd>.yaml`** — machine-readable source of truth.
 2. **`UPGRADE-<project>-<yyyy-mm-dd>.md`** — human-readable rendering of the YAML. The narrative `summary`, the `axes` table, and the `risk` ranking go here. No information lives only in the markdown.
@@ -280,6 +280,6 @@ datetime.strptime(field.date_issue, "%Y-%m-%d") + timedelta(days=int(field.terms
 - When multiple queues share the same extension, produce one formula per queue (they may need slight variations if schemas differ).
 - Preserve the exact transformation logic — the formula must produce identical results to the extension it replaces.
 - For runtime bumps, do not edit the inline `code` field or rewrite logic you don't need to rewrite. Bump the `runtime` string and only touch the `.py` source when a specific 3.12 incompatibility requires it.
-- **Disable, don't delete.** A deprecated hook whose logic has been migrated stays in the repo with `"active": false`; its forward `"//"` traces are what `test` uses to attribute regressions. Removing the hook deletes the trace. If a hook was genuinely never used (dead code, no migration target), that's a different axis — `hook_disable_dead_code` — and is also disable-not-delete.
-- **Every migration needs two breadcrumbs.** Forward (`"//"` on the old row) and backward (`# migration-trace:` header on the new formula, or `description:` prefix on the new rule). Missing either direction is treated by `test` as an untraced migration and degrades its triage to fuzzy name matching.
+- **Disable, don't delete.** A deprecated hook whose logic has been migrated stays in the repo with `"active": false`; its forward `"//"` traces are what `test-behavioral-equivalence` uses to attribute regressions. Removing the hook deletes the trace. If a hook was genuinely never used (dead code, no migration target), that's a different axis — `hook_disable_dead_code` — and is also disable-not-delete.
+- **Every migration needs two breadcrumbs.** Forward (`"//"` on the old row) and backward (`# migration-trace:` header on the new formula, or `description:` prefix on the new rule). Missing either direction is treated by `test-behavioral-equivalence` as an untraced migration and degrades its triage to fuzzy name matching.
 - **Do not skip the manifest.** The `.yaml` is the output contract; the `.md` is an auto-rendering of it. If the upgrade is too small to justify a manifest, question whether the upgrade is worth doing at all — the downstream skills assume the manifest is present.

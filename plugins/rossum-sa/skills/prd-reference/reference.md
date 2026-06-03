@@ -67,12 +67,13 @@ Behavior:
 
 ### `prd2 push [destinations...] [options]`
 
-Uploads locally changed files to Rossum.
+Uploads locally changed files to Rossum. Supports **update**, **create**, **delete**, and **rename** of Rossum objects.
 
 ```bash
 prd2 push sandbox-org/dev          # push changes to dev
 prd2 push sandbox-org/dev -f       # force push, ignore timestamps
 prd2 push sandbox-org/dev -io      # push only git-indexed files
+prd2 push sandbox-org/dev -y       # skip the create/delete confirmation prompt
 ```
 
 | Option | Description |
@@ -82,13 +83,75 @@ prd2 push sandbox-org/dev -io      # push only git-indexed files
 | `-io` / `--indexed-only` | Push only files added to git index |
 | `-c` / `--commit` | Auto-commit after push |
 | `-m` / `--message` | Custom commit message (default: "Pushed changes to remote") |
+| `-y` / `--yes` | Skip the confirmation prompt shown when the plan contains CREATE or DELETE operations (required for non-interactive shells / CI) |
 | `--concurrency` | Max concurrent API requests |
 
 Behavior:
 - Uses `git status` to detect changed files
 - Merges formula field code and hook code changes back into their JSON before pushing
 - Compares `modified_at` timestamps unless `-f` is used
-- Automatically does a `pull` after successful push to sync timestamps
+- When the change set contains any CREATE or DELETE, prints a plan and prompts for confirmation before applying. Use `-y` to skip the prompt
+- Validates up front: required fields per type, missing parent objects, hook runtime/code mismatch, duplicate names, "create under a folder being deleted". Errors are reported before any API call
+- On per-directory failure, the post-push pull and the auto-commit are skipped so the working tree is left dirty for inspection
+- Otherwise, automatically does a `pull` after successful push to sync timestamps
+
+#### Creating new objects (`_[]` placeholder)
+
+To create a brand-new object via push, name the file or folder with the `_[]` placeholder instead of `_[<id>]`:
+
+```
+workspaces/MyWorkspace_[]/                   # new workspace folder
+  workspace.json                             #   {"name": "...", "organization": "<url>"}
+  queues/MyQueue_[]/                         # new queue folder under it
+    queue.json
+    schema.json                              # required sibling of any new queue
+    inbox.json                               # optional; needs email_prefix or email
+hooks/MyHook_[].json                         # new hook
+hooks/MyHook_[].py                           # serverless code companion
+rules/MyRule_[].json                         # new rule
+engines/MyEngine_[]/
+  engine.json
+  engine_fields/MyField_[].json
+```
+
+Notes on the placeholder convention:
+- The placeholder lives on the segment that owns the object's identity: the folder name for workspace/queue/engine; the file stem for hook/rule/engine_field.
+- `schema.json` and `inbox.json` keep their fixed filenames — they're identified by living inside a queue folder (placeholder or already-real).
+- A descendant inherits its newness from the placeholder ancestor: a `schema.json` under `MyQueue_[]/` is treated as new even though the file's own name has no `_[]`.
+- The created object's id/url is written back to JSON after POST and the file/folder is renamed to `_[<real-id>]` automatically. The local working tree is mutated in place.
+- For a new object, the JSON must NOT contain `id` or `url` — push will reject it with a clear error.
+- CREATEs run sequentially in dependency order: `workspace → engine → engine_field → schema → queue → inbox → hook → rule`. Within a single push you can create a whole workspace + queues + schemas + inbox + hooks atomically — parent/sibling URLs (`queue.workspace`, `queue.schema`, `schema.queues`, `inbox.queues`, `engine_field.engine`) are wired up automatically by walking the local filesystem, so you don't write them by hand.
+
+Required fields the user must populate on the JSON for new objects (filesystem-derived ones are filled in automatically):
+
+| Type | Required |
+|------|----------|
+| Workspace | `name`, `organization` |
+| Queue | `name` (sibling `schema.json` must exist) |
+| Schema | `name`, `content` |
+| Inbox | `name`, one of `email_prefix` or `email` |
+| Hook | `name`, `events`, `queues`, `config` (and `config.runtime` if any code is present) |
+| Rule | `name` |
+| Engine | `name`, `description` |
+| EngineField | `name` |
+
+#### Deleting objects
+
+Delete the file (or folder) locally and run push. Push detects the deletion via `git status`, recovers the object's id from the `_[<id>]` segment in the path, and issues the DELETE. For `schema.json` and `inbox.json` (no id in the filename), the id is recovered from git history (staged or HEAD) — files that were never committed cannot be deleted via push.
+
+DELETEs run in reverse dependency order: `rule → hook → inbox → queue → schema → engine_field → engine → workspace`. Queue DELETE uses `?delete_after=0` (skips Rossum's soft-delete grace window) and polls until the queue returns 404 before deleting its schema/inbox, so cascade-related 409s are avoided. If the queue isn't gone within ~30s the rest of the push aborts so the user can re-run later.
+
+#### Renames
+
+`git mv old new` (or any rename) is detected as a paired delete + create with the same id. The planner collapses the pair into a single PATCH on `name` — no DELETE/POST round-trip, no orphaned children. The timestamp check is skipped for the rename UPDATE because the path-keyed `non_versioned_object_attributes.json` has no entry for the post-rename path yet.
+
+#### Plan output
+
+The plan is rendered **only when the change set contains at least one CREATE or DELETE**. A push that contains only UPDATEs prints no plan and skips the confirmation prompt — it just applies the updates as before.
+
+When a plan is rendered, it groups operations into `WILL CREATE`, `WILL UPDATE`, `WILL DELETE` (each in resolved dependency order). The `WILL UPDATE` section therefore only appears alongside structural ops; updates that ride along on a create/delete push are surfaced here so the user sees the full picture before confirming.
+
+Rossum 4xx field-validation errors are pretty-printed as a per-field list rather than a raw HTTP error.
 
 ### `prd2 deploy template create [options]`
 

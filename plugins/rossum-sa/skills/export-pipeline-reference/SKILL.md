@@ -1,6 +1,6 @@
 ---
 name: export-pipeline-reference
-description: Request Processor (export pipeline) configuration reference for Rossum. Covers the multi-stage JSON-based engine for integrating Rossum with external APIs — stages, variable templating, evaluate conditions, get_content sources, call_api with auth/iteration/file uploads, response handlers (JMESPath/XPath/regex), SFTP export via file-storage-export, and migration from Pipeline v1. Use when building, debugging, or explaining export pipeline configurations.
+description: Request Processor (export pipeline) configuration reference for Rossum. Covers the multi-stage JSON-based engine for integrating Rossum with external APIs — stages, variable templating, evaluate conditions, get_content sources, call_api with auth/iteration/file uploads, response handlers (JMESPath/XPath/regex), SFTP export via file-storage-export, migration from Pipeline v1, and hook-level prerequisites and common gotchas (external egress, schema field bindings, sideloading, token ownership). Use when building, debugging, or explaining export pipeline configurations.
 user-invocable: false
 ---
 
@@ -26,5 +26,6 @@ Use this knowledge when:
 - Migrating from the legacy Pipeline v1 (multi-hook chain) to the Request Processor (single hook)
 - Debugging export pipeline issues (URL not fetching, token caching, handler conditions)
 - Understanding the difference between `document_relation` and `document_relation_content` sources
+- Diagnosing prerequisite/setup failures: TCP timeouts to external hosts, missing `rossum_authorization_token`, `Schema sideloading must be enabled` errors, generic "Some exception occurred" export failures
 
 Note: The `rossum-reference` skill covers the legacy 6-step export pipeline chain (Custom Format Templating, REST API Export, Data Value Extractor, Export Evaluator, SFTP Export). This skill covers the **Request Processor**, which is the modern replacement that consolidates all steps into a single configurable hook.
