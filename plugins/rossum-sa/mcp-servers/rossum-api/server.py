@@ -3039,6 +3039,83 @@ def handle_validate_content(request_id, arguments):
 
 
 @_tool(
+    "rossum_update_annotation_content",
+    "Writes extracted field values onto an annotation via the bulk content-operations endpoint "
+    "(POST /annotations/{id}/content/operations). Self-managing: it starts the annotation (locking "
+    "it), applies the operations, then releases the lock in a finally block — the edits persist and "
+    "the status returns to to_review. Each operation targets a DATAPOINT ID from the content tree "
+    "(find them via rossum_get_annotation_content or rossum_get_annotation), NOT a schema_id. "
+    "Operation shapes: replace a value — "
+    "{\"op\": \"replace\", \"id\": <datapoint_id>, \"value\": {\"content\": {\"value\": \"<new>\"}}}; "
+    "add a table row — {\"op\": \"add\", \"id\": <multivalue_id>, "
+    "\"value\": [{\"schema_id\": \"<col>\", \"content\": {\"value\": \"<v>\"}}]}; "
+    "remove a table row — {\"op\": \"remove\", \"id\": <row_datapoint_id>}. "
+    "Section, multivalue and tuple containers cannot be replaced; only multivalue children can be "
+    "removed. This writes real data to the annotation, so it is a write operation.",
+    {
+        "type": "object",
+        "required": ["annotation_id", "operations"],
+        "properties": {
+            "annotation_id": {
+                "type": "integer",
+                "description": "The annotation to edit. Must be in a startable state (e.g. to_review).",
+            },
+            "operations": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "Content operations to apply in one call, each "
+                    "{\"op\": \"replace|add|remove\", \"id\": <datapoint_id>, \"value\": {...}} — see the "
+                    "tool description for the per-op shape. IDs are datapoint IDs from the content tree, "
+                    "not schema_ids."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_update_annotation_content(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    annotation_id = arguments["annotation_id"]
+    operations = arguments["operations"]
+    # start — locks the annotation for editing (returns 204 No Content)
+    start_status = _http_request(
+        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/start",
+        method="POST", parse_json=False,
+    )
+    if start_status is None or not (200 <= start_status < 300):
+        if start_status is not None:
+            tool_result(
+                request_id,
+                f"Start returned HTTP {start_status} — the annotation may not be in a startable "
+                "state (e.g. already confirmed/exported, or locked by another user).",
+                is_error=True,
+            )
+        return
+    result = None
+    try:
+        result = _http_request(
+            request_id, f"{base_url}/api/v1/annotations/{annotation_id}/content/operations",
+            method="POST", body={"operations": operations},
+        )
+    finally:
+        # release the review lock; tolerate 409 if no longer in reviewing
+        _http_request_silent(
+            f"{base_url}/api/v1/annotations/{annotation_id}/cancel", method="POST",
+        )
+    if result is None:
+        return
+    tool_result(request_id, json.dumps({
+        "annotation_id": annotation_id,
+        "operations_applied": len(operations),
+        "result": result,
+    }, indent=2))
+
+
+@_tool(
     "rossum_refire_annotation",
     "Re-fire an annotation through the hook chain — the main inner-loop iteration primitive. "
     "Three modes:\n"

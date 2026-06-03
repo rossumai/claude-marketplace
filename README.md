@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, extract documents, and generate SOWs, all from your terminal.
 
-8 skills · 9 reference packs · 65 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+8 skills · 9 reference packs · 66 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -163,6 +163,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_cancel_annotation` | ✏️ Cancel a review session (releases the lock) |
 | `rossum_validate_content` | ✏️ Fire the hook chain via `content/validate` with specified actions |
 | `rossum_refire_annotation` | ✏️ Inner-loop re-fire primitive (`mode=validate\|toggle\|reupload`) with try/finally cancel, dedup auto-restore, and merged compact response |
+| `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); self-managing start→ops→release |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
 | `rossum_get_inbox` | Get inbox details (email address, config) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |
