@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, extract documents, and generate SOWs, all from your terminal.
 
-9 skills · 9 reference packs · 64 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+10 skills · 9 reference packs · 67 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -64,6 +64,7 @@ Each `--plugin-dir` loads one plugin; omit the ones you don't need.
 | `/rossum-sa:dead-code [path]` | Find unused hooks, formulas, rules, labels, and engines with a deterministic detector |
 | `/rossum-sa:init-claude-md [path]` | Generate a project-specific `CLAUDE.md` for a pulled prd2 project so future Claude Code sessions recognize it as a Rossum implementation |
 | `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
+| `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
 
 ### `nerossum`
 
@@ -146,6 +147,9 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_delete_hook` | ⚠️ Delete a hook |
 | `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues) |
 | `rossum_get_hook_secret_keys` | List secret key names on a hook |
+| `rossum_extract_export_template` | Pull a Custom Format Templating export template out of a hook's `export_configs` into editable text |
+| `rossum_generate_export_settings` | Turn a local Jinja2 template into the `export_configs` settings block to push back |
+| `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |
 | `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status) |
 | `rossum_list_rules` | List business rules (filter by queue) |
 | `rossum_get_rule` | Get full rule details (trigger_condition, actions, queues) |
