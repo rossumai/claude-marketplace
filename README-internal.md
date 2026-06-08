@@ -77,3 +77,9 @@ Call rossum_set_token with the provided token and base URL, then add a new MCP t
 Token: <ROSSUM_API_TOKEN>
 Base URL: https://elis.rossum.ai
 ```
+
+## init-claude-md
+
+`/rossum-sa:init-claude-md` writes a project-specific `CLAUDE.md` from a local inspection of a pulled prd2 project. The auto-generated portion is bracketed by `<!-- BEGIN/END rossum-sa:init-claude-md auto-generated -->` markers — re-running the skill refreshes only that block.
+
+If you add fields to `inspect.py`, also update the placeholder list and the rendering step in `SKILL.md` and the `template.md` file. Inspector schema must stay in sync with what the skill expects.

@@ -1,0 +1,4 @@
+project_name: sap
+directories:
+  dev-env:
+    api_base: https://elis.rossum.ai/api/v1
