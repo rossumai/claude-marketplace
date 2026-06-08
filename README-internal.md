@@ -31,6 +31,12 @@ against the live API. For each tool:
    - Rules: create_rule (disabled, trivial trigger_condition like "False", attached to a real queue) →
      get_rule (verify) → patch_rule (change name/trigger_condition, keep disabled) →
      get_rule (verify patch) → delete_rule → get_rule (expect 404).
+   - test_hook (read-shaped but executes): pick a FUNCTION hook (not a webhook — avoid external
+     side effects), call test_hook with its event/action; auto-resolve or pass annotation_id.
+     Confirm it returns the hook's response/messages without mutating the annotation.
+   - update_annotation_content: on a to_review annotation, replace one datapoint value (start→ops→
+     cancel is auto-managed), re-read via get_annotation_content to confirm it persisted, then revert
+     the value to leave the document unchanged.
    - Users: create_user (inactive, with a throwaway username) → list_users (verify) →
      confirm the user appears. No delete endpoint exists, so set is_active=false on creation.
 3. Verify that list endpoints handle API pagination correctly (the Rossum API returns paginated
