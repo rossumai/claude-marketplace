@@ -98,6 +98,79 @@ def discover_queues(project_dir: Path, environments: list[str]) -> list[dict]:
     return out
 
 
+COUPA_PATTERNS = (
+    re.compile(r"\bCIB\b"),
+    re.compile(r"\bcoupa\b", re.IGNORECASE),
+    re.compile(r"Coupa Integration Baseline", re.IGNORECASE),
+)
+SAP_PATTERNS = (
+    re.compile(r"\bINVOIC0[12]\b"),
+    re.compile(r"\bIDOC\b"),
+    re.compile(r"\bSAP\b"),
+)
+SFI_PATTERNS = (
+    re.compile(r"structured.formats.import", re.IGNORECASE),
+    re.compile(r"\bZUGFeRD\b", re.IGNORECASE),
+    re.compile(r"\bX-Rechnung\b", re.IGNORECASE),
+)
+SFTP_PATTERNS = (
+    re.compile(r"\bfile-storage-export\b"),
+    re.compile(r"\bsftp://", re.IGNORECASE),
+)
+
+
+def discover_hooks(project_dir: Path, environments: list[str]) -> list[dict]:
+    """Discover hooks under <env>/hooks/*.json."""
+    out: list[dict] = []
+    for env in environments:
+        hooks_dir = project_dir / env / "hooks"
+        if not hooks_dir.is_dir():
+            continue
+        for hook_json in sorted(hooks_dir.glob("*.json")):
+            hook = json.loads(hook_json.read_text())
+            runtime = ((hook.get("config") or {}).get("runtime")) or ""
+            out.append({
+                "name": hook.get("name", hook_json.stem),
+                "type": hook.get("type", ""),
+                "runtime": runtime,
+                "environment": env,
+                "queue_count": len(hook.get("queues") or []),
+            })
+    return out
+
+
+def detect_integration_target(project_dir: Path, environments: list[str]) -> str:
+    """First match wins: Coupa → SAP → SFI → SFTP → REST → unknown.
+
+    Scans hook JSON, hook .py files, and any top-level export-pipeline configs.
+    """
+    blobs: list[str] = []
+    for env in environments:
+        env_dir = project_dir / env
+        if not env_dir.is_dir():
+            continue
+        for path in env_dir.rglob("*"):
+            if path.is_file() and path.suffix in {".json", ".py"}:
+                try:
+                    blobs.append(path.read_text(errors="ignore"))
+                except OSError:
+                    continue
+    haystack = "\n".join(blobs)
+
+    if any(p.search(haystack) for p in COUPA_PATTERNS):
+        return "Coupa"
+    if any(p.search(haystack) for p in SAP_PATTERNS):
+        return "SAP"
+    if any(p.search(haystack) for p in SFI_PATTERNS):
+        return "SFI"
+    if any(p.search(haystack) for p in SFTP_PATTERNS):
+        return "SFTP"
+    # Generic REST detection: presence of a call_api block in any hook config.
+    if re.search(r'"call_api"\s*:', haystack):
+        return "Generic REST"
+    return "unknown"
+
+
 def main(project_dir_str: str) -> None:
     project_dir = Path(project_dir_str).resolve()
     if not project_dir.is_dir():
@@ -106,10 +179,14 @@ def main(project_dir_str: str) -> None:
 
     facts = parse_prd_config(project_dir)
     queues = discover_queues(project_dir, facts["environments"])
+    hooks = discover_hooks(project_dir, facts["environments"])
     workspaces = {(q["environment"], q["workspace"]) for q in queues}
     facts["queues"] = queues
     facts["queue_count"] = len(queues)
     facts["workspace_count"] = len(workspaces)
+    facts["hooks"] = hooks
+    facts["hook_count"] = len(hooks)
+    facts["integration_target"] = detect_integration_target(project_dir, facts["environments"])
 
     json.dump(facts, sys.stdout, indent=2)
     sys.stdout.write("\n")

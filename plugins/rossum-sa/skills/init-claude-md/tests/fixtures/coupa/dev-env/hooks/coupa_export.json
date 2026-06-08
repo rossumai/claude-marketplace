@@ -1,0 +1,7 @@
+{
+  "id": 9001,
+  "name": "coupa_export",
+  "type": "function",
+  "config": {"runtime": "python3.12"},
+  "queues": ["https://elis.rossum.ai/api/v1/queues/222"]
+}
