@@ -94,7 +94,9 @@ Create a task list with one task per applicable phase to track progress.
 
 3. **`prd2 pull`** to get the current state of the environment. This is a read-only operation.
 
-4. **Review what exists.** If there are already queues, hooks, and schemas, use the `analyze` skill to check for issues before adding to the implementation.
+4. **Generate `CLAUDE.md` for the project** — run `/rossum-sa:init-claude-md` so future sessions in this directory recognize it as a Rossum implementation and apply the right safety rules. This is optional but recommended for any project that will be touched by Claude Code multiple times.
+
+5. **Review what exists.** If there are already queues, hooks, and schemas, use the `analyze` skill to check for issues before adding to the implementation.
 
 **Artifact:** Local project directory synced with the remote environment.
 
