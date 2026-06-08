@@ -1,0 +1,7 @@
+{
+  "id": 9002,
+  "name": "sap_idoc_export",
+  "type": "function",
+  "config": {"runtime": "python3.12"},
+  "queues": []
+}

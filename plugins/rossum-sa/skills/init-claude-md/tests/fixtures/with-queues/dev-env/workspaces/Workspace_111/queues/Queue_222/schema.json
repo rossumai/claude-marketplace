@@ -1,0 +1,9 @@
+{
+  "content": [
+    {"category": "section", "id": "basic_info_section", "children": [
+      {"category": "datapoint", "id": "document_id", "type": "string"},
+      {"category": "datapoint", "id": "vendor_name", "type": "string"},
+      {"category": "datapoint", "id": "amount_total", "type": "number"}
+    ]}
+  ]
+}
