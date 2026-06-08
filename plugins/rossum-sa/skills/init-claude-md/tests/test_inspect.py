@@ -24,3 +24,17 @@ def test_minimal_project_returns_project_name_and_environments():
     out = run_inspect(FIXTURES / "minimal")
     assert out["project_name"] == "minimal"
     assert out["environments"] == ["dev-env"]
+
+
+def test_queues_and_workspaces_are_discovered():
+    out = run_inspect(FIXTURES / "with-queues")
+    assert out["workspace_count"] == 1
+    assert out["queue_count"] == 1
+    assert out["queues"] == [
+        {
+            "name": "Invoices IT (DEV)",
+            "workspace": "Italy (DEV)",
+            "environment": "dev-env",
+            "schema_field_count": 3,
+        }
+    ]
