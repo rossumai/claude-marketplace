@@ -279,6 +279,75 @@ Gotchas (each one cost real iterations in past sessions):
 - The user-facing `line_items` table is AI-managed; for a downstream working copy use a separate `line_items_copied` schema you fully own. Don't mutate `line_items` from a hook.
 - For debugging, write a transient `_dbg_op_count` / `_dbg_last_status` field into the schema and set it from the hook — far faster than re-running with extra logs.
 
+## Applying Labels to Annotations
+
+Labels are **not** applied via the hook response. There's no `labels` field on `hook_response()` and no TxScript helper for them — applying or removing a label requires an explicit HTTP `POST` to the `/v1/labels/apply` endpoint from inside the hook.
+
+The hook payload already carries everything you need: `payload["base_url"]` for the org URL, `payload["rossum_authorization_token"]` for the auth, and `payload["annotation"]["url"]` for the annotation to label.
+
+### Canonical pattern
+
+```python
+import requests
+
+def apply_label_operations(
+    base_url: str,
+    auth_token: str,
+    annotation_url: str,
+    add_labels: list[str] | None = None,
+    remove_labels: list[str] | None = None,
+) -> None:
+    """Apply and/or remove labels on an annotation via /v1/labels/apply."""
+    resp = requests.post(
+        f"{base_url}/api/v1/labels/apply",
+        headers={"Authorization": f"Bearer {auth_token}"},
+        json={
+            "operations": {
+                "add":    add_labels or [],
+                "remove": remove_labels or [],
+            },
+            "objects": {"annotations": [annotation_url]},
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+```
+
+Call shape from inside `rossum_hook_request_handler`:
+
+```python
+def rossum_hook_request_handler(payload: dict) -> dict:
+    base_url       = payload["base_url"]
+    auth_token     = payload["rossum_authorization_token"]
+    annotation_url = payload["annotation"]["url"]
+
+    LABEL_NEEDS_REVIEW_ID = 3878
+    label_url = f"{base_url}/api/v1/labels/{LABEL_NEEDS_REVIEW_ID}"
+
+    if some_condition(payload):
+        apply_label_operations(base_url, auth_token, annotation_url,
+                               add_labels=[label_url])
+    return TxScript.from_payload(payload).hook_response()
+```
+
+### Payload shape
+
+| Field | Type | Notes |
+|---|---|---|
+| `operations.add` | list of label URLs | **Full URL** (`<base_url>/api/v1/labels/<id>`), not bare id |
+| `operations.remove` | list of label URLs | Same shape |
+| `objects.annotations` | list of annotation URLs | Pass `payload["annotation"]["url"]` directly |
+
+Both `add` and `remove` can be sent in the same call — useful for "swap label A for label B" transitions.
+
+### Gotchas
+
+- **Pass label URLs, not bare IDs.** `"add": [3878]` is silently ignored; `"add": ["https://elis.rossum.app/api/v1/labels/3878"]` works. Build the URL from `payload["base_url"]` so the same hook code works across orgs.
+- **The label definition must exist on the queue first.** `/v1/labels/apply` doesn't create labels; it just attaches them. Create label definitions via the queue UI or `POST /v1/labels` before the hook can reference them.
+- **Idempotent re-apply is fine.** Re-applying a label that's already on the annotation is a no-op (the endpoint dedupes). To check the current state before mutating, inspect `payload["annotation"].get("labels", [])` — that's the list of already-applied label URLs.
+- **Only works while the annotation is mutable.** `to_review`, `reviewing`, and `confirmed` are fine; `exported` / `in_workflow` may reject. Check status before applying if the hook can fire on terminal states.
+- **Hard-code label IDs as constants at the top of the hook.** Label IDs are per-org; treat them like queue IDs — a `LABEL_NEEDS_REVIEW_ID = 3878` constant block makes per-environment overrides obvious during prd2 deploys.
+
 ## Best Practices
 
 ### Code Style
