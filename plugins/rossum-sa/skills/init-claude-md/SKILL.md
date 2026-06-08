@@ -69,6 +69,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placehol
 
 | Placeholder | Value source |
 |---|---|
+| `{{project_name}}` | `facts["project_name"]` |
 | `{{environments_joined}}` | `", ".join(facts["environments"])` |
 | `{{queue_count}}` | `facts["queue_count"]` |
 | `{{workspace_count}}` | `facts["workspace_count"]` |
@@ -84,10 +85,12 @@ Always include the three baseline references already mentioned in section 9 abov
 - If `integration_target == "Coupa"` → `- \`rossum-sa:coupa-baseline-reference\` — Coupa Integration Baseline (CIB)`
 - If `integration_target == "SAP"` → `- \`rossum-sa:sap-reference\` — SAP integration patterns`
 - If `integration_target == "SFI"` → `- \`rossum-sa:sfi-reference\` — Structured Formats Import`
+- If `integration_target == "SFTP"` → `- \`rossum-sa:export-pipeline-reference\` — Request Processor (file-storage-export / SFTP destination)`
+- If `integration_target == "Generic REST"` → `- \`rossum-sa:export-pipeline-reference\` — Request Processor (REST export)`
 - If any hook name matches `/mdh|master.data|matching/i` OR any hook `.py` file contains `MatchConfig` → `- \`rossum-sa:mdh-reference\` — Master Data Hub matching`
-- If any hook `.py` or JSON contains `"call_api"` → `- \`rossum-sa:export-pipeline-reference\` — Request Processor`
+- If any hook `.py` or JSON contains `"call_api"` (and `integration_target` did not already trigger the Request Processor line above) → `- \`rossum-sa:export-pipeline-reference\` — Request Processor`
 
-If no conditional skills apply, write a single line: `_No conditional references — none of Coupa, SAP, SFI, MDH, or Request Processor signals were detected._`
+If no conditional skills apply, write a single line: `_No conditional references — none of Coupa, SAP, SFI, SFTP, Generic REST, MDH, or Request Processor signals were detected._`
 
 ### Step 5: Write or merge the file
 

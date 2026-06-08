@@ -5,7 +5,7 @@
 
 ## 1. Project Overview
 
-This is a Rossum.ai prd2 implementation project for the `{{environments_joined}}` environment(s). It contains **{{queue_count}} queues** across **{{workspace_count}} workspaces** and **{{hook_count}} hooks**. Primary integration target: **{{integration_target}}**.
+This is a Rossum.ai prd2 implementation project named **`{{project_name}}`** for the `{{environments_joined}}` environment(s). It contains **{{queue_count}} queues** across **{{workspace_count}} workspaces** and **{{hook_count}} hooks**. Primary integration target: **{{integration_target}}**.
 
 Optimizes for: accurate document extraction, reliable export to the integration target, and maintainable hook code.
 

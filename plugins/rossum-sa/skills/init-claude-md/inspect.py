@@ -109,7 +109,7 @@ SAP_PATTERNS = (
     re.compile(r"\bSAP\b"),
 )
 SFI_PATTERNS = (
-    re.compile(r"structured.formats.import", re.IGNORECASE),
+    re.compile(r"structured[._-]formats[._-]import", re.IGNORECASE),
     re.compile(r"\bZUGFeRD\b", re.IGNORECASE),
     re.compile(r"\bX-Rechnung\b", re.IGNORECASE),
 )
