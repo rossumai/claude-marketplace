@@ -2148,6 +2148,19 @@ def handle_patch_hook(request_id, arguments):
 # that skill's bundled render_export_template.py (the MCP server stays dependency-free).
 
 
+def _template_text_to_multiline(template_text):
+    r"""Split a template string into the file_content_template_multiline array.
+
+    Inverse of extract's "\n".join(...): one array entry per line, a single
+    trailing empty line (from a final newline) dropped, and CRLF tolerated, so a
+    round-trip extract -> edit -> generate is line-stable.
+    """
+    lines = [line.rstrip("\r") for line in template_text.split("\n")]
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    return lines
+
+
 @_tool(
     "rossum_extract_export_template",
     "Pulls the Jinja2 template out of a Custom Format Templating export hook so it can be saved "
@@ -2235,6 +2248,7 @@ def handle_extract_export_template(request_id, arguments):
         return
     out = {
         "hook_id": hook_id,
+        "base_url": base_url,
         "export_reference_key": cfg.get("export_reference_key"),
         "content_encoding": cfg.get("content_encoding"),
         "source_field": source_field,
@@ -2290,11 +2304,7 @@ def handle_generate_export_settings(request_id, arguments):
         except OSError as exc:
             tool_result(request_id, f"Could not read template_path {template_path!r}: {exc}", is_error=True)
             return
-    # Inverse of extract's "\n".join(...). Drop one trailing empty line from a final
-    # newline and tolerate CRLF, so a round-trip extract→edit→generate is line-stable.
-    lines = [line.rstrip("\r") for line in template_text.split("\n")]
-    if lines and lines[-1] == "":
-        lines = lines[:-1]
+    lines = _template_text_to_multiline(template_text)
     block = {
         "export_configs": [
             {
@@ -2313,7 +2323,9 @@ def handle_generate_export_settings(request_id, arguments):
     "POST /hooks/{id}/generate_payload simulating the export event. Returns the payload JSON (with the "
     "'annotation' content tree) that the render-export-template skill feeds to the local render script to "
     "faithfully preview the template's output. Non-mutating — it only generates a payload, it does not "
-    "export or change the annotation.",
+    "export or change the annotation. SECURITY: the returned payload includes the hook's "
+    "rossum_authorization_token and secrets — treat it as a credential. Write it to a temp file, never "
+    "echo it into the conversation, and delete it after rendering.",
     {
         "type": "object",
         "required": ["hook_id", "annotation_id"],
@@ -3598,7 +3610,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.17.0"},
+                    "serverInfo": {"name": "rossum-api", "version": "0.18.0"},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "
