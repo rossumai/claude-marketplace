@@ -1,0 +1,23 @@
+# Tooling config for the claude-marketplace repo.
+# Runtime code (the MCP server) is deliberately stdlib-only — see
+# requirements-dev.txt for the *test-only* dependencies, which never ship.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+# Collect the repo-level guard tests AND the per-skill suites under plugins/.
+testpaths = ["tests", "plugins"]
+# Put tests/ on sys.path so the per-test helper (repo_lib) imports cleanly
+# regardless of pytest's import mode.
+pythonpath = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+# Fixtures contain intentionally-incomplete hook snippets; don't lint them.
+extend-exclude = ["**/tests/fixtures/**"]
+
+[tool.ruff.lint]
+# Conservative gate: real errors only — syntax (E9), invalid comparisons (F63),
+# broken statements (F7), undefined names (F82). NOT style or unused-imports,
+# so it won't explode on the existing single-file server. Widen over time.
+select = ["E9", "F63", "F7", "F82"]
