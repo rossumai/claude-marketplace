@@ -4,10 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Claude Code plugin marketplace for Rossum.ai workflows (https://code.claude.com/docs/en/plugin-marketplaces). Contains two plugins:
+A Claude Code plugin marketplace for Rossum.ai workflows (https://code.claude.com/docs/en/plugin-marketplaces). Ships one plugin:
 
-- **`rossum-sa`** — The main plugin: skills, reference packs, and an MCP server for Rossum SA work
-- **`nerossum`** — A lightweight demo plugin with a single document-processing skill
+- **`rossum-sa`** — Skills, reference packs, and an MCP server for Rossum SA work
 
 ## Architecture
 

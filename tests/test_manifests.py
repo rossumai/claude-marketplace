@@ -1,7 +1,7 @@
 """Guard: marketplace/plugin manifests parse, and every skill has frontmatter.
 
-This is the check that would have caught the nerossum skill shipping with no
-YAML frontmatter (which prevents it from registering at all).
+The frontmatter check catches a skill shipping with no YAML frontmatter
+(which prevents it from registering at all).
 """
 from __future__ import annotations
 
