@@ -1,6 +1,6 @@
 # 🧰 Rossum toolkit for Claude Code
 
-Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, extract documents, and generate SOWs, all from your terminal.
+Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
 14 skills · 10 reference packs · 69 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
@@ -8,20 +8,11 @@ Turn Claude into a Rossum implementation partner — audit hooks, analyze schema
 
 ## 🚀 Quick start
 
-You need [Claude Code CLI](https://code.claude.com/) and a Rossum API token.
+You need the [Claude Code CLI](https://code.claude.com/) and a Rossum account.
 
 ```bash
 /plugin marketplace add rossumai/claude-marketplace
 /plugin install rossum-sa@rossumai-claude-marketplace
-```
-
-Then connect and go:
-
-```
-Connect to Rossum (token: <TOKEN>, base URL: https://elis.rossum.ai).
-Map out the entire org — workspaces, queues, hooks, schemas — and draw
-an ASCII architecture diagram. Add emoji health indicators next to each
-component (🟢 healthy, 🟡 warning, 🔴 broken).
 ```
 
 > **Note:** Auto-updates are off by default for third-party marketplaces. Enable them in `/plugin` → **Marketplaces** tab.
@@ -32,20 +23,43 @@ component (🟢 healthy, 🟡 warning, 🔴 broken).
 /plugin install superpowers@claude-plugins-official
 ```
 
-### Running from a local checkout (feature branch)
+## 🧭 Two ways in
 
-To test a feature branch before it's published to the marketplace, clone the repo and point Claude Code at the plugin directories with `--plugin-dir`.
+- **Explore a live org** — connect to a running Rossum environment and ask questions about it. Anyone with a Rossum login can do this; it's the lowest-barrier way to start.
+- **Work on an implementation** — pull a project to a local checkout with `prd2` and use the skills to audit, document, upgrade, and build. The day-to-day SA loop.
 
-Example using the [`teamd-hackathon`](https://github.com/rossumai/claude-marketplace/tree/teamd-hackathon) branch:
+## 🔍 Explore a live org
 
-```bash
-git clone -b teamd-hackathon https://github.com/rossumai/claude-marketplace.git rossum-claude-plugin
-
-claude --plugin-dir rossum-claude-plugin/plugins/rossum-sa \
-       --plugin-dir rossum-claude-plugin/plugins/nerossum
+```
+Connect to Rossum and map out the entire org — workspaces, queues, hooks,
+schemas — and draw an ASCII architecture diagram. Add emoji health
+indicators next to each component (🟢 healthy, 🟡 warning, 🔴 broken).
 ```
 
-Each `--plugin-dir` loads one plugin; omit the ones you don't need.
+Claude prompts for your credentials when it connects, so nothing sensitive goes into the chat:
+
+- **Rossum staff / admins** — paste a connection string (the `curl` snippet from the Rossum admin UI), or an API token.
+- **Implementation partners** — your Rossum username + password.
+- Either way, give the **base URL** (`https://elis.rossum.ai`, or `https://<your-org>.rossum.app`). No organization ID needed — the base URL identifies the org.
+
+See **What can you do with this?** below for more live-org prompts.
+
+## 🛠️ Work on an implementation
+
+For real implementation work, pull a project to a local checkout with `prd2`, then let Claude work on the files:
+
+```bash
+prd2 pull <org-dir>          # needs prd2 + admin-role credentials (Rossum staff: a service token)
+```
+
+```
+/rossum-sa:init-claude-md    # teach Claude this checkout is a Rossum project
+/rossum-sa:analyze           # find configuration errors
+/rossum-sa:dead-code         # prune unused hooks, formulas, and rules
+/rossum-sa:document          # generate a reference doc for the project
+```
+
+From here the full skill set applies — see **Skills** below. New to `prd2`? The autoloaded `prd-reference` knowledge covers install, config, and credentials — just ask Claude how to set it up.
 
 ## ⚡ Skills
 
@@ -68,12 +82,6 @@ Each `--plugin-dir` loads one plugin; omit the ones you don't need.
 | `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 | `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
 
-### `nerossum`
-
-| Skill | Description |
-|-------|-------------|
-| `/nerossum:document-processing` | Extract structured data from invoices, POs, and receipts with validation and anomaly detection |
-
 ## 📚 Autoloaded references
 
 When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
@@ -91,10 +99,12 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 
 ## 💡 What can you do with this?
 
+More read-only prompts to run against a connected org:
+
 **🕵️ Who's been busy?** — Pull a year of audit logs and surface suspicious activity patterns.
 ```
-Connect to Rossum (token: <TOKEN>, base URL: https://elis.rossum.ai), pull all audit logs
-for the last year, and print a histogram of user activity. Highlight suspicious patterns.
+Connect to Rossum, pull all audit logs for the last year, and print a histogram
+of user activity. Highlight suspicious patterns.
 ```
 
 **🔗 Find broken hooks** — Audit your hook chains across all queues.
@@ -210,6 +220,16 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `data_storage_drop_search_index` | ⚠️ Drop an Atlas Search index |
 
 ✏️ = write (requires approval) · ⚠️ = destructive (requires approval)
+
+## 🧪 Running from a local checkout (feature branch)
+
+To test a feature branch before it's published to the marketplace, clone the repo and point Claude Code at the plugin directory with `--plugin-dir`.
+
+```bash
+git clone -b <feature-branch> https://github.com/rossumai/claude-marketplace.git rossum-claude-plugin
+
+claude --plugin-dir rossum-claude-plugin/plugins/rossum-sa
+```
 
 ## 📄 License
 
