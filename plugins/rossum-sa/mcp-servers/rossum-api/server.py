@@ -2141,6 +2141,224 @@ def handle_patch_hook(request_id, arguments):
     _rossum_patch(request_id, f"/api/v1/hooks/{hook_id}", body)
 
 
+# --- Custom Format Templating export-template helpers ---
+# These three tools support authoring the legacy "Custom Format Templating" export
+# step, whose Jinja2 template lives in settings.export_configs[]. They are the MCP
+# side of the render-export-template skill; faithful Jinja2 rendering itself runs in
+# that skill's bundled render_export_template.py (the MCP server stays dependency-free).
+
+
+def _template_text_to_multiline(template_text):
+    r"""Split a template string into the file_content_template_multiline array.
+
+    Inverse of extract's "\n".join(...): one array entry per line, a single
+    trailing empty line (from a final newline) dropped, and CRLF tolerated, so a
+    round-trip extract -> edit -> generate is line-stable.
+    """
+    lines = [line.rstrip("\r") for line in template_text.split("\n")]
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    return lines
+
+
+@_tool(
+    "rossum_extract_export_template",
+    "Pulls the Jinja2 template out of a Custom Format Templating export hook so it can be saved "
+    "to a local file and edited. Reads settings.export_configs[]: returns the template (joining "
+    "file_content_template_multiline with newlines, or the legacy single-string file_content_template), "
+    "its export_reference_key, and content_encoding. If the hook has several export_configs and no key "
+    "is given, it lists the available keys so you can pick one. Errors clearly if the hook has no "
+    "export_configs (e.g. it is a Request Processor, not Custom Format Templating). Read-only.",
+    {
+        "type": "object",
+        "required": ["hook_id"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "The export hook ID. Use rossum_list_hooks / rossum_get_hook to find it.",
+            },
+            "export_reference_key": {
+                "type": "string",
+                "description": (
+                    "Which export_config to extract, by its export_reference_key. "
+                    "Optional when the hook has exactly one export_config; required when it has several."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_extract_export_template(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    hook_id = arguments["hook_id"]
+    hook = _http_request(request_id, f"{base_url}/api/v1/hooks/{hook_id}")
+    if hook is None:
+        return
+    configs = (hook.get("settings") or {}).get("export_configs")
+    if not configs:
+        tool_result(
+            request_id,
+            f"Hook {hook_id} ('{hook.get('name', '')}') has no settings.export_configs — it is not a "
+            "Custom Format Templating export hook. If its settings contain 'stages'/'requests'/'call_api', "
+            "it is a Request Processor; use the export-pipeline-reference skill instead.",
+            is_error=True,
+        )
+        return
+    key = arguments.get("export_reference_key")
+    if key is None:
+        if len(configs) == 1:
+            cfg = configs[0]
+        else:
+            keys = [c.get("export_reference_key", f"<index {i}>") for i, c in enumerate(configs)]
+            tool_result(
+                request_id,
+                "Hook has multiple export_configs. Re-call with export_reference_key set to one of: "
+                + ", ".join(repr(k) for k in keys),
+                is_error=True,
+            )
+            return
+    else:
+        matches = [c for c in configs if c.get("export_reference_key") == key]
+        if not matches:
+            keys = [c.get("export_reference_key") for c in configs]
+            tool_result(
+                request_id,
+                f"No export_config with export_reference_key={key!r}. Available keys: "
+                + ", ".join(repr(k) for k in keys),
+                is_error=True,
+            )
+            return
+        cfg = matches[0]
+    if "file_content_template_multiline" in cfg:
+        template = "\n".join(cfg["file_content_template_multiline"])
+        source_field = "file_content_template_multiline"
+    elif "file_content_template" in cfg:
+        template = cfg["file_content_template"]
+        source_field = "file_content_template"
+    else:
+        tool_result(
+            request_id,
+            f"export_config {cfg.get('export_reference_key')!r} has neither file_content_template_multiline "
+            "nor file_content_template — no template content to extract.",
+            is_error=True,
+        )
+        return
+    out = {
+        "hook_id": hook_id,
+        "base_url": base_url,
+        "export_reference_key": cfg.get("export_reference_key"),
+        "content_encoding": cfg.get("content_encoding"),
+        "source_field": source_field,
+        "line_count": template.count("\n") + 1,
+        "template": template,
+    }
+    tool_result(request_id, json.dumps(out, indent=2))
+
+
+@_tool(
+    "rossum_generate_export_settings",
+    "Turns a local Jinja2 export template back into the settings.export_configs JSON block that a Custom "
+    "Format Templating hook expects. Splits the template into file_content_template_multiline (one array "
+    "entry per line) and wraps it with the given export_reference_key and content_encoding. Provide the "
+    "template via template_text or template_path. Returns the JSON block ready to merge into a hook's "
+    "settings — it does NOT push anything; apply it with rossum_patch_hook (or prd2 push) after review. "
+    "Pure local transform, no API call.",
+    {
+        "type": "object",
+        "required": ["export_reference_key"],
+        "properties": {
+            "template_text": {
+                "type": "string",
+                "description": "The template content as a single string (newline-separated). Use this OR template_path.",
+            },
+            "template_path": {
+                "type": "string",
+                "description": "Path to a local template file to read. Use this OR template_text.",
+            },
+            "export_reference_key": {
+                "type": "string",
+                "description": "The export_reference_key naming this output (must match what the downstream integration expects).",
+            },
+            "content_encoding": {
+                "type": "string",
+                "description": "Output encoding (default 'utf-8'). Preserve the hook's existing value unless changing it deliberately.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_generate_export_settings(request_id, arguments):
+    template_text = arguments.get("template_text")
+    template_path = arguments.get("template_path")
+    if template_text is None and template_path is None:
+        tool_result(request_id, "Provide either template_text or template_path.", is_error=True)
+        return
+    if template_text is None:
+        try:
+            with open(template_path, encoding="utf-8") as fh:
+                template_text = fh.read()
+        except OSError as exc:
+            tool_result(request_id, f"Could not read template_path {template_path!r}: {exc}", is_error=True)
+            return
+    lines = _template_text_to_multiline(template_text)
+    block = {
+        "export_configs": [
+            {
+                "export_reference_key": arguments["export_reference_key"],
+                "content_encoding": arguments.get("content_encoding", "utf-8"),
+                "file_content_template_multiline": lines,
+            }
+        ]
+    }
+    tool_result(request_id, json.dumps(block, indent=2))
+
+
+@_tool(
+    "rossum_generate_export_payload",
+    "Generates the export payload an annotation would produce for a Custom Format Templating hook, via "
+    "POST /hooks/{id}/generate_payload simulating the export event. Returns the payload JSON (with the "
+    "'annotation' content tree) that the render-export-template skill feeds to the local render script to "
+    "faithfully preview the template's output. Non-mutating — it only generates a payload, it does not "
+    "export or change the annotation. SECURITY: the returned payload includes the hook's "
+    "rossum_authorization_token and secrets — treat it as a credential. Write it to a temp file, never "
+    "echo it into the conversation, and delete it after rendering.",
+    {
+        "type": "object",
+        "required": ["hook_id", "annotation_id"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "The Custom Format Templating export hook ID.",
+            },
+            "annotation_id": {
+                "type": "integer",
+                "description": "The annotation to build the export payload from (use a confirmed/exported sandbox annotation).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_generate_export_payload(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    hook_id = arguments["hook_id"]
+    annotation_id = arguments["annotation_id"]
+    body = {
+        "event": "annotation_content",
+        "action": "export",
+        "annotation": f"{base_url}/api/v1/annotations/{annotation_id}",
+        "previous_status": "confirmed",
+        "status": "exporting",
+    }
+    _rossum_post(request_id, f"/api/v1/hooks/{hook_id}/generate_payload", body)
+
+
 _ANNOTATION_HOOK_EVENTS = {"annotation_content", "annotation_status"}
 
 
@@ -3599,7 +3817,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.18.0"},
+                    "serverInfo": {"name": "rossum-api", "version": "0.19.0"},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "

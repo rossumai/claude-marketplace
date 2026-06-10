@@ -1,0 +1,12 @@
+{
+  "doc": "{{ field.document_id }}",
+  "total": {{ field.amount_total | default(0, true) }},
+  "currency": "{{ field.currency }}",
+  "automated": {{ payload['annotation']['automated'] | tojson }},
+  "lines": [
+  {% for item in field.line_items %}{
+    "desc": {{ item.description | tojson }},
+    "qty": "{{ item.quantity }}"
+  }{% if not loop.last %},{% endif %}
+  {% endfor %}]
+}

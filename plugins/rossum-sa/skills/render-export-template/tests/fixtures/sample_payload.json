@@ -1,0 +1,66 @@
+{
+  "annotation": {
+    "automated": true,
+    "content": [
+      {
+        "category": "section",
+        "schema_id": "invoice_details",
+        "children": [
+          {
+            "category": "datapoint",
+            "schema_id": "document_id",
+            "content": {"value": "INV-1", "normalized_value": "INV-1"}
+          },
+          {
+            "category": "datapoint",
+            "schema_id": "amount_total",
+            "content": {"value": "", "normalized_value": ""}
+          },
+          {
+            "category": "datapoint",
+            "schema_id": "currency",
+            "content": {"value": "USD", "normalized_value": "USD"}
+          },
+          {
+            "category": "multivalue",
+            "schema_id": "line_items",
+            "children": [
+              {
+                "category": "tuple",
+                "schema_id": "line_item",
+                "children": [
+                  {
+                    "category": "datapoint",
+                    "schema_id": "description",
+                    "content": {"value": "A \"quoted\" item", "normalized_value": "A \"quoted\" item"}
+                  },
+                  {
+                    "category": "datapoint",
+                    "schema_id": "quantity",
+                    "content": {"value": "2", "normalized_value": "2"}
+                  }
+                ]
+              },
+              {
+                "category": "tuple",
+                "schema_id": "line_item",
+                "children": [
+                  {
+                    "category": "datapoint",
+                    "schema_id": "description",
+                    "content": {"value": "plain", "normalized_value": "plain"}
+                  },
+                  {
+                    "category": "datapoint",
+                    "schema_id": "quantity",
+                    "content": {"value": "5", "normalized_value": "5"}
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
