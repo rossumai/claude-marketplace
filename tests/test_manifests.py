@@ -11,6 +11,35 @@ import pytest
 
 import repo_lib as R
 
+# Known keys for the Claude Code plugin manifests. An unknown top-level key is
+# almost always a typo (e.g. "mcpServer" for "mcpServers") that silently breaks
+# loading — the structural checks below use .get() and would never notice. So we
+# reject unknown keys. Adding a genuinely new manifest key is a deliberate edit
+# to these sets.
+MARKETPLACE_REQUIRED = {"name", "plugins"}
+MARKETPLACE_OPTIONAL = {"owner", "metadata"}
+PLUGIN_ENTRY_REQUIRED = {"name", "source"}
+PLUGIN_ENTRY_OPTIONAL = {
+    "description", "version", "author", "category", "strict",
+    "keywords", "license", "homepage",
+}
+PLUGIN_JSON_REQUIRED = {"name", "version"}
+PLUGIN_JSON_OPTIONAL = {
+    "description", "author", "homepage", "repository", "license", "keywords",
+    "commands", "agents", "hooks", "mcpServers", "skills",
+}
+
+
+def _check_keys(obj, required, optional, where):
+    keys = set(obj)
+    missing = required - keys
+    assert not missing, f"{where}: missing required key(s) {sorted(missing)}"
+    unknown = keys - required - optional
+    assert not unknown, (
+        f"{where}: unknown key(s) {sorted(unknown)} — typo? "
+        f"allowed: {sorted(required | optional)}"
+    )
+
 
 def _plugin_dirs():
     return sorted(p.parent.parent for p in R.PLUGINS.glob("*/.claude-plugin/plugin.json"))
@@ -39,6 +68,17 @@ def test_marketplace_lists_every_plugin_on_disk():
     )
 
 
+def test_marketplace_json_known_keys():
+    """Reject unknown/typo'd keys in marketplace.json and its plugin entries."""
+    data = json.loads((R.ROOT / ".claude-plugin" / "marketplace.json").read_text("utf-8"))
+    _check_keys(data, MARKETPLACE_REQUIRED, MARKETPLACE_OPTIONAL, "marketplace.json")
+    for i, plugin in enumerate(data["plugins"]):
+        _check_keys(
+            plugin, PLUGIN_ENTRY_REQUIRED, PLUGIN_ENTRY_OPTIONAL,
+            f"marketplace.json plugins[{i}] ({plugin.get('name', '?')})",
+        )
+
+
 @pytest.mark.parametrize("plugin_dir", _plugin_dirs(), ids=lambda p: p.name)
 def test_plugin_json_is_valid(plugin_dir):
     data = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text("utf-8"))
@@ -46,6 +86,16 @@ def test_plugin_json_is_valid(plugin_dir):
     assert data.get("version"), f"{plugin_dir.name}/plugin.json missing version"
     assert data["name"] == plugin_dir.name, (
         f"plugin.json name {data['name']!r} != directory name {plugin_dir.name!r}"
+    )
+
+
+@pytest.mark.parametrize("plugin_dir", _plugin_dirs(), ids=lambda p: p.name)
+def test_plugin_json_known_keys(plugin_dir):
+    """Reject unknown/typo'd top-level keys in plugin.json (e.g. mcpServer)."""
+    data = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text("utf-8"))
+    _check_keys(
+        data, PLUGIN_JSON_REQUIRED, PLUGIN_JSON_OPTIONAL,
+        f"{plugin_dir.name}/plugin.json",
     )
 
 
