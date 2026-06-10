@@ -206,3 +206,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `data_storage_drop_search_index` | ⚠️ Drop an Atlas Search index |
 
 ✏️ = write (requires approval) · ⚠️ = destructive (requires approval)
+
+## 📄 License
+
+[MIT](LICENSE) © Rossum
