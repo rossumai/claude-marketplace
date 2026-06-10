@@ -33,7 +33,10 @@ class FakeHTTP:
         self._responder = responder  # (url, method, body) -> response | None
 
     def __call__(self, request_id, url, *, method="GET", body=None, parse_json=True):
-        self.calls.append({"url": url, "method": method, "body": body})
+        # parse_json is recorded so tests can assert on it (e.g. a handler that
+        # asks for raw text), even though the responder still returns whatever
+        # shape it wants — letting it canonical-shape per-test.
+        self.calls.append({"url": url, "method": method, "body": body, "parse_json": parse_json})
         return self._responder(url, method, body)
 
 
@@ -182,3 +185,25 @@ def test_get_annotation_compact_merged_view(monkeypatch):
     assert out["blocker"] is None                            # no automation_blocker
     assert len(out["recent_hooks"]) == 1 and out["recent_hooks"][0]["hook_id"] == 12
     assert out["_meta"]["view"] == "compact"
+
+
+# --- error path: _http_request returns None (signaling it already emitted the error) ---
+
+def test_handler_short_circuits_on_http_error(monkeypatch):
+    """When _http_request returns None — the convention server-wide for "I already
+    emitted the error tool_result, you bail out" — the handler must not try to
+    add its own success response on top. The mock returns None without emitting,
+    so a correctly-wired handler results in zero emitted messages here.
+
+    Picks rossum_get_queue as a representative single-resource handler; the
+    same contract applies to every other handler that calls _http_request.
+    """
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_get_queue", {"queue_id": 7},
+        lambda url, method, body: None,   # simulate API failure / 404 / auth error
+    )
+    assert fake.calls, "handler should have at least tried the request"
+    assert emitted == [], (
+        f"handler should bail out silently when _http_request signals an error; "
+        f"got unexpected emissions: {emitted}"
+    )
