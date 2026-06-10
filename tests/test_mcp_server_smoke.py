@@ -82,7 +82,12 @@ def test_server_boots_handshakes_and_lists_tools():
     for t in tools:
         assert t.get("name"), f"tool missing name: {t}"
         assert t.get("description"), f"tool {t.get('name')!r} missing description"
-        assert "inputSchema" in t, f"tool {t.get('name')!r} missing inputSchema"
+        schema = t.get("inputSchema")
+        assert isinstance(schema, dict), f"tool {t.get('name')!r} inputSchema not an object"
+        assert schema.get("type") == "object", (
+            f"tool {t['name']!r} inputSchema type is {schema.get('type')!r}, expected 'object'"
+        )
+        assert "properties" in schema, f"tool {t['name']!r} inputSchema missing 'properties'"
 
     # ping → empty result
     assert responses.get(3, {}).get("result") == {}, "ping should return an empty result"

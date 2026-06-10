@@ -28,6 +28,13 @@ PLUGIN_JSON_OPTIONAL = {
     "description", "author", "homepage", "repository", "license", "keywords",
     "commands", "agents", "hooks", "mcpServers", "skills",
 }
+# SKILL.md frontmatter. A typo here (e.g. "allowed-tool", "user-invokable")
+# silently drops a tool restriction or invocability flag, so reject unknowns.
+SKILL_FM_REQUIRED = {"name", "description"}
+SKILL_FM_OPTIONAL = {
+    "argument-hint", "allowed-tools", "user-invocable", "context",
+    "model", "disable-model-invocation",
+}
 
 
 def _check_keys(obj, required, optional, where):
@@ -127,4 +134,15 @@ def test_skill_name_matches_directory(name, skill_md):
     assert fm.get("name") == name, (
         f"{skill_md.parent.name}/SKILL.md frontmatter name {fm.get('name')!r} "
         f"!= directory name {name!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,skill_md", _all_skill_mds(), ids=[n for n, _ in _all_skill_mds()]
+)
+def test_skill_frontmatter_known_keys(name, skill_md):
+    """Reject unknown/typo'd SKILL.md frontmatter keys (e.g. allowed-tool)."""
+    _check_keys(
+        R.parse_frontmatter(skill_md), SKILL_FM_REQUIRED, SKILL_FM_OPTIONAL,
+        f"{name}/SKILL.md frontmatter",
     )
