@@ -1,3 +1,8 @@
+---
+name: document-processing
+description: Extract structured data from invoices, purchase orders, and receipts using only Claude — no Rossum API. Validates totals/tax/currency, flags anomalies by severity, and outputs ERP-ready JSON plus a batch summary. Use when the user pastes or uploads transactional documents and wants extraction, validation, and routing without a Rossum queue.
+---
+
 # SKILL: Document Processing for Transactional Workflows
 
 ## Purpose

@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, extract documents, and generate SOWs, all from your terminal.
 
-10 skills · 9 reference packs · 69 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+14 skills · 10 reference packs · 69 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -62,6 +62,8 @@ Each `--plugin-dir` loads one plugin; omit the ones you don't need.
 | `/rossum-sa:iterate [annotation-id]` | Tight inner loop on a deliverable — re-fire a hook/formula/rule against one annotation and check the result until the goal is met |
 | `/rossum-sa:test-behavioral-equivalence [path]` | Snapshot-replay-diff an implementation against a baseline env to verify a change preserved behavior |
 | `/rossum-sa:dead-code [path]` | Find unused hooks, formulas, rules, labels, and engines with a deterministic detector |
+| `/rossum-sa:evaluate-namings [path]` | Audit naming conventions across workspaces, queues, hooks, schema fields, and MDH datasets |
+| `/rossum-sa:coding-best-practices [path]` | Review serverless hook functions (custom Python extensions) for code quality, security, and correctness |
 | `/rossum-sa:init-claude-md [path]` | Generate a project-specific `CLAUDE.md` for a pulled prd2 project so future Claude Code sessions recognize it as a Rossum implementation |
 | `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 | `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
@@ -208,3 +210,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `data_storage_drop_search_index` | ⚠️ Drop an Atlas Search index |
 
 ✏️ = write (requires approval) · ⚠️ = destructive (requires approval)
+
+## 📄 License
+
+[MIT](LICENSE) © Rossum
