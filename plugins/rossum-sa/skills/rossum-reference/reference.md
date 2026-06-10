@@ -695,7 +695,7 @@ Hooks extend Rossum with custom logic. Three types: **webhooks**, **serverless f
 - `events` (array): Trigger event types
 - `config` (object): Extension-specific configuration
 - `queues` (array): Queue URLs this hook applies to
-- `active` (boolean): Enable/disable
+- `active` (boolean): Enable/disable — check this (together with `queues`) before treating anything in the hook's settings as live behavior; inactive hooks are common leftovers in real implementations
 - `sideload` (array): Additional data to include in payloads
 - `token_owner` (string): User identity for API access
 - `run_after` (array): Hook URLs that must run before this one

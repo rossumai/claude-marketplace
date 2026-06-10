@@ -24,6 +24,16 @@ In priority order:
 3. **Inspect a real object** of the same kind via `prd2 pull` or `rossum_get_*` MCP tools before writing code that targets it.
 4. **Ask the user** when the docs are silent, the probe is ambiguous, or you would otherwise be guessing about something that affects production state. A clarifying question costs one turn; a wrong write costs much more.
 
+## Config presence ≠ live behavior
+
+A field, dataset, or selector appearing in a hook's `settings` does **not** make it a live dependency. Before claiming "field X is used by hook Y" — especially when assessing the impact of removing a field, mapping, or dataset — verify all three:
+
+1. The hook has `active: true`.
+2. The queue in question is listed in the hook's `queues`.
+3. The reference sits in configuration that actually executes — not in `test.savedInput` or other saved debug payloads embedded in the hook JSON.
+
+Inactive hooks routinely linger in real implementations after being superseded (e.g., a vendor-matching MDH hook replaced by PO-based matching but never deleted). Reporting their dependencies as live produces false warnings that get relayed to customers. If the config is real but dormant, say so explicitly ("referenced only by an inactive hook") instead of presenting it as current behavior.
+
 ## What this rule forbids
 
 - Writing code that calls an endpoint you have not seen succeed in either the official docs or a live probe.
