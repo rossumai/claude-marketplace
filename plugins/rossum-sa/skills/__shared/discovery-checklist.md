@@ -11,7 +11,7 @@ Use the provided path (or current directory if none given). Discover and interna
 1. **Project structure** — environments (dev/test/prod), organizations, workspaces
 2. **Queues** — `queue.json` files: name, automation settings, hook references, rule references
 3. **Schemas** — `schema.json` files: what fields are extracted, line item structure, field types
-4. **Extensions** — `hooks/*.json` files: what each hook does, its trigger events, its settings (especially MDH matching configs, export configs, SFTP configs)
+4. **Extensions** — `hooks/*.json` files: what each hook does, its trigger events, its settings (especially MDH matching configs, export configs, SFTP configs) — and always note the `active` flag and `queues` list: an inactive hook, or one not attached to the queue under review, describes behavior that does not run
 5. **Formulas** — `formulas/*.py` files: calculations, normalizations, export mappings
 6. **Rules** — `rules/*.json` files: validation conditions and actions
 7. **Inboxes** — `inbox.json` files: how documents arrive (email addresses, filtering)

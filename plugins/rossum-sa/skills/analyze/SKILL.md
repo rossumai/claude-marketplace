@@ -38,7 +38,7 @@ With the full picture from Phase 1, check for these issues:
   - Flag collections that have Atlas Search indexes but whose matching config uses a plain `find`/`aggregate` query instead of `$search` (missed optimization), or vice versa
   - Flag duplicate or redundant indexes on the same collection (waste of storage and write overhead)
 
-Only report issues you actually find. Do not report speculative or generic concerns. Ground every finding in specific files and line numbers.
+Only report issues you actually find. Do not report speculative or generic concerns. Ground every finding in specific files and line numbers. For any finding that depends on a hook's behavior, first confirm the hook has `active: true` and the affected queue in its `queues` list — config in inactive or unattached hooks does not run and must not be reported as a live issue (call it out as dormant config instead).
 
 Write a markdown file named `ANALYSIS-[customer-or-folder-name].md`:
 
