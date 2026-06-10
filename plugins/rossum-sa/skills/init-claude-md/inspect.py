@@ -15,39 +15,69 @@ import sys
 from pathlib import Path
 
 
+def detect_tool(project_dir: Path) -> str:
+    """Identify which deployment tool manages this project. Extensible: add a branch
+    here, a sibling inspector, and a fragments/<tool>.md to support another deployment
+    tool/format. Currently only prd2 is supported."""
+    if (project_dir / "prd_config.yaml").is_file():
+        return "prd2"
+    return "unknown"
+
+
 def parse_prd_config(project_dir: Path) -> dict:
     """Parse prd_config.yaml without a yaml dependency.
 
-    The file is tightly structured (project_name + directories map). We only
-    need project_name and the top-level keys under directories. A minimal
-    line-based parser is enough and avoids adding PyYAML as a dep.
+    Captures project_name, the top-level directory entries (Rossum orgs), and the
+    subdirectories declared under each. prd2's machine-generated 2-space indentation
+    is assumed; nested subdirectory keys (e.g. regex) are intentionally ignored.
     """
     cfg_path = project_dir / "prd_config.yaml"
     if not cfg_path.is_file():
-        return {"project_name": project_dir.name, "environments": []}
+        return {"project_name": project_dir.name, "environments": [], "directories": []}
 
     project_name = project_dir.name
-    environments: list[str] = []
+    directories: list[dict] = []
+    cur = None
     in_directories = False
+    in_subdirs = False
     for raw in cfg_path.read_text().splitlines():
         line = raw.rstrip()
-        if not line or line.lstrip().startswith("#"):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if re.match(r"^project_name\s*:", line):
-            project_name = line.split(":", 1)[1].strip().strip('"').strip("'")
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        key = stripped.split(":", 1)[0].strip()
+        if indent == 0:
+            if re.match(r"^project_name\s*:", line):
+                project_name = line.split(":", 1)[1].strip().strip('"').strip("'")
+            in_directories = key == "directories"
+            cur = None
+            in_subdirs = False
+        elif not in_directories:
             continue
-        if re.match(r"^directories\s*:\s*$", line):
-            in_directories = True
-            continue
-        if in_directories:
-            # Top-level env entry: exactly 2 spaces of indent then `name:`.
-            m = re.match(r"^  ([^\s:]+)\s*:\s*$", line)
-            if m:
-                environments.append(m.group(1))
-            elif not line.startswith(" "):
-                in_directories = False
+        elif indent == 2 and stripped.endswith(":"):
+            cur = {"name": key, "subdirs": []}
+            directories.append(cur)
+            in_subdirs = False
+        elif indent == 4 and cur is not None:
+            in_subdirs = key == "subdirectories"
+        elif indent == 6 and cur is not None and in_subdirs:
+            cur["subdirs"].append(key)
 
-    return {"project_name": project_name, "environments": environments}
+    return {
+        "project_name": project_name,
+        "environments": [d["name"] for d in directories],
+        "directories": directories,
+    }
+
+
+def _object_roots(project_dir: Path, directory: dict) -> list[Path]:
+    """Roots to search for objects: <org>/<subdir>/ per declared subdirectory, or
+    <org>/ as a fallback when none are declared (keeps subdir-less fixtures working)."""
+    base = project_dir / directory["name"]
+    if directory["subdirs"]:
+        return [base / sd for sd in directory["subdirs"]]
+    return [base]
 
 
 FIELD_CATS = {"datapoint", "multivalue", "tuple", "button"}
@@ -72,29 +102,29 @@ def count_schema_fields(schema: dict) -> int:
     return n
 
 
-def discover_queues(project_dir: Path, environments: list[str]) -> list[dict]:
-    """Walk environments → workspaces → queues; collect facts per queue."""
+def discover_queues(project_dir: Path, directories: list[dict]) -> list[dict]:
+    """Walk each org's object roots → workspaces → queues; collect facts per queue."""
     out: list[dict] = []
-    for env in environments:
-        env_dir = project_dir / env
-        for q_json in sorted(env_dir.glob("workspaces/Workspace_*/queues/Queue_*/queue.json")):
-            queue = json.loads(q_json.read_text())
-            workspace_json = q_json.parent.parent.parent / "workspace.json"
-            workspace_name = (
-                json.loads(workspace_json.read_text()).get("name", "")
-                if workspace_json.is_file() else ""
-            )
-            schema_path = q_json.parent / "schema.json"
-            field_count = (
-                count_schema_fields(json.loads(schema_path.read_text()))
-                if schema_path.is_file() else 0
-            )
-            out.append({
-                "name": queue.get("name", q_json.parent.name),
-                "workspace": workspace_name,
-                "environment": env,
-                "schema_field_count": field_count,
-            })
+    for d in directories:
+        for root in _object_roots(project_dir, d):
+            for q_json in sorted(root.glob("workspaces/*/queues/*/queue.json")):
+                queue = json.loads(q_json.read_text())
+                workspace_json = q_json.parent.parent.parent / "workspace.json"
+                workspace_name = (
+                    json.loads(workspace_json.read_text()).get("name", "")
+                    if workspace_json.is_file() else ""
+                )
+                schema_path = q_json.parent / "schema.json"
+                field_count = (
+                    count_schema_fields(json.loads(schema_path.read_text()))
+                    if schema_path.is_file() else 0
+                )
+                out.append({
+                    "name": queue.get("name", q_json.parent.name),
+                    "workspace": workspace_name,
+                    "environment": d["name"],
+                    "schema_field_count": field_count,
+                })
     return out
 
 
@@ -119,23 +149,24 @@ SFTP_PATTERNS = (
 )
 
 
-def discover_hooks(project_dir: Path, environments: list[str]) -> list[dict]:
-    """Discover hooks under <env>/hooks/*.json."""
+def discover_hooks(project_dir: Path, directories: list[dict]) -> list[dict]:
+    """Discover hooks under each org's object roots: <root>/hooks/*.json."""
     out: list[dict] = []
-    for env in environments:
-        hooks_dir = project_dir / env / "hooks"
-        if not hooks_dir.is_dir():
-            continue
-        for hook_json in sorted(hooks_dir.glob("*.json")):
-            hook = json.loads(hook_json.read_text())
-            runtime = ((hook.get("config") or {}).get("runtime")) or ""
-            out.append({
-                "name": hook.get("name", hook_json.stem),
-                "type": hook.get("type", ""),
-                "runtime": runtime,
-                "environment": env,
-                "queue_count": len(hook.get("queues") or []),
-            })
+    for d in directories:
+        for root in _object_roots(project_dir, d):
+            hooks_dir = root / "hooks"
+            if not hooks_dir.is_dir():
+                continue
+            for hook_json in sorted(hooks_dir.glob("*.json")):
+                hook = json.loads(hook_json.read_text())
+                runtime = ((hook.get("config") or {}).get("runtime")) or ""
+                out.append({
+                    "name": hook.get("name", hook_json.stem),
+                    "type": hook.get("type", ""),
+                    "runtime": runtime,
+                    "environment": d["name"],
+                    "queue_count": len(hook.get("queues") or []),
+                })
     return out
 
 
@@ -177,9 +208,17 @@ def main(project_dir_str: str) -> None:
         print(f"error: {project_dir} is not a directory", file=sys.stderr)
         sys.exit(2)
 
+    tool = detect_tool(project_dir)
+    if tool != "prd2":
+        json.dump({"tool": tool, "supported": False}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+
     facts = parse_prd_config(project_dir)
-    queues = discover_queues(project_dir, facts["environments"])
-    hooks = discover_hooks(project_dir, facts["environments"])
+    facts["tool"] = "prd2"
+    directories = facts["directories"]
+    queues = discover_queues(project_dir, directories)
+    hooks = discover_hooks(project_dir, directories)
     workspaces = {(q["environment"], q["workspace"]) for q in queues}
     facts["queues"] = queues
     facts["queue_count"] = len(queues)

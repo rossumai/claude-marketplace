@@ -1,0 +1,8 @@
+{
+  "content": [
+    {"category": "section", "id": "header", "children": [
+      {"category": "datapoint", "id": "document_id", "type": "string"},
+      {"category": "datapoint", "id": "vendor_name", "type": "string"}
+    ]}
+  ]
+}

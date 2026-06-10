@@ -63,3 +63,26 @@ def test_integration_target_detects_sap():
 def test_integration_target_unknown_when_no_signal():
     out = run_inspect(FIXTURES / "minimal")
     assert out["integration_target"] == "unknown"
+
+
+def test_tool_detected_prd2():
+    out = run_inspect(FIXTURES / "minimal")
+    assert out["tool"] == "prd2"
+
+
+def test_non_prd2_reports_unsupported(tmp_path):
+    out = run_inspect(tmp_path)  # empty dir, no prd_config.yaml
+    assert out["tool"] == "unknown"
+    assert out["supported"] is False
+
+
+def test_subdir_layout_is_discovered():
+    out = run_inspect(FIXTURES / "prd2-subdirs")
+    assert out["environments"] == ["dev-env"]
+    assert out["workspace_count"] == 1
+    assert out["queue_count"] == 1
+    assert out["queues"][0]["name"] == "Invoices"
+    assert out["queues"][0]["workspace"] == "AP Workspace"
+    assert out["queues"][0]["environment"] == "dev-env"
+    assert out["hook_count"] == 1
+    assert {h["name"] for h in out["hooks"]} == {"Validator"}
