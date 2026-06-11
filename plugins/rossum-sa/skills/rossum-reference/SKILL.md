@@ -18,6 +18,10 @@ This skill provides comprehensive reference documentation for the Rossum.ai docu
 
 **Edit local `.py` files, not JSON.** When modifying hook code or formula logic in a prd project, only edit the `.py` file. Never edit the `code` field in hook JSON or the `formula` property in `schema.json` — `prd2 push` syncs `.py` files into JSON automatically. Do not use `rossum_patch_hook` or `rossum_patch_schema` to push code changes that should go through `prd2 push` instead.
 
+## Customer-facing terminology
+
+In SOWs, proposals, emails, and any other customer-facing material, write "Master Data Hub" in full — never "MDH" — and do not mention "Data Storage" (it is implementation; the product is Master Data Hub). Reference content and internal developer guidance can use "MDH" freely.
+
 ## When to use
 
 Use this knowledge when:
