@@ -797,6 +797,23 @@ Both endpoints receive POST requests with JSON annotation data matching the queu
 | `annotation.failed_export` | Export failed |
 | `email.received` | Email arrives at inbox |
 
+### Hook event triggers — decision table
+
+Pick the right event when you create a hook, otherwise it silently won't fire.
+
+| Event | Fires when | Use for |
+|-------|------------|---------|
+| `annotation_status.changed` | Annotation enters a new status (`to_review`, `reviewing`, `confirmed`, `rejected`, `exporting`, `exported`, `failed_export`, `purged`, `deleted`) | Anything keyed on workflow / status transitions: rejection notifications, per-level approval emails, single-line generator on `to_review`, post-export side effects |
+| `annotation_content.initialize` | Right after OCR, before user sees the doc | Pre-fill / seed fields, default values, suggest line items |
+| `annotation_content.user_update` | User edits a field in the UI | Live recalculation, formula-style cross-field updates, real-time validation messages |
+| `annotation_content.updated` | Any content change incl. API/import | Same as above when you also want to react to programmatic edits |
+| `annotation_content.started` | User opens an annotation for review | Show one-time info messages, lazy lookups |
+| `annotation_content.export` | Just before export payload is built | Last-mile transformations on the export representation |
+| `email.received` | Inbound email arrives in the inbox | Email parsing / routing hooks |
+| `invocation.manual` | Operator clicks "Run" on a function hook | One-off batch / cron-style tasks (combined with a queue list) |
+
+Common confusion: a **rejection notification belongs on `annotation_status.changed`** filtered to `to.status == "rejected"`, *not* on `annotation.rejected` (which is a Rule/Trigger event, not a hook event).
+
 ### Hook Operations Examples
 
 ```bash
@@ -987,70 +1004,9 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 
 ## Approval Workflows
 
-Approval workflows route documents through an ordered chain of decision steps. Each step has its own approvers, condition, type, and mode. The model is **workflow → ordered workflow_steps → workflow_runs**.
+Approval workflows route documents through an ordered chain of decision steps before export (model: workflow → ordered `workflow_steps` → `workflow_runs`). Each step has its own approvers, condition, type, and mode.
 
-**Verification note:** the read endpoints below were confirmed against a live Rossum instance (organization 113187, workflow 126). The write endpoints (POST/PATCH/DELETE) and `workflow_step_users` are *unverified* — they have NOT been observed working in real probes, and `/v1/workflow_step_users` returned **404** in one probe. **Confirm against the official API docs at <https://rossum.app/api/docs/openapi/guides/getting-started/#introduction> or with `prd2 pull` before writing code against them.**
-
-### Verified (read-only)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET    | `/v1/workflows/{id}` | Retrieve workflow (includes ordered `steps` URLs and linked queues) |
-| GET    | `/v1/workflow_steps?workflow={id}` | List steps for a workflow |
-| GET    | `/v1/workflow_steps/{id}` | Retrieve a single step (full body) |
-| GET    | `/v1/workflow_runs?annotation__queue={qid}` | List workflow runs (per annotation) — includes `current_step`, `workflow_status` (`approved` / `rejected` / in progress) |
-
-### Unverified — confirm before use
-
-| Method | Endpoint | Status |
-|--------|----------|--------|
-| POST / PATCH / DELETE | `/v1/workflows` and `/v1/workflows/{id}` | not confirmed against a live instance |
-| POST / PATCH / DELETE | `/v1/workflow_steps` and `/v1/workflow_steps/{id}` | not confirmed; prefer `prd2 pull` + edit + `prd2 push` until verified |
-| any | `/v1/workflow_step_users` | **returned 404** in one probe — likely does not exist; approver assignments may live on the step object itself or via a different resource |
-
-### `workflow_step` real fields (from a verified GET response)
-
-- `id` — integer
-- `url` — self URL
-- `organization` — organization URL
-- `workflow` — parent workflow URL
-- **`name`** — UI label of the step (e.g. `"District Director"`). NOT `label`.
-- `ordering` — integer; lower runs first
-- `type` — observed value: `"approval"`
-- `mode` — observed values: `"all"` (every assigned approver must approve), `"any"` (likely — confirm)
-- `condition` — Rossum expression object evaluated against the annotation. Two observed shapes:
-  - Plain map form: `{"field.approver_threshold_level_1": ""}` — equality match against a schema field
-  - MongoDB-style: `{"$expr": {"$gte": ["$field.item_max_price", 0]}}` — supports `$gte`/`$lte`/`$gt`/`$lt`/`$eq` etc.
-  When the condition evaluates falsy the step is skipped.
-
-Fields *not* observed in any GET response and previously documented in error: `label`, `automatic`. Do not rely on these without verifying against the OpenAPI spec.
-
-### Approach to changing a workflow
-
-Until POST/PATCH on workflow_steps is verified end-to-end, the safe path is:
-
-1. `prd2 pull` the source environment to get the workflow + steps as JSON.
-2. Edit locally (rename, reorder, change condition).
-3. `prd2 push --indexed-only -f` after explicit user approval.
-
-Direct API writes are possible but unverified — probe with a throwaway workflow on a non-production environment first.
-
-### Hook event triggers — decision table
-
-Pick the right event when you create a hook, otherwise it silently won't fire.
-
-| Event | Fires when | Use for |
-|-------|------------|---------|
-| `annotation_status.changed` | Annotation enters a new status (`to_review`, `reviewing`, `confirmed`, `rejected`, `exporting`, `exported`, `failed_export`, `purged`, `deleted`) | Anything keyed on workflow / status transitions: rejection notifications, per-level approval emails, single-line generator on `to_review`, post-export side effects |
-| `annotation_content.initialize` | Right after OCR, before user sees the doc | Pre-fill / seed fields, default values, suggest line items |
-| `annotation_content.user_update` | User edits a field in the UI | Live recalculation, formula-style cross-field updates, real-time validation messages |
-| `annotation_content.updated` | Any content change incl. API/import | Same as above when you also want to react to programmatic edits |
-| `annotation_content.started` | User opens an annotation for review | Show one-time info messages, lazy lookups |
-| `annotation_content.export` | Just before export payload is built | Last-mile transformations on the export representation |
-| `email.received` | Inbound email arrives in the inbox | Email parsing / routing hooks |
-| `invocation.manual` | Operator clicks "Run" on a function hook | One-off batch / cron-style tasks (combined with a queue list) |
-
-Common confusion: a **rejection notification belongs on `annotation_status.changed`** filtered to `to.status == "rejected"`, *not* on `annotation.rejected` (which is a Rule/Trigger event, not a hook event).
+For the verified read-only API vs. the unverified write endpoints, the real `workflow_step` fields, and the safe `prd2`-based procedure for changing a workflow, see the `approval-workflows-reference` skill.
 
 ---
 
