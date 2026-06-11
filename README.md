@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-14 skills · 11 reference packs · 69 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+14 skills · 12 reference packs · 69 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -97,6 +97,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **prd2 CLI** — deployment and management commands
 - **Structured Formats Import (SFI)** — XML/JSON import setup, XPath/JMESPath selectors, e-invoicing (ZUGFeRD, X-Rechnung)
 - **Approval workflows** — workflow steps and runs, verified vs. unverified API, safe `prd2` change procedure
+- **Business rules & validation** — native Rules vs. the legacy Business Rules Validation extension, conditions, actions, automation blocking
 
 ## 💡 What can you do with this?
 

@@ -463,40 +463,11 @@ The `rir_field_names` attribute in schema maps OCR predictions to internal field
 
 ---
 
-# Native Rossum Rule reference
+# Native Rossum Rule trigger_condition language
 
-> **Note — not the same as Business Rules Validation.** The BRV extension covered in `rossum-reference` uses a different `{field}`-brace expression engine (e.g. `has_value({document_id})`). Native Rules use Python-style `field.X` attribute access (e.g. `is_empty(field.document_id)`). The two are independent surfaces; do not mix syntaxes.
+> This section covers how to **write a Rule `trigger_condition` expression** — a subset of Python shared with schema-field formulas. For the Rule *entity* (the `/v1/rules` JSON shape, `actions[]` types, FIRE-vs-PASS polarity, and conventional action pairings), see the `business-rules-reference` skill, which owns the rule/validation *feature* (native Rules and the legacy Business Rules Validation extension). Native Rules use Python-style `field.X` access — distinct from the Business Rules Validation extension's `{field}`-brace engine (also documented in `business-rules-reference`).
 
-A **Rule** (`POST /v1/rules`) defines a single boolean `trigger_condition` that, when evaluated to `True` at validation time, emits one or more `actions` (messages, automation blockers, show/hide toggles).
-
-## Rule JSON shape
-
-```json
-{
-  "id": <auto-assigned by API; do not rely on client-supplied id>,
-  "name": "Human-readable label",
-  "description": "Optional free-text",
-  "enabled": true,
-  "trigger_condition": "<Python boolean expression — fires when TRUE>",
-  "actions": [
-    { "id": "<arbitrary stable slug>", "enabled": true,
-      "type": "show_message",
-      "event": "validation",
-      "payload": { "type": "error|warning|info",
-                   "content": "<message text>",
-                   "schema_id": "<field to anchor the message on>" } },
-    { "id": "<arbitrary stable slug>", "enabled": true,
-      "type": "add_automation_blocker",
-      "event": "validation",
-      "payload": { "content": "<blocker text>",
-                   "schema_id": "<field to anchor the blocker on>" } }
-  ],
-  "queues": ["https://api.elis.rossum.ai/api/v1/queues/<id>", ...],
-  "organization": "https://api.elis.rossum.ai/api/v1/organizations/<id>"
-}
-```
-
-`action.id` is a non-empty string identifying the action within the rule. The API does not constrain the format — any string unique within the rule works. Use whichever convention is consistent within your project (semantic slugs, indexed pairs, UUIDs all work). Keep ids stable across rule versions if you care about diff readability.
+A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition` at validation time; when it is `True`, the rule emits its `actions`.
 
 ## trigger_condition expression language
 
@@ -527,27 +498,6 @@ A subset of Python. The expression evaluates to a boolean; the rule fires when i
 
 **Line-item rule semantics.** When a rule is attached to a line-item field (e.g. `schema_id: "item_order_id"` in the message payload), the trigger evaluates **once per line item** and fires per row. `field.item_X` is the current row. Aggregations require `.all_values`.
 
-## Polarity: `trigger_condition` is the FIRE predicate
-
-`trigger_condition` is the **fire** predicate — the rule fires (emits actions) when the expression evaluates to `True`. Read the rule's `message` text to confirm intent: the message describes the **problem state**, and `trigger_condition` should be `True` in that state.
-
-Example — a rule that requires `item_order_id` to start with `"AU"`:
-```python
-# Rule fires (and shows the error) when the ID is non-empty AND does not start with AU
-trigger_condition = (
-    "not is_empty(field.item_order_id) and "
-    "not bool(re.search('^AU.{4,}', str(field.item_order_id)))"
-)
-# message: "PO number must start with AU"
-# actions: show_message(error) + add_automation_blocker on item_order_id
-```
-
-Two common ways to get polarity wrong:
-- **Porting a check whose source expresses the OK state.** If you have an expression that means "the data is good", invert it before putting it into `trigger_condition`.
-- **Problem-indicator fields.** Some schema fields are populated *only when there's a problem* — common naming conventions include `*_tag`, `*_mismatch_tag`, `*_match`, `*_inactive`, `*_indicator`, `*_issue`. For these, the rule fires on `not is_empty(field.X)`, not on `is_empty(...)`. Read the field name and the rule message text together: if the message describes a *problem* (e.g. "Fraudulent supplier detected", "ELE name mismatch") and the field name reads like a positive-detection marker, the fire condition is `not is_empty(...)`.
-
-In either case, the rule's `message` text reads naturally in the fire state — use that as the primary disambiguation when the field-naming convention isn't conclusive.
-
 ## Defensive `not is_empty(field.X)` guard convention
 
 Native Rule expressions are evaluated against arbitrary field values, including empty/None. Several common operators raise or produce surprising results on empty input:
@@ -561,51 +511,6 @@ Native Rule expressions are evaluated against arbitrary field values, including 
 | `field.X.all_values` aggregations (`sum`, `len`) | `sum([])` = 0, `len([])` = 0 — safe | **No** for length, but guard each value if you'll do arithmetic on it |
 
 Ground-truth Rossum rules consistently include the defensive `not is_empty(field.X)` prefix even when logically redundant (e.g. before `field.X == 'literal'`). Mirror that convention so a downstream reader doesn't have to mentally prove the guard isn't needed.
-
-## Rule.actions — types and payload shape
-
-Three action types are commonly used at validation time:
-
-**`show_message`** — surface a banner on the annotation:
-```json
-{ "id": "rule-slug-msg", "enabled": true, "type": "show_message", "event": "validation",
-  "payload": {
-    "type": "error" | "warning" | "info",   // banner severity
-    "content": "Free-text message shown to the user",
-    "schema_id": "field_to_anchor_on"        // where the banner attaches
-  } }
-```
-
-**`add_automation_blocker`** — prevent automatic export of the annotation:
-```json
-{ "id": "rule-slug-block", "enabled": true, "type": "add_automation_blocker", "event": "validation",
-  "payload": {
-    "content": "Free-text reason; same as the show_message content by convention",
-    "schema_id": "field_to_anchor_on"
-  } }
-```
-
-**`show_hide_field`** — toggle field visibility based on the trigger:
-```json
-{ "id": "rule-slug-sh", "enabled": true, "type": "show_hide_field", "event": "validation",
-  "payload": {
-    "schema_id": "primary_field_id",          // legacy single-id form
-    "schema_ids": ["field_a", "field_b"]      // newer multi-id form (preferred)
-  } }
-```
-The field(s) listed are **shown** when the rule fires and **hidden** when it does not.
-
-`schema_ids` (plural array) is the canonical payload key — every existing rule with a `show_hide_field` action carries it. `schema_id` (singular) is a legacy key that older rules also carry alongside `schema_ids` (typically with the same primary field name). For new rules, emit only `schema_ids`. When patching a rule that already has both keys, preserve both to avoid an unintended schema-shape change.
-
-### Conventional action pairings
-
-The patterns that recur across well-formed Rossum rules:
-
-1. **Message + blocker pair.** When a rule warrants an automation blocker (`automation_blocker: true` on the source), it almost always also has a `show_message` with the same `content` and `schema_id`. The user sees the banner; export is also halted. If the source check carries an `automation_blocker: true`, emit both actions — don't pick one.
-2. **Tag-fire + reveal pair.** When the trigger is `not is_empty(field.<X>_tag)` (a "tag" field populated by MDH or another hook only when there's a problem), pair the `show_message` with a `show_hide_field` revealing `<X>_tag` and related context fields. Tag fields are conventionally hidden by default and become visible when populated — the `show_hide_field` action is what makes them visible.
-3. **Document-type → hidden-section.** When the trigger gates on `field.document_type == '...'` (e.g. credit note vs. invoice), pair it with a `show_hide_field` revealing the section relevant to that document type.
-
-A single rule may combine pairings (e.g. a tag-fire rule with a message+blocker+reveal triplet). Pair conventions are additive — pick whichever apply.
 
 ---
 

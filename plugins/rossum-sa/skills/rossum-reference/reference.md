@@ -987,6 +987,8 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 
 **Rule conditions**: Field value matches/contains, numerical comparisons, date ranges, AND/OR logic.
 
+For the Rule *feature* in depth — `trigger_condition` + `actions[]`, FIRE-vs-PASS polarity, lifecycle, and the legacy Business Rules Validation extension — see the `business-rules-reference` skill. The `trigger_condition` expression language itself lives in `txscript-reference`.
+
 ### Triggers
 
 | Method | Endpoint | Purpose |
@@ -1135,58 +1137,9 @@ For dataset CRUD and the API, the hook configuration model (MatchConfig, mapping
 
 ## Business Rules Validation
 
-Validates extracted data using an expression engine. Runs at end of extension chain to prevent confirmation/automation of invalid documents.
+Rossum validates extracted data and blocks automation two ways: **native Rossum Rules** (the `/v1/rules` entity — `trigger_condition` + `actions[]`) and the **legacy Business Rules Validation Store extension** (a `checks[]` config with its own curly-brace expression engine). Both run at validation time to surface messages and block confirmation/automation of invalid documents.
 
-> See also: the native **Rossum Rule** entity (`POST /v1/rules`) offers similar functionality at the platform level (a `trigger_condition` expression plus `actions`). See the [`txscript-reference`](../txscript-reference/SKILL.md) skill for the native Rule expression language and JSON shape.
-
-**Configuration**:
-```json
-{
-  "checks": [
-    {
-      "rule": "has_value({document_id})",
-      "message": "Invoice number must not be empty",
-      "type": "error",
-      "automation_blocker": true,
-      "active": true,
-      "queue_ids": [],
-      "condition": ""
-    }
-  ]
-}
-```
-
-### Expression Engine Syntax
-
-**Operators**: `+`, `-`, `/`, `//`, `*`, `%`, `and`, `or`, `xor`, `==`, `!=`, `<`, `>`, `<=`, `>=`
-
-**Data types**: integer, float, string, date. Auto-cast order: float → integer → date → string.
-
-**Manual casting**: `int()`, `float()`, `date()` (requires `YYYY-MM-DD`), `str()`
-
-**Empty checks**: `has_value({field})`, `is_empty({field})` (do NOT use `== ''`)
-
-**Aggregation**: `all()`, `any()`, `sum()`, `min()`, `max()`, `len()`, `unique_len()`, `first_value()`
-
-**Filter**: `filter({column}, [0, None])` — removes specified values
-
-**Defaults**: `{value, default=0}` or `{value, default=value('other_field')}`
-
-**Date functions**: `today()`, `timedelta(days=N)`, `timedelta(years=N, months=N)`
-
-**String functions**: `substring(search, value)`, `regexp(pattern, value, ignore_case=True)`, `similarity(value, search)` (Levenshtein), `list_contains(column, search)`
-
-**Examples**:
-```
-{issue_date} > "2023-01-01"
-{item_price} * {item_amount} == {item_total}
-sum({item_total}) == {total_price}
-today() + timedelta(days=2) > {due_date}
-```
-
-**Limitation**: One rule can only work with one table.
-
----
+For both implementations — the native Rule entity, actions, and FIRE-vs-PASS polarity; the legacy extension's `checks[]` config and its expression engine; and how to choose — see the `business-rules-reference` skill. (The native Rule `trigger_condition` is written in TxScript — see `txscript-reference`.)
 
 ## Duplicate Detection
 
