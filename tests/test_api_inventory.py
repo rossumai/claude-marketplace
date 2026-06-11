@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from api_inventory import build, coverage, diff, render_doc  # noqa: E402
+from api_inventory import build, coverage, diff, render_doc, render_issue  # noqa: E402
 
 SPEC = {
     "paths": {
@@ -107,3 +107,29 @@ def test_render_doc_groups_by_tag_with_status():
     assert "## Queue" in md and "## Engine" in md
     assert "`GET /queues`" in md and "covered" in md
     assert "`GET /queues/{id}`" in md and "pending" in md
+
+
+def test_pending_operations_excludes_classified():
+    inv = build.extract_inventory(SPEC)
+    cmap = coverage.seed_coverage_map(inv, coverage.extract_tool_endpoints(SERVER_SRC))
+    pending = coverage.pending_operations(inv, cmap)
+    keys = {(o["method"], o["path"]) for o in pending}
+    assert ("GET", "/api/v1/queues/{id}") in keys   # not covered -> pending
+    assert ("GET", "/api/v1/engines") in keys
+    assert ("GET", "/api/v1/queues") not in keys     # covered -> excluded
+
+
+def test_render_issue_digest_is_stable_and_content_sensitive():
+    p1 = [{"method": "GET", "path": "/v1/engines", "summary": "List", "tag": "Engine"}]
+    p2 = [{"method": "GET", "path": "/v1/engines", "summary": "List", "tag": "Engine"},
+          {"method": "GET", "path": "/v1/labels", "summary": "List", "tag": "Label"}]
+    body1 = render_issue.render_issue_body(p1)
+    assert "# Rossum API coverage — watch" in body1
+    assert "### Engine (1)" in body1
+    assert "`GET /v1/engines`" in body1
+    # deterministic: same pending -> same digest
+    assert render_issue.extract_digest(body1) == render_issue.extract_digest(
+        render_issue.render_issue_body(list(p1)))
+    # content-sensitive: a new pending op changes the digest (so it notifies)
+    assert render_issue.extract_digest(body1) != render_issue.extract_digest(
+        render_issue.render_issue_body(p2))

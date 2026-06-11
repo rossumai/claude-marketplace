@@ -1,0 +1,61 @@
+name: API coverage
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"   # Mondays 07:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write       # commit snapshot/doc to a PR branch
+  pull-requests: write  # open the refresh PR
+  issues: write         # upsert the watch issue
+
+concurrency:
+  group: api-coverage
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Run coverage check (refresh snapshot/doc + build issue body)
+        run: python scripts/run_coverage_check.py
+
+      - name: Upsert the watch issue (digest no-op so quiet days don't notify)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Rossum API coverage — watch"
+          newd=$(grep -m1 'coverage-digest:' issue-body.md | sed -E 's/.*coverage-digest: *([a-f0-9]+).*/\1/')
+          num=$(gh issue list --state open --search "$TITLE in:title" --json number,title \
+                -q ".[] | select(.title==\"$TITLE\") | .number" | head -1)
+          if [ -n "$num" ]; then
+            oldd=$(gh issue view "$num" --json body -q .body \
+                   | grep -m1 'coverage-digest:' | sed -E 's/.*coverage-digest: *([a-f0-9]+).*/\1/')
+            if [ "$oldd" = "$newd" ]; then
+              echo "digest unchanged ($newd) — no-op"
+            else
+              gh issue edit "$num" --title "$TITLE" --body-file issue-body.md
+              echo "updated issue #$num"
+            fi
+          else
+            gh issue create --title "$TITLE" --body-file issue-body.md
+          fi
+
+      - name: Open PR for snapshot/doc changes (no-op when unchanged)
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676  # v7
+        with:
+          add-paths: |
+            data/api-inventory.json
+            plugins/rossum-sa/skills/rossum-reference/api-coverage.md
+          branch: api-coverage/snapshot-refresh
+          delete-branch: true
+          title: "chore: refresh API inventory snapshot + coverage doc"
+          commit-message: "chore: refresh API inventory snapshot + coverage doc"
+          body: "Automated refresh by the API coverage workflow (the rolling watch issue tracks pending operations)."

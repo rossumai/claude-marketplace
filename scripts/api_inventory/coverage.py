@@ -90,3 +90,13 @@ def summarize(inventory: list[dict], coverage_map: dict) -> dict:
     out = dict(Counter(v["decision"] for v in coverage_map.values()))
     out["pending"] = len(inventory) - len(coverage_map)
     return out
+
+
+def pending_operations(inventory: list[dict], coverage_map: dict) -> list[dict]:
+    """Operations with no curated decision (absent, or explicitly `pending`)."""
+    out = []
+    for op in inventory:
+        entry = coverage_map.get(f"{op['method']} {_display_path(op['path'])}")
+        if entry is None or entry.get("decision") == "pending":
+            out.append(op)
+    return out

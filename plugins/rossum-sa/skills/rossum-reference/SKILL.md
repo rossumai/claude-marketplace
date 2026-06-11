@@ -8,6 +8,8 @@ user-invocable: false
 
 This skill provides comprehensive reference documentation for the Rossum.ai document automation platform. For complete details, see [reference.md](reference.md).
 
+Which Rossum API operations the `rossum-api` MCP server currently wraps — and which are not yet covered — is tracked in [api-coverage.md](api-coverage.md) (auto-generated; ⬜ pending = exists in the API, no MCP tool yet).
+
 ## Verification Rule (read first)
 
 **Do not make assumptions. All technical decisions must be grounded in verified facts, and when uncertain you must ask before acting.** API endpoints, field names, hook events, and `operations` payloads must be verified against the official docs at <https://rossum.app/api/docs/openapi/guides/getting-started/#introduction> or a live read-only probe before being written into code or documentation. If you must guess, label the claim *Unverified — confirm before relying on this*. Full rationale in [`../__shared/verification-rules.md`](../__shared/verification-rules.md).
