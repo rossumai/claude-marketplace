@@ -1274,42 +1274,21 @@ Unblocks specified datapoints when conditions are met. Evaluates fields and upda
 
 ## Export Pipeline
 
-Chains sequential components for structured data delivery:
+Rossum delivers structured output two ways. The **legacy export pipeline** chains separate extensions via run-after (Custom Format Templating Purge → Custom Format Templating → REST API Export → Data Value Extractor → Export Evaluator → SFTP/S3 Export). The modern **Request Processor** consolidates these into a single JSON-configured hook and is preferred for new builds.
 
-1. **Custom Format Templating Purge**: Cleans pipeline for export
-2. **Custom Format Templating**: Structures data into desired output format
-3. **REST API Export**: Sends data to REST API, stores reply
-4. **Data Value Extractor**: Extracts info from API responses (downstream IDs, HTTP status)
-5. **Export Evaluator**: Determines success/failure (e.g., check for HTTP 200/201)
-6. **SFTP/S3 Export**: Uploads to file storage
-
-Components connect via "run-after" extension chaining.
-
----
+For the Request Processor (stages, templating, auth, response handlers, SFTP export, migration from Pipeline v1), see the `export-pipeline-reference` skill. To author the legacy Custom Format Templating (Jinja2) templates, see the `render-export-template` skill.
 
 ## SFTP & S3 Import/Export
 
-Available extensions for file storage integration:
+Rossum integrates with file storage via Store extensions: **imports** ("Import Master Data From SFTP/S3", "Import Documents From SFTP/S3"; scheduled trigger) and **export** ("Export To SFTP/S3"). Configuration is JSON — credentials (host, port, auth type), import rules (dataset names, formats, regex patterns), and result actions (archive/failed directories). Endpoints are region-specific (EU1/EU2/US/JP).
 
-**Import extensions**: Import Master Data From SFTP/S3, Import Documents From SFTP/S3
-
-**Export extensions**: Export To SFTP/S3
-
-**Configuration**: JSON with credentials (host, port, auth type), import rules (dataset names, file formats, regex patterns), and result actions (archive/failed directories).
-
-**Trigger**: "Scheduled" for imports, "Export" for exports. Region-specific endpoints (EU1/EU2/US/JP).
-
----
+For the **export** side via the Request Processor's `file-storage-export` service (credentials, export rules, filename templates), see the `export-pipeline-reference` skill. The **import** extensions are not yet covered by a dedicated pack — configure them per the overview above.
 
 ## Structured Formats Import
 
-Processes non-visual documents (XML, JSON, EDI) by extracting data and rendering a PDF representation for review.
+Structured Formats Import (SFI) processes non-visual documents (XML, JSON, e-invoices) by extracting data with XPath/JMESPath selectors and rendering a PDF for review. It runs as a webhook extension on `upload.created` and requires the relevant structured MIME types to be enabled.
 
-**Setup**: Requires enabling XML/JSON MIME types. Uses webhook extension triggered on `upload.created`.
-
-**Configuration**: Maps source data to datapoints using XPath (XML) or JSONPath (JSON) selectors. Supports file splitting and embedded PDF extraction.
-
----
+For end-to-end setup, field mapping, value transformations, document splitting, PDF rendering, and production e-invoicing examples (ZUGFeRD, X-Rechnung), see the `sfi-reference` skill.
 
 ## Embedded Mode
 
@@ -1459,26 +1438,9 @@ The memorization extension saves user corrections to a Data Storage collection f
 
 ## Export Mapping (Jinja2)
 
-Export templates use Jinja2 syntax to structure extracted data for downstream systems.
+The legacy Custom Format Templating export step renders a Jinja2 template into the file a downstream system ingests (CSV, XML, EDI, custom JSON). Header fields are `{{ field.schema_id }}`; line items iterate with `{% for item in field.line_items %}`; standard Jinja2 conditionals and filters (`| default(0, true)`, `| tojson`, `| upper`, `| lower`) apply.
 
-**Header fields**: `{{ field.schema_id }}`
-
-**Line items**: iterate with `{% for item in field.line_items %}` and access as `{{ item.schema_id }}`
-
-**Conditional logic:**
-```
-{% if field.po_payment_term_code_match != "" %}
-   "code": "{{ field.po_payment_term_code_match }}"
-{% elif field.sender_payment_terms_code_match != "" %}
-   "code": "{{ field.sender_payment_terms_code_match }}"
-{% else %}
-   "code": "{{ field.payment_terms_match }}"
-{% endif %}
-```
-
-**Common filters**: `| default(0, true)`, `| tojson`, `| upper`, `| lower`
-
----
+To author, render, and debug these templates against a real annotation, see the `render-export-template` skill. For the modern JSON-stage alternative, see `export-pipeline-reference`.
 
 ## Document Sorting
 
