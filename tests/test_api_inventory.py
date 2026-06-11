@@ -119,17 +119,43 @@ def test_pending_operations_excludes_classified():
     assert ("GET", "/api/v1/queues") not in keys     # covered -> excluded
 
 
-def test_render_issue_digest_is_stable_and_content_sensitive():
-    p1 = [{"method": "GET", "path": "/v1/engines", "summary": "List", "tag": "Engine"}]
-    p2 = [{"method": "GET", "path": "/v1/engines", "summary": "List", "tag": "Engine"},
-          {"method": "GET", "path": "/v1/labels", "summary": "List", "tag": "Label"}]
-    body1 = render_issue.render_issue_body(p1)
-    assert "# Rossum API coverage — watch" in body1
-    assert "### Engine (1)" in body1
-    assert "`GET /v1/engines`" in body1
-    # deterministic: same pending -> same digest
-    assert render_issue.extract_digest(body1) == render_issue.extract_digest(
-        render_issue.render_issue_body(list(p1)))
-    # content-sensitive: a new pending op changes the digest (so it notifies)
-    assert render_issue.extract_digest(body1) != render_issue.extract_digest(
-        render_issue.render_issue_body(p2))
+def test_stale_coverage_entries():
+    inv = build.extract_inventory(SPEC)
+    cmap = {"GET /queues": {"decision": "covered", "tools": ["x"]},   # still in SPEC
+            "GET /gone/{id}": {"decision": "covered", "tools": ["y"]}}  # not in SPEC
+    assert coverage.stale_coverage_entries(inv, cmap) == ["GET /gone/{id}"]
+
+
+def test_has_content_guard():
+    empty = {"added": [], "changed": [], "removed": []}
+    op = {"method": "GET", "path": "/x"}
+    assert render_issue.has_content(empty, [], []) is False
+    assert render_issue.has_content(empty, [op], []) is True                       # pending
+    assert render_issue.has_content({"added": [op], "changed": [], "removed": []}, [], []) is True  # diff
+    assert render_issue.has_content(empty, [], ["GET /gone"]) is True              # stale
+
+
+def test_render_issue_body_sections_and_digest():
+    diff_ = {
+        "added": [{"method": "POST", "path": "/v1/engines", "summary": "Create", "tag": "Engine"}],
+        "changed": [],
+        "removed": [{"method": "DELETE", "path": "/v1/old", "summary": "", "tag": "Old"}],
+    }
+    pending = [{"method": "GET", "path": "/v1/labels", "summary": "List", "tag": "Label"}]
+    stale = ["GET /gone"]
+    body = render_issue.render_issue_body(diff_, pending, stale)
+    assert "## Changes since the committed snapshot" in body
+    assert "added `POST /v1/engines`" in body
+    assert "removed `DELETE /v1/old`" in body
+    assert "## Stale coverage-map entries (1)" in body and "`GET /gone`" in body
+    assert "### Label (1)" in body and "`GET /v1/labels`" in body
+
+    base = render_issue.extract_digest(body)
+    empty = {"added": [], "changed": [], "removed": []}
+    # digest is sensitive to each of the three sections...
+    assert base != render_issue.extract_digest(render_issue.render_issue_body(empty, pending, stale))
+    assert base != render_issue.extract_digest(render_issue.render_issue_body(diff_, [], stale))
+    assert base != render_issue.extract_digest(render_issue.render_issue_body(diff_, pending, []))
+    # ...and deterministic for the same input.
+    assert base == render_issue.extract_digest(
+        render_issue.render_issue_body(dict(diff_), list(pending), list(stale)))

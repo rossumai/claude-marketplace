@@ -6,9 +6,8 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write       # commit snapshot/doc to a PR branch
-  pull-requests: write  # open the refresh PR
-  issues: write         # upsert the watch issue
+  contents: read   # checkout only — the workflow commits nothing
+  issues: write    # upsert the watch issue
 
 concurrency:
   group: api-coverage
@@ -24,10 +23,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run coverage check (refresh snapshot/doc + build issue body)
+      - id: check
+        name: Build the watch-issue body (read-only — diff + pending + stale)
         run: python scripts/run_coverage_check.py
 
-      - name: Upsert the watch issue (digest no-op so quiet days don't notify)
+      # Only touch the issue when there's something to surface (no empty issue).
+      - name: Upsert the watch issue (digest no-op so quiet weeks don't notify)
+        if: steps.check.outputs.surface == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -47,15 +49,3 @@ jobs:
           else
             gh issue create --title "$TITLE" --body-file issue-body.md
           fi
-
-      - name: Open PR for snapshot/doc changes (no-op when unchanged)
-        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676  # v7
-        with:
-          add-paths: |
-            data/api-inventory.json
-            plugins/rossum-sa/skills/rossum-reference/api-coverage.md
-          branch: api-coverage/snapshot-refresh
-          delete-branch: true
-          title: "chore: refresh API inventory snapshot + coverage doc"
-          commit-message: "chore: refresh API inventory snapshot + coverage doc"
-          body: "Automated refresh by the API coverage workflow (the rolling watch issue tracks pending operations)."

@@ -100,3 +100,13 @@ def pending_operations(inventory: list[dict], coverage_map: dict) -> list[dict]:
         if entry is None or entry.get("decision") == "pending":
             out.append(op)
     return out
+
+
+def stale_coverage_entries(inventory: list[dict], coverage_map: dict) -> list[str]:
+    """Coverage-map keys whose operation no longer exists in the inventory.
+
+    Catches decisions (e.g. `covered`) left behind when an endpoint is removed
+    from the API — otherwise they vanish silently from the generated doc.
+    """
+    live = {f"{op['method']} {_display_path(op['path'])}" for op in inventory}
+    return sorted(k for k in coverage_map if k not in live)
