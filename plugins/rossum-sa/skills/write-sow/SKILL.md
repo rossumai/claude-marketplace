@@ -33,6 +33,7 @@ You are a Rossum.ai Solution Architect writing a Statement of Work. Generate a S
 - **No assumptions.** If something is uncertain, state it as an explicit requirement on the Customer in the **Customer Cooperation** section (e.g., "Customer will provide sample documents before kickoff"). Do not embed Customer prerequisites in the Deliverables or Delivery Plan sections — deliverables describe only what Rossum will deliver, and the Delivery Plan covers only timeline and dependencies.
 - Keep language clear, professional, and unambiguous. Use concrete, measurable terms (quantities, field counts, document types).
 - Use defined terms from [defined-terms.md](defined-terms.md) where appropriate.
+- **Terminology — Master Data Hub.** Always write "Master Data Hub" in full; never "MDH". Never mention "Data Storage" in the SOW — it is implementation; the product is Master Data Hub.
 - Use **title case** for deliverable names (e.g., "Queue and Schema Configuration", not "Queue and schema configuration").
 - Use bold sparingly — only for critical callouts. Prefer plain text for regular prose.
 - In deliverables, prefer paragraph descriptions. Use numbered or bullet point lists where they improve clarity. Do not use blockquotes.
@@ -88,7 +89,7 @@ The typical project duration is ~13 weeks. Use these rough estimates when assign
 | UAT & Bug Fixes | 2–3 weeks |
 | Training & Go-live | 1 week |
 
-Some deliverables can run in parallel (e.g., MDH setup alongside schema configuration). Reflect this in the Delivery Plan — parallel items can share the same "Depends On" predecessor rather than being sequential.
+Some deliverables can run in parallel (e.g., Master Data Hub setup alongside schema configuration). Reflect this in the Delivery Plan — parallel items can share the same "Depends On" predecessor rather than being sequential.
 
 ## Cross-Referencing Deliverables
 
