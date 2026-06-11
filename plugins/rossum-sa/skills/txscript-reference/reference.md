@@ -59,6 +59,27 @@ def rossum_hook_request_handler(payload: dict) -> dict:
 t = TxScript.from_payload(payload)
 ```
 
+### Hook payload structure
+
+The raw `payload` dict passed to `rossum_hook_request_handler` carries:
+
+| Key | Contents |
+|---|---|
+| `rossum_authorization_token` | Temporary API token for callbacks to the Rossum API |
+| `base_url` | Org API base URL (for building resource URLs) |
+| `annotation` | The annotation object (`url`, `content`, `labels`, …) |
+| `annotations` | List form, on events that batch annotations |
+| `document` | The source document object |
+| `schema` | The queue's schema |
+| `settings` | The hook's `settings` JSON — store config here, not hard-coded |
+| `secrets` | The hook's `secrets` (credentials) |
+| `updated_datapoints` | Schema IDs of fields changed since the last run |
+| `event`, `action` | The triggering event/action — verify these before acting |
+
+`TxScript.from_payload(payload)` wraps this so `t.field.<id>` works regardless of whether the raw `content` tree shipped with the event.
+
+> **Enabling `t.field` / schema metadata:** in the hook's webhook settings, enable **Schemas** under *Additional notification metadata* so the schema ships in the payload. **Backward compatibility:** `from rossum_python import RossumPython` is an accepted alias for `from txscript import TxScript`.
+
 ### Field Access
 ```python
 # Read field value
@@ -98,6 +119,23 @@ setattr(t.field, "date_issue_normalized", src)    # writes the underlying date
 ```
 
 If you're reading from a raw payload content tree (when `t.field` isn't available), use `content.get("normalized_value")` — which is the ISO string — NOT `content.get("value")`, which is the display variant.
+
+#### Writing multivalue and enum fields
+
+Set every value of a single-column multivalue field in one assignment:
+
+```python
+t.field.multivalue_field.all_values = ["AAA", "BBB"]
+```
+
+This replaces the column's values. For adding or removing table *rows* (structural changes) return an `operations` list instead — `t.field.<table>` is read-only for structural changes; see *Creating / Replacing Line-Item Rows* below.
+
+Populate an enum field's options dynamically, then select one:
+
+```python
+t.field.enum_field.attr.options = [{"label": "Option A", "value": "a"}]
+t.field.enum_field = "a"
+```
 
 #### Reading datapoint metadata (OCR raw text, confidence, position, etc.)
 
@@ -355,6 +393,12 @@ Both `add` and `remove` can be sent in the same call — useful for "swap label 
 - Favor meaningful variable names and modular code
 - Always verify `payload["event"]` and `payload["action"]` before execution in raw hooks
 
+### Runtime & debugging
+- Python 3.12 runtime (AWS Lambda-style). Store configuration in `hook.settings` and credentials in `hook.secrets_schema` — never hard-code them.
+- `print(...)` output appears in Extensions → Logs → Detail under the `output` key (alongside `t.show_info` messages).
+- Prefer single-threaded code; reach for `asyncio`/`httpx` only for genuinely I/O-bound parallel calls.
+- Catch specific exceptions rather than a broad `except Exception`.
+
 ### Formula Fields vs Serverless Functions
 - **Prefer Formula Fields** for simple text transformations (lowercase, concatenation, etc.) — stored at schema level, copied automatically between queues
 - **Use Serverless Functions** for complex logic: API calls, multi-field validation, conditional enrichment, MongoDB lookups
@@ -569,6 +613,16 @@ A single rule may combine pairings (e.g. a tag-fire rule with a message+blocker+
 
 A schema-field formula derives a field's value from other fields. It's a Python expression (or multi-expression block) that evaluates whenever its inputs change.
 
+## Formula constraints
+
+Formulas run in a sandboxed expression runtime, with hard limits distinct from serverless functions:
+
+- **Max 2000 characters** per formula.
+- **No I/O** — a formula cannot make HTTP requests or access the document/file objects. Use a serverless function for lookups and enrichment.
+- **A formula must never reference its own field** (circular-reference error).
+- **Extensions cannot overwrite a formula field's value.** If a hook needs to write the value, use a separate `data`-type field, not a `formula` field.
+- For operations over **200+ line-item rows**, prefer a serverless function — large formulas hit the size/compute limits.
+
 ## Where formulas live
 
 Locally:
@@ -625,6 +679,23 @@ The `len(field.line_items) > 0` guard is the canonical "any rows present?" check
 | `str(x)`, `int(x)`, `float(x)`, `bool(x)` | Type coercion | `str(field.item_date_prepaid_start)[:7]` |
 | `re.search`, `re.sub`, `re.match` | Regex | `re.sub(r'[^0-9]', '', field.iban)` |
 | `date.today()`, `timedelta(...)` | Date arithmetic | `field.date_issue + timedelta(days=30)` |
+
+`datetime`, `date`, `timedelta`, and `re` are **pre-imported** in the expression runtime — no import statement is needed in a formula or Rule condition.
+
+## Annotation and date-component access
+
+Formulas and Rule conditions can read annotation-level data and date components directly (the same globals are available in both surfaces, since they share the runtime):
+
+```python
+annotation.id                            # annotation ID
+annotation.metadata                      # metadata dict
+annotation.document.original_file_name   # source filename
+annotation.email.subject                 # inbound email subject (email_header source)
+
+field.date_issue.year                    # year component, e.g. 2026
+field.date_issue.month                   # month component, e.g. 1
+datetime.datetime.now().date()           # current date
+```
 
 ## The "absorb" pattern
 
