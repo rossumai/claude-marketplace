@@ -13,10 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from api_inventory import build, coverage, fetch  # noqa: E402
+from api_inventory import build, coverage, fetch, render_doc  # noqa: E402
 
 DATA = ROOT / "data"
 SERVER = ROOT / "plugins/rossum-sa/mcp-servers/rossum-api/server.py"
+DOC = ROOT / "plugins/rossum-sa/skills/rossum-reference/api-coverage.md"
 
 
 def main() -> int:
@@ -28,6 +29,8 @@ def main() -> int:
     cmap = coverage.seed_coverage_map(inv, endpoints)
     (DATA / "coverage-map.json").write_text(
         json.dumps(cmap, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    DOC.write_text(render_doc.render_coverage_doc(inv, cmap), encoding="utf-8")
 
     summ = coverage.summarize(inv, cmap)
     print(f"inventory:            {len(inv)} operations")

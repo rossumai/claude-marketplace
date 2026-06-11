@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from api_inventory import build, coverage  # noqa: E402
+from api_inventory import build, coverage, diff, render_doc  # noqa: E402
 
 SPEC = {
     "paths": {
@@ -74,3 +74,36 @@ def test_seed_coverage_map_is_covered_only():
     assert "GET /engines" not in cmap
     summ = coverage.summarize(inv, cmap)
     assert summ == {"covered": 2, "pending": 2}
+
+
+def test_diff_ignores_summary_only_changes():
+    old = [{"method": "GET", "path": "/v1/queues", "operationId": "q_list",
+            "summary": "List", "tag": "Queue"},
+           {"method": "GET", "path": "/v1/old", "operationId": "old", "summary": "x", "tag": "Old"}]
+    new = [{"method": "GET", "path": "/v1/queues", "operationId": "q_list",
+            "summary": "List queues NOW", "tag": "Queue"},          # summary-only -> NOT changed
+           {"method": "POST", "path": "/v1/queues", "operationId": "q_create",
+            "summary": "Create", "tag": "Queue"}]                   # added
+    d = diff.diff_inventories(old, new)
+    assert [(o["method"], o["path"]) for o in d["added"]] == [("POST", "/v1/queues")]
+    assert [(o["method"], o["path"]) for o in d["removed"]] == [("GET", "/v1/old")]
+    assert d["changed"] == []
+
+
+def test_diff_detects_operationid_or_tag_change():
+    old = [{"method": "GET", "path": "/v1/x", "operationId": "a", "summary": "s", "tag": "T1"}]
+    new = [{"method": "GET", "path": "/v1/x", "operationId": "b", "summary": "s", "tag": "T2"}]
+    d = diff.diff_inventories(old, new)
+    assert len(d["changed"]) == 1
+    assert d["changed"][0]["after"] == {"operationId": "b", "tag": "T2"}
+
+
+def test_render_doc_groups_by_tag_with_status():
+    inv = build.extract_inventory(SPEC)
+    cmap = coverage.seed_coverage_map(inv, coverage.extract_tool_endpoints(SERVER_SRC))
+    md = render_doc.render_coverage_doc(inv, cmap)
+    assert "# Rossum API coverage" in md
+    assert "2 covered · 2 pending" in md
+    assert "## Queue" in md and "## Engine" in md
+    assert "`GET /queues`" in md and "covered" in md
+    assert "`GET /queues/{id}`" in md and "pending" in md
