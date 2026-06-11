@@ -1,0 +1,7 @@
+{
+  "available": false,
+  "status_code": 200,
+  "reason": "no projection scenarios returned — the queue does not have enough reviewed documents for a simulation",
+  "total_document_count": 2,
+  "used_document_count": 0
+}
