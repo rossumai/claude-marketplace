@@ -1,0 +1,1885 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/v1/annotations",
+    "operationId": "annotations_list",
+    "summary": "List annotations",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations",
+    "operationId": "annotations_create",
+    "summary": "Create annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/assign",
+    "operationId": "annotations_assign",
+    "summary": "Assign annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/annotations/export",
+    "operationId": "annotations_export",
+    "summary": "Export annotations (cross-queue, GET)",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/export",
+    "operationId": "annotations_export_post",
+    "summary": "Export annotations (cross-queue, POST)",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/purge_deleted",
+    "operationId": "annotations_purge_deleted",
+    "summary": "Purge deleted annotations",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/search",
+    "operationId": "annotations_search",
+    "summary": "Search annotations",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/suggested_recipients",
+    "operationId": "annotations_suggested_recipients",
+    "summary": "Retrieve suggested email recipients",
+    "tag": "Annotation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/annotations/{annotationID}",
+    "operationId": "annotations_retrieve",
+    "summary": "Retrieve annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/annotations/{annotationID}",
+    "operationId": "annotations_partial_update",
+    "summary": "Partial update annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/annotations/{annotationID}",
+    "operationId": "annotations_update",
+    "summary": "Update annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/approve",
+    "operationId": "annotations_approve",
+    "summary": "Approve annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/cancel",
+    "operationId": "annotations_cancel",
+    "summary": "Cancel validation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/confirm",
+    "operationId": "annotations_confirm",
+    "summary": "Confirm validation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/annotations/{annotationID}/content",
+    "operationId": "annotations_content",
+    "summary": "Retrieve annotation content",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/annotations/{annotationID}/content",
+    "operationId": "annotations_content_partial_update",
+    "summary": "Update annotation content",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/content/operations",
+    "operationId": "annotations_content_operations",
+    "summary": "Bulk update annotation content",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/content/validate",
+    "operationId": "annotations_content_validate",
+    "summary": "Validate annotation content",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/content/{multivalueID}/grid_operations",
+    "operationId": "annotations_content_grid_operations",
+    "summary": "Grid operations",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/content/{multivalueID}/grid_parts_operations",
+    "operationId": "annotations_content_grid_parts_operations",
+    "summary": "Partial update grid",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/content/{nodeID}/add_empty",
+    "operationId": "annotations_content_add_empty",
+    "summary": "Add row to multivalue datapoint",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/content/{nodeID}/select",
+    "operationId": "annotations_content_select",
+    "summary": "Replace annotation content by OCR",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/content/{nodeID}/transform_grid_to_datapoints",
+    "operationId": "annotations_content_transform_grid_to_datapoints",
+    "summary": "Convert grid to table data",
+    "tag": "Annotation Content"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/copy",
+    "operationId": "annotations_copy",
+    "summary": "Copy annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/create_embedded_url",
+    "operationId": "annotations_create_embedded_url",
+    "summary": "Create embedded URL",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/delete",
+    "operationId": "annotations_delete_status",
+    "summary": "Switch to deleted",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/edit",
+    "operationId": "annotations_edit",
+    "summary": "Edit annotation (legacy split)",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/edit_pages",
+    "operationId": "annotations_edit_pages",
+    "summary": "Edit pages (split and reorganize)",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/edit_pages/cancel",
+    "operationId": "annotations_edit_pages_cancel",
+    "summary": "Cancel edit pages session",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/edit_pages/in_place",
+    "operationId": "annotations_edit_pages_in_place",
+    "summary": "Edit pages in place",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/edit_pages/start",
+    "operationId": "annotations_edit_pages_start",
+    "summary": "Start edit pages session",
+    "tag": "Annotation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/annotations/{annotationID}/page_data",
+    "operationId": "annotations_page_data_retrieve",
+    "summary": "Retrieve page spatial data",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/page_data/translate",
+    "operationId": "annotations_page_data_translate",
+    "summary": "Translate page spatial data",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/postpone",
+    "operationId": "annotations_postpone",
+    "summary": "Switch to postponed",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/reject",
+    "operationId": "annotations_reject",
+    "summary": "Reject annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/rotate",
+    "operationId": "annotations_rotate",
+    "summary": "Rotate annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/annotations/{annotationID}/search",
+    "operationId": "annotations_search_text",
+    "summary": "Search text",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/split",
+    "operationId": "annotations_split",
+    "summary": "Split annotation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/start",
+    "operationId": "annotations_start",
+    "summary": "Start validation",
+    "tag": "Annotation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/annotations/{annotationID}/start_embedded",
+    "operationId": "annotations_start_embedded",
+    "summary": "Start validation for embedded use",
+    "tag": "Annotation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/audit_logs",
+    "operationId": "audit_logs_list",
+    "summary": "List audit logs",
+    "tag": "Audit Log"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/login",
+    "operationId": "users_login",
+    "summary": "Login",
+    "tag": "User"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/membership_token",
+    "operationId": "auth_membership_token",
+    "summary": "Generate organization token",
+    "tag": "Organization"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/password/change",
+    "operationId": "users_password_change",
+    "summary": "Change password",
+    "tag": "User"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/password/reset",
+    "operationId": "users_password_reset",
+    "summary": "Reset password",
+    "tag": "User"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/password/score",
+    "operationId": "users_password_score",
+    "summary": "Retrieve password score",
+    "tag": "User"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/user",
+    "operationId": "users_auth_current",
+    "summary": "Retrieve current user",
+    "tag": "User"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/auth/user",
+    "operationId": "users_auth_partial_update",
+    "summary": "Partial update current user",
+    "tag": "User"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/auth/user",
+    "operationId": "users_auth_update",
+    "summary": "Update current user",
+    "tag": "User"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/automation_blockers",
+    "operationId": "automation_blockers_list",
+    "summary": "List automation blockers",
+    "tag": "Automation Blocker"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/automation_blockers/{id}",
+    "operationId": "automation_blockers_retrieve",
+    "summary": "Retrieve automation blocker",
+    "tag": "Automation Blocker"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/connectors",
+    "operationId": "connectors_list",
+    "summary": "List connectors",
+    "tag": "Connector"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/connectors",
+    "operationId": "connectors_create",
+    "summary": "Create connector",
+    "tag": "Connector"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/connectors/{connectorID}",
+    "operationId": "connectors_delete",
+    "summary": "Delete connector",
+    "tag": "Connector"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/connectors/{connectorID}",
+    "operationId": "connectors_retrieve",
+    "summary": "Retrieve connector",
+    "tag": "Connector"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/connectors/{connectorID}",
+    "operationId": "connectors_partial_update",
+    "summary": "Partial update connector",
+    "tag": "Connector"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/connectors/{connectorID}",
+    "operationId": "connectors_update",
+    "summary": "Update connector",
+    "tag": "Connector"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dedicated_engine_schemas",
+    "operationId": "dedicated_engine_schemas_list",
+    "summary": "List dedicated engine schemas",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/dedicated_engine_schemas",
+    "operationId": "dedicated_engine_schemas_create",
+    "summary": "Create dedicated engine schema",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/dedicated_engine_schemas/predict",
+    "operationId": "dedicated_engine_schemas_predict",
+    "summary": "Predict dedicated engine schema",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/dedicated_engine_schemas/validate",
+    "operationId": "dedicated_engine_schemas_validate",
+    "summary": "Validate dedicated engine schema",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/dedicated_engine_schemas/{dedicatedEngineSchemaID}",
+    "operationId": "dedicated_engine_schemas_delete",
+    "summary": "Delete dedicated engine schema",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dedicated_engine_schemas/{dedicatedEngineSchemaID}",
+    "operationId": "dedicated_engine_schemas_retrieve",
+    "summary": "Retrieve dedicated engine schema",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/dedicated_engine_schemas/{dedicatedEngineSchemaID}",
+    "operationId": "dedicated_engine_schemas_partial_update",
+    "summary": "Partial update dedicated engine schema",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/dedicated_engine_schemas/{dedicatedEngineSchemaID}",
+    "operationId": "dedicated_engine_schemas_update",
+    "summary": "Update dedicated engine schema",
+    "tag": "Dedicated Engine Schema"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dedicated_engines",
+    "operationId": "dedicated_engines_list",
+    "summary": "List dedicated engines",
+    "tag": "Dedicated Engine"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/dedicated_engines",
+    "operationId": "dedicated_engines_create",
+    "summary": "Create dedicated engine",
+    "tag": "Dedicated Engine"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/dedicated_engines/request",
+    "operationId": "dedicated_engines_request",
+    "summary": "Request dedicated engine",
+    "tag": "Dedicated Engine"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/dedicated_engines/{dedicatedEngineID}",
+    "operationId": "dedicated_engines_delete",
+    "summary": "Delete dedicated engine",
+    "tag": "Dedicated Engine"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dedicated_engines/{dedicatedEngineID}",
+    "operationId": "dedicated_engines_retrieve",
+    "summary": "Retrieve dedicated engine",
+    "tag": "Dedicated Engine"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/dedicated_engines/{dedicatedEngineID}",
+    "operationId": "dedicated_engines_partial_update",
+    "summary": "Partial update dedicated engine",
+    "tag": "Dedicated Engine"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/dedicated_engines/{dedicatedEngineID}",
+    "operationId": "dedicated_engines_update",
+    "summary": "Update dedicated engine",
+    "tag": "Dedicated Engine"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/delete_recommendations",
+    "operationId": "delete_recommendations_list",
+    "summary": "List delete recommendations",
+    "tag": "Delete Recommendation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/delete_recommendations",
+    "operationId": "delete_recommendations_create",
+    "summary": "Create delete recommendation",
+    "tag": "Delete Recommendation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/delete_recommendations/{deleteRecommendationID}",
+    "operationId": "delete_recommendations_delete",
+    "summary": "Delete delete recommendation",
+    "tag": "Delete Recommendation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/delete_recommendations/{deleteRecommendationID}",
+    "operationId": "delete_recommendations_retrieve",
+    "summary": "Retrieve delete recommendation",
+    "tag": "Delete Recommendation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/delete_recommendations/{deleteRecommendationID}",
+    "operationId": "delete_recommendations_partial_update",
+    "summary": "Partial update delete recommendation",
+    "tag": "Delete Recommendation"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/delete_recommendations/{deleteRecommendationID}",
+    "operationId": "delete_recommendations_update",
+    "summary": "Update delete recommendation",
+    "tag": "Delete Recommendation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/document_relations",
+    "operationId": "document_relations_list",
+    "summary": "List document relations",
+    "tag": "Document Relation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/document_relations",
+    "operationId": "document_relations_create",
+    "summary": "Create document relation",
+    "tag": "Document Relation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/document_relations/{documentRelationID}",
+    "operationId": "document_relations_delete",
+    "summary": "Delete document relation",
+    "tag": "Document Relation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/document_relations/{documentRelationID}",
+    "operationId": "document_relations_retrieve",
+    "summary": "Retrieve document relation",
+    "tag": "Document Relation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/document_relations/{documentRelationID}",
+    "operationId": "document_relations_partial_update",
+    "summary": "Partial update document relation",
+    "tag": "Document Relation"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/document_relations/{documentRelationID}",
+    "operationId": "document_relations_update",
+    "summary": "Update document relation",
+    "tag": "Document Relation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/documents",
+    "operationId": "documents_list",
+    "summary": "List documents",
+    "tag": "Document"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/documents",
+    "operationId": "documents_create",
+    "summary": "Create document",
+    "tag": "Document"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/documents/downloads",
+    "operationId": "documents_downloads_create",
+    "summary": "Create download",
+    "tag": "Documents Download"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/documents/downloads/{documentsDownloadID}",
+    "operationId": "documents_downloads_retrieve",
+    "summary": "Retrieve download",
+    "tag": "Documents Download"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/documents/downloads/{documentsDownloadID}/content",
+    "operationId": "documents_downloads_content_retrieve",
+    "summary": "Retrieve download content",
+    "tag": "Documents Download"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/documents/{documentID}",
+    "operationId": "documents_delete",
+    "summary": "Delete document",
+    "tag": "Document"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/documents/{documentID}",
+    "operationId": "documents_retrieve",
+    "summary": "Retrieve document",
+    "tag": "Document"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/documents/{documentID}",
+    "operationId": "documents_partial_update",
+    "summary": "Partial update document",
+    "tag": "Document"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/documents/{documentID}/content",
+    "operationId": "documents_content_retrieve",
+    "summary": "Retrieve document content",
+    "tag": "Document"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email_templates",
+    "operationId": "email_templates_list",
+    "summary": "List email templates",
+    "tag": "Email Template"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email_templates",
+    "operationId": "email_templates_create",
+    "summary": "Create email template",
+    "tag": "Email Template"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email_templates/{emailTemplateID}",
+    "operationId": "email_templates_delete",
+    "summary": "Delete email template",
+    "tag": "Email Template"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email_templates/{emailTemplateID}",
+    "operationId": "email_templates_retrieve",
+    "summary": "Retrieve email template",
+    "tag": "Email Template"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email_templates/{emailTemplateID}",
+    "operationId": "email_templates_partial_update",
+    "summary": "Partial update email template",
+    "tag": "Email Template"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/email_templates/{emailTemplateID}",
+    "operationId": "email_templates_update",
+    "summary": "Update email template",
+    "tag": "Email Template"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email_templates/{emailTemplateID}/render",
+    "operationId": "email_templates_render",
+    "summary": "Render email template",
+    "tag": "Email Template"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email_threads",
+    "operationId": "email_threads_list",
+    "summary": "List email threads",
+    "tag": "Email Thread"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email_threads/{emailThreadID}",
+    "operationId": "email_threads_retrieve",
+    "summary": "Retrieve email thread",
+    "tag": "Email Thread"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email_threads/{emailThreadID}",
+    "operationId": "email_threads_partial_update",
+    "summary": "Partial update email thread",
+    "tag": "Email Thread"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/email_threads/{emailThreadID}",
+    "operationId": "email_threads_update",
+    "summary": "Update email thread",
+    "tag": "Email Thread"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/emails",
+    "operationId": "emails_list",
+    "summary": "List emails",
+    "tag": "Email"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/emails/import",
+    "operationId": "emails_import",
+    "summary": "Import email",
+    "tag": "Email"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/emails/send",
+    "operationId": "emails_send",
+    "summary": "Send email",
+    "tag": "Email"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/emails/{emailID}",
+    "operationId": "emails_retrieve",
+    "summary": "Retrieve email",
+    "tag": "Email"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/emails/{emailID}",
+    "operationId": "emails_partial_update",
+    "summary": "Partial update email",
+    "tag": "Email"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/emails/{emailID}",
+    "operationId": "emails_update",
+    "summary": "Update email",
+    "tag": "Email"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/emails/{emailID}/content",
+    "operationId": "emails_content_retrieve",
+    "summary": "Retrieve email content",
+    "tag": "Email"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/engine_fields",
+    "operationId": "engine_fields_list",
+    "summary": "List engine fields",
+    "tag": "Engine Field"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/engine_fields",
+    "operationId": "engine_fields_create",
+    "summary": "Create engine field",
+    "tag": "Engine Field"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/engine_fields/pre_trained_fields",
+    "operationId": "engine_fields_pre_trained_fields",
+    "summary": "List pre-trained fields",
+    "tag": "Engine Field"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/engine_fields/{engineFieldID}",
+    "operationId": "engine_fields_delete",
+    "summary": "Delete engine field",
+    "tag": "Engine Field"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/engine_fields/{engineFieldID}",
+    "operationId": "engine_fields_retrieve",
+    "summary": "Retrieve engine field",
+    "tag": "Engine Field"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/engine_fields/{engineFieldID}",
+    "operationId": "engine_fields_partial_update",
+    "summary": "Partial update engine field",
+    "tag": "Engine Field"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/engine_fields/{engineFieldID}",
+    "operationId": "engine_fields_update",
+    "summary": "Update engine field",
+    "tag": "Engine Field"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/engines",
+    "operationId": "engines_list",
+    "summary": "List engines",
+    "tag": "Engine"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/engines",
+    "operationId": "engines_create",
+    "summary": "Create engine",
+    "tag": "Engine"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/engines/{engineID}",
+    "operationId": "engines_delete",
+    "summary": "Delete engine",
+    "tag": "Engine"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/engines/{engineID}",
+    "operationId": "engines_retrieve",
+    "summary": "Retrieve engine",
+    "tag": "Engine"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/engines/{engineID}",
+    "operationId": "engines_partial_update",
+    "summary": "Partial update engine",
+    "tag": "Engine"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/engines/{engineID}",
+    "operationId": "engines_update",
+    "summary": "Update engine",
+    "tag": "Engine"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/engines/{engineID}/check_template_compatibility",
+    "operationId": "engines_check_template_compatibility",
+    "summary": "Check engine template schema compatibility",
+    "tag": "Engine"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/engines/{engineID}/duplicate",
+    "operationId": "engines_duplicate",
+    "summary": "Duplicate engine",
+    "tag": "Engine"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/engines/{engineID}/queue_stats",
+    "operationId": "engines_queue_stats",
+    "summary": "Retrieve engine queue statistics",
+    "tag": "Engine"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/generic_engine_schemas",
+    "operationId": "generic_engine_schemas_list",
+    "summary": "List generic engine schemas",
+    "tag": "Generic Engine Schema"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/generic_engine_schemas/{genericEngineSchemaID}",
+    "operationId": "generic_engine_schemas_retrieve",
+    "summary": "Retrieve generic engine schema",
+    "tag": "Generic Engine Schema"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/generic_engines",
+    "operationId": "generic_engines_list",
+    "summary": "List generic engines",
+    "tag": "Generic Engine"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/generic_engines/{genericEngineID}",
+    "operationId": "generic_engines_retrieve",
+    "summary": "Retrieve generic engine",
+    "tag": "Generic Engine"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/groups",
+    "operationId": "user_roles_list",
+    "summary": "List user roles",
+    "tag": "User Role"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/groups/{userRoleID}",
+    "operationId": "user_roles_retrieve",
+    "summary": "Retrieve user role",
+    "tag": "User Role"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hook_templates",
+    "operationId": "list-hook-templates",
+    "summary": "List hook templates",
+    "tag": "Hook Template"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hook_templates/{hookTemplateID}",
+    "operationId": "retrieve-hook-template",
+    "summary": "Retrieve hook template",
+    "tag": "Hook Template"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hooks",
+    "operationId": "hooks_list",
+    "summary": "List hooks",
+    "tag": "Hook"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/hooks",
+    "operationId": "hooks_create",
+    "summary": "Create hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/hooks/create",
+    "operationId": "hooks_create_from_template",
+    "summary": "Create hook from template",
+    "tag": "Hook"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hooks/logs",
+    "operationId": "hooks_logs_list",
+    "summary": "List hook call logs",
+    "tag": "Hook Run"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hooks/runs",
+    "operationId": "hooks_runs_list",
+    "summary": "List hook runs",
+    "tag": "Hook Run"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hooks/runs/{runUuid}/logs",
+    "operationId": "hooks_runs_logs_list",
+    "summary": "List hook run logs",
+    "tag": "Hook Run"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/hooks/{hookID}",
+    "operationId": "hooks_delete",
+    "summary": "Delete hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hooks/{hookID}",
+    "operationId": "hooks_retrieve",
+    "summary": "Retrieve hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/hooks/{hookID}",
+    "operationId": "hooks_partial_update",
+    "summary": "Partial update hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/hooks/{hookID}",
+    "operationId": "hooks_update",
+    "summary": "Update hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/hooks/{hookID}/duplicate",
+    "operationId": "hooks_duplicate",
+    "summary": "Duplicate hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/hooks/{hookID}/generate_payload",
+    "operationId": "hooks_generate_payload",
+    "summary": "Generate hook payload",
+    "tag": "Hook"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/hooks/{hookID}/invoke",
+    "operationId": "hooks_invoke",
+    "summary": "Trigger manual hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/hooks/{hookID}/secrets_keys",
+    "operationId": "hooks_secrets_keys_list",
+    "summary": "Retrieve secret keys list",
+    "tag": "Hook"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/hooks/{hookID}/test",
+    "operationId": "hooks_test",
+    "summary": "Test hook",
+    "tag": "Hook"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/inboxes",
+    "operationId": "inboxes_list",
+    "summary": "List inboxes",
+    "tag": "Inbox"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/inboxes",
+    "operationId": "inboxes_create",
+    "summary": "Create inbox",
+    "tag": "Inbox"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/inboxes/{inboxID}",
+    "operationId": "inboxes_delete",
+    "summary": "Delete inbox",
+    "tag": "Inbox"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/inboxes/{inboxID}",
+    "operationId": "inboxes_retrieve",
+    "summary": "Retrieve inbox",
+    "tag": "Inbox"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/inboxes/{inboxID}",
+    "operationId": "inboxes_partial_update",
+    "summary": "Partial update inbox",
+    "tag": "Inbox"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/inboxes/{inboxID}",
+    "operationId": "inboxes_update",
+    "summary": "Update inbox",
+    "tag": "Inbox"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/labels",
+    "operationId": "labels_list",
+    "summary": "List labels",
+    "tag": "Label"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/labels",
+    "operationId": "labels_create",
+    "summary": "Create label",
+    "tag": "Label"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/labels/apply",
+    "operationId": "labels_apply",
+    "summary": "Add/remove annotation labels",
+    "tag": "Label"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/labels/{labelID}",
+    "operationId": "labels_delete",
+    "summary": "Delete label",
+    "tag": "Label"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/labels/{labelID}",
+    "operationId": "labels_retrieve",
+    "summary": "Retrieve label",
+    "tag": "Label"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/labels/{labelID}",
+    "operationId": "labels_partial_update",
+    "summary": "Partial update label",
+    "tag": "Label"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/labels/{labelID}",
+    "operationId": "labels_update",
+    "summary": "Update label",
+    "tag": "Label"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups",
+    "operationId": "organization_groups_list",
+    "summary": "List organization groups",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}",
+    "operationId": "organization_groups_retrieve",
+    "summary": "Retrieve organization group",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/billing_history",
+    "operationId": "organization_groups_billing_history",
+    "summary": "Retrieve organization billing history group",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/billing_history/export",
+    "operationId": "organization_groups_billing_history_export",
+    "summary": "Export organization group billing history",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/billing_stats",
+    "operationId": "organization_groups_billing_stats",
+    "summary": "Retrieve organization billing stats group",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/billing_stats/export",
+    "operationId": "organization_groups_billing_stats_export",
+    "summary": "Export organization group billing stats",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/memberships",
+    "operationId": "memberships_list",
+    "summary": "List memberships",
+    "tag": "Membership"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/memberships",
+    "operationId": "memberships_create",
+    "summary": "Create membership",
+    "tag": "Membership"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/memberships/{membershipID}",
+    "operationId": "memberships_delete",
+    "summary": "Delete membership",
+    "tag": "Membership"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/memberships/{membershipID}",
+    "operationId": "memberships_retrieve",
+    "summary": "Retrieve membership",
+    "tag": "Membership"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/memberships/{membershipID}",
+    "operationId": "memberships_partial_update",
+    "summary": "Partial update membership",
+    "tag": "Membership"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/memberships/{membershipID}",
+    "operationId": "memberships_update",
+    "summary": "Update membership",
+    "tag": "Membership"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/organizations",
+    "operationId": "organization_groups_organizations_list",
+    "summary": "List organization group organizations",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/organizations/{organizationID}",
+    "operationId": "organization_groups_organizations_retrieve",
+    "summary": "Retrieve organization",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/queues",
+    "operationId": "organization_groups_queues_list",
+    "summary": "List organization group queues",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/queues/{queueID}",
+    "operationId": "organization_groups_queues_retrieve",
+    "summary": "Retrieve queue",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/users",
+    "operationId": "organization_groups_users_list",
+    "summary": "List organization group users",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/users/{userID}",
+    "operationId": "organization_groups_users_retrieve",
+    "summary": "Retrieve user",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/workspaces",
+    "operationId": "organization_groups_workspaces_list",
+    "summary": "List organization group workspaces",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organization_groups/{organizationGroupID}/workspaces/{workspaceID}",
+    "operationId": "organization_groups_workspaces_retrieve",
+    "summary": "Retrieve workspace",
+    "tag": "Organization Group"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organizations",
+    "operationId": "organizations_list",
+    "summary": "List organizations",
+    "tag": "Organization"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/organizations/create",
+    "operationId": "organizations_create",
+    "summary": "Create organization",
+    "tag": "Organization"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organizations/{organizationID}",
+    "operationId": "organizations_retrieve",
+    "summary": "Retrieve organization",
+    "tag": "Organization"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/organizations/{organizationID}",
+    "operationId": "organizations_partial_update",
+    "summary": "Partial update organization",
+    "tag": "Organization"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/organizations/{organizationID}",
+    "operationId": "organizations_update",
+    "summary": "Update organization",
+    "tag": "Organization"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/organizations/{organizationID}/billing",
+    "operationId": "organizations_billing",
+    "summary": "Retrieve organization billing (deprecated)",
+    "tag": "Organization"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organizations/{organizationID}/billing_history",
+    "operationId": "organizations_billing_history",
+    "summary": "Retrieve organization billing history",
+    "tag": "Organization"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/organizations/{organizationID}/billing_history/export",
+    "operationId": "organizations_billing_history_export",
+    "summary": "Export organization billing history",
+    "tag": "Organization"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/organizations/{organizationID}/billing_stats",
+    "operationId": "organizations_billing_stats",
+    "summary": "Retrieve organization billing stats",
+    "tag": "Organization"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/organizations/{organizationID}/billing_stats/export",
+    "operationId": "organizations_billing_stats_export",
+    "summary": "Export organization billing stats",
+    "tag": "Organization"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/original/{DocumentS3Name}",
+    "operationId": "original_content",
+    "summary": "Retrieve original document",
+    "tag": "Document"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pages",
+    "operationId": "pages_list",
+    "summary": "List pages",
+    "tag": "Page"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pages/{pageID}",
+    "operationId": "pages_retrieve",
+    "summary": "Retrieve page",
+    "tag": "Page"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/queues",
+    "operationId": "queues_list",
+    "summary": "List queues",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues",
+    "operationId": "queues_create",
+    "summary": "Create queue",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues/from_template",
+    "operationId": "queues_from_template",
+    "summary": "Create queue from template",
+    "tag": "Queue"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/queues/{id}",
+    "operationId": "queues_delete",
+    "summary": "Delete queue",
+    "tag": "Queue"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/queues/{id}",
+    "operationId": "queues_retrieve",
+    "summary": "Retrieve queue",
+    "tag": "Queue"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/queues/{id}",
+    "operationId": "queues_partial_update",
+    "summary": "Partial update queue",
+    "tag": "Queue"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/queues/{id}",
+    "operationId": "queues_update",
+    "summary": "Update queue",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues/{id}/duplicate",
+    "operationId": "queues_duplicate",
+    "summary": "Duplicate queue",
+    "tag": "Queue"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/queues/{id}/export",
+    "operationId": "queues_export",
+    "summary": "Export annotations",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues/{id}/export",
+    "operationId": "queues_export_post",
+    "summary": "Export annotations (POST)",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues/{id}/next",
+    "operationId": "queues_next",
+    "summary": "Start validation",
+    "tag": "Queue"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/queues/{id}/related_objects_counts",
+    "operationId": "queues_related_objects_counts",
+    "summary": "Retrieve related object counts",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues/{id}/suggested_recipients",
+    "operationId": "queues_suggested_recipients",
+    "summary": "Retrieve suggested email recipients",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues/{id}/upload",
+    "operationId": "queues_upload",
+    "summary": "Import document (deprecated)",
+    "tag": "Queue"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/queues/{id}/upload/{filename}",
+    "operationId": "queues_upload_filename",
+    "summary": "Import document with filename (deprecated)",
+    "tag": "Queue"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/relations",
+    "operationId": "relations_list",
+    "summary": "List relations",
+    "tag": "Relation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/relations",
+    "operationId": "relations_create",
+    "summary": "Create relation",
+    "tag": "Relation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/relations/{relationID}",
+    "operationId": "relations_delete",
+    "summary": "Delete relation",
+    "tag": "Relation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/relations/{relationID}",
+    "operationId": "relations_retrieve",
+    "summary": "Retrieve relation",
+    "tag": "Relation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/relations/{relationID}",
+    "operationId": "relations_partial_update",
+    "summary": "Partial update relation",
+    "tag": "Relation"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/relations/{relationID}",
+    "operationId": "relations_update",
+    "summary": "Update relation",
+    "tag": "Relation"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/rules",
+    "operationId": "rules_list",
+    "summary": "List rules",
+    "tag": "Rule"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/rules",
+    "operationId": "rules_create",
+    "summary": "Create rule",
+    "tag": "Rule"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/rules/{ruleID}",
+    "operationId": "rules_delete",
+    "summary": "Delete rule",
+    "tag": "Rule"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/rules/{ruleID}",
+    "operationId": "rules_retrieve",
+    "summary": "Retrieve rule",
+    "tag": "Rule"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/rules/{ruleID}",
+    "operationId": "rules_partial_update",
+    "summary": "Partial update rule",
+    "tag": "Rule"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/rules/{ruleID}",
+    "operationId": "rules_update",
+    "summary": "Update rule",
+    "tag": "Rule"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/rules_execution_logs",
+    "operationId": "rules_execution_logs_list",
+    "summary": "List rules execution logs",
+    "tag": "Rules Execution Log"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/schemas",
+    "operationId": "schemas_list",
+    "summary": "List schemas",
+    "tag": "Schema"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/schemas",
+    "operationId": "schemas_create",
+    "summary": "Create schema",
+    "tag": "Schema"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/schemas/from_template",
+    "operationId": "schemas_create_from_template",
+    "summary": "Create schema from template",
+    "tag": "Schema"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/schemas/validate",
+    "operationId": "schemas_validate",
+    "summary": "Validate schema",
+    "tag": "Schema"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/schemas/{schemaID}",
+    "operationId": "schemas_delete",
+    "summary": "Delete schema",
+    "tag": "Schema"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/schemas/{schemaID}",
+    "operationId": "schemas_retrieve",
+    "summary": "Retrieve schema",
+    "tag": "Schema"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/schemas/{schemaID}",
+    "operationId": "schemas_partial_update",
+    "summary": "Partial update schema",
+    "tag": "Schema"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/schemas/{schemaID}",
+    "operationId": "schemas_update",
+    "summary": "Update schema",
+    "tag": "Schema"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/suggested_edits",
+    "operationId": "suggested_edits_list",
+    "summary": "List suggested edits",
+    "tag": "Suggested Edit"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/suggested_edits",
+    "operationId": "suggested_edits_create",
+    "summary": "Create suggested edit",
+    "tag": "Suggested Edit"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/suggested_edits/{suggestedEditID}",
+    "operationId": "suggested_edits_delete",
+    "summary": "Delete suggested edit",
+    "tag": "Suggested Edit"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/suggested_edits/{suggestedEditID}",
+    "operationId": "suggested_edits_retrieve",
+    "summary": "Retrieve suggested edit",
+    "tag": "Suggested Edit"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/suggested_edits/{suggestedEditID}",
+    "operationId": "suggested_edits_partial_update",
+    "summary": "Partial update suggested edit",
+    "tag": "Suggested Edit"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/suggested_edits/{suggestedEditID}",
+    "operationId": "suggested_edits_update",
+    "summary": "Update suggested edit",
+    "tag": "Suggested Edit"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/tasks/{taskID}",
+    "operationId": "tasks_retrieve",
+    "summary": "Retrieve task",
+    "tag": "Task"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/triggers",
+    "operationId": "triggers_list",
+    "summary": "List triggers",
+    "tag": "Trigger"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/triggers",
+    "operationId": "triggers_create",
+    "summary": "Create trigger",
+    "tag": "Trigger"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/triggers/{triggerID}",
+    "operationId": "triggers_delete",
+    "summary": "Delete trigger",
+    "tag": "Trigger"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/triggers/{triggerID}",
+    "operationId": "triggers_retrieve",
+    "summary": "Retrieve trigger",
+    "tag": "Trigger"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/triggers/{triggerID}",
+    "operationId": "triggers_partial_update",
+    "summary": "Partial update trigger",
+    "tag": "Trigger"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/triggers/{triggerID}",
+    "operationId": "triggers_update",
+    "summary": "Update trigger",
+    "tag": "Trigger"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/uploads",
+    "operationId": "uploads_create",
+    "summary": "Create upload",
+    "tag": "Upload"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/uploads/{filename}",
+    "operationId": "uploads_create_with_filename",
+    "summary": "Create upload with filename",
+    "tag": "Upload"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/uploads/{uploadID}",
+    "operationId": "uploads_retrieve",
+    "summary": "Retrieve upload",
+    "tag": "Upload"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/users",
+    "operationId": "users_list",
+    "summary": "List users",
+    "tag": "User"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/users",
+    "operationId": "users_create",
+    "summary": "Create user",
+    "tag": "User"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/users/{userID}",
+    "operationId": "users_delete",
+    "summary": "Delete user",
+    "tag": "User"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/users/{userID}",
+    "operationId": "users_retrieve",
+    "summary": "Retrieve user",
+    "tag": "User"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/users/{userID}",
+    "operationId": "users_partial_update",
+    "summary": "Partial update user",
+    "tag": "User"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/users/{userID}",
+    "operationId": "users_update",
+    "summary": "Update user",
+    "tag": "User"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow_activities",
+    "operationId": "workflow_activities_list",
+    "summary": "List workflow activities",
+    "tag": "Workflow Activity"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow_activities/{workflowActivityID}",
+    "operationId": "workflow_activities_retrieve",
+    "summary": "Retrieve workflow activity",
+    "tag": "Workflow Activity"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow_runs",
+    "operationId": "workflow_runs_list",
+    "summary": "List workflow runs",
+    "tag": "Workflow Run"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow_runs/{workflowRunID}",
+    "operationId": "workflow_runs_retrieve",
+    "summary": "Retrieve workflow run",
+    "tag": "Workflow Run"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflow_runs/{workflowRunID}/reset",
+    "operationId": "workflow_runs_reset",
+    "summary": "Reset workflow run",
+    "tag": "Workflow Run"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow_steps",
+    "operationId": "workflow_steps_list",
+    "summary": "List workflow steps",
+    "tag": "Workflow Step"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow_steps/{workflowStepID}",
+    "operationId": "workflow_steps_retrieve",
+    "summary": "Retrieve workflow step",
+    "tag": "Workflow Step"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows",
+    "operationId": "workflows_list",
+    "summary": "List workflows",
+    "tag": "Workflow"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows/{workflowID}",
+    "operationId": "workflows_retrieve",
+    "summary": "Retrieve workflow",
+    "tag": "Workflow"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workspaces",
+    "operationId": "workspaces_list",
+    "summary": "List workspaces",
+    "tag": "Workspace"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workspaces",
+    "operationId": "workspaces_create",
+    "summary": "Create workspace",
+    "tag": "Workspace"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/workspaces/{workspaceID}",
+    "operationId": "workspaces_delete",
+    "summary": "Delete workspace",
+    "tag": "Workspace"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workspaces/{workspaceID}",
+    "operationId": "workspaces_retrieve",
+    "summary": "Retrieve workspace",
+    "tag": "Workspace"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/workspaces/{workspaceID}",
+    "operationId": "workspaces_partial_update",
+    "summary": "Partial update workspace",
+    "tag": "Workspace"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/workspaces/{workspaceID}",
+    "operationId": "workspaces_update",
+    "summary": "Update workspace",
+    "tag": "Workspace"
+  }
+]
