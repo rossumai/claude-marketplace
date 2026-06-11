@@ -31,6 +31,7 @@ Pulled directory tree:
 - MDH-populated fields must be `type: "enum"` with `ui_configuration.type: "data"`. A `string` field silently drops MDH values.
 - Use the TxScript API (`TxScript`, field accessors, automation blockers) for function hooks; see `rossum-sa:txscript-reference`.
 - Keep schema field IDs stable across pushes — changing them breaks annotations.
+- Never hardcode credentials or secrets in hook code, schemas, or config — use the platform's secret mechanisms.
 
 ## Testing & Quality
 

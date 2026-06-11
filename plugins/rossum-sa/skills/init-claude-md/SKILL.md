@@ -35,12 +35,7 @@ Best-practices sections (from the source article that motivated this skill):
 
 ### Step 1: Resolve the project directory
 
-If `$ARGUMENTS` is a path, use it. Otherwise use the current working directory. Confirm it looks like a prd2 project:
-
-- Required: `prd_config.yaml` at the root.
-- Strongly suggested: at least one environment subdirectory listed in that file with `workspaces/` underneath.
-
-If `prd_config.yaml` is missing, stop and tell the user: "This does not look like a prd2 project (no `prd_config.yaml` found). Run `prd2 pull` first or pass the project path explicitly."
+If `$ARGUMENTS` is a path, use it. Otherwise use the current working directory. Pass this directory straight to the inspector (Step 2) — the inspector detects the deployment tool via its marker file and decides whether the project is supported, so don't pre-gate on specific files here. (The single "not supported" stop lives in Step 2.)
 
 ### Step 2: Run the inspector
 

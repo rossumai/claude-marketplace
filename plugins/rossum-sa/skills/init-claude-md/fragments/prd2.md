@@ -12,14 +12,14 @@ This project is managed with **prd2**. Deploy with `prd2 push` / `prd2 deploy` t
 
 ### Editing
 
+- Always use **prd2** (v2) — the original `prd` v1 (the `deployment-manager` package) is deprecated.
 - Edit local `.py` files. **Never** edit the `code` field in hook JSON or the `formula` property in `schema.json` — `prd2 push` syncs `.py` files into JSON automatically. Never use `rossum_patch_hook` / `rossum_patch_schema` to push code that belongs in a `.py` file.
-- Keep schema field IDs stable across pushes — changing them breaks annotations.
 
 ### Commands
 
 - `prd2 pull` — refresh local state from an environment (read-only; safe).
 - `prd2 push --indexed-only -f` — push staged changes non-interactively (only after the diff is approved).
-- `prd2 deploy -f <deploy-file>.yaml` — promote to another environment.
+- `prd2 deploy run <deploy-file>.yaml` — promote to another environment (`deploy` is a command group — `run` / `template` / `revert`; add `-y` for non-interactive).
 - `prd2 purge` — remove objects.
 
 ### Safety

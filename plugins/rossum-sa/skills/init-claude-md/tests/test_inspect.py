@@ -86,3 +86,38 @@ def test_subdir_layout_is_discovered():
     assert out["queues"][0]["environment"] == "dev-env"
     assert out["hook_count"] == 1
     assert {h["name"] for h in out["hooks"]} == {"Validator"}
+
+
+def test_multi_org_and_subdir_discovery(tmp_path):
+    # org-a declares two subdirectories; org-b declares none (falls back to <org>/).
+    (tmp_path / "prd_config.yaml").write_text(
+        "project_name: multi\n"
+        "directories:\n"
+        "  org-a:\n"
+        "    org_id: '1'\n"
+        "    api_base: https://elis.rossum.ai/api/v1\n"
+        "    subdirectories:\n"
+        "      s1:\n"
+        "        regex: ''\n"
+        "      s2:\n"
+        "        regex: ''\n"
+        "  org-b:\n"
+        "    org_id: '2'\n"
+        "    api_base: https://elis.rossum.ai/api/v1\n"
+    )
+
+    def _queue(rel_base, ws, q):
+        qdir = tmp_path / rel_base / "workspaces" / ws / "queues" / q
+        qdir.mkdir(parents=True)
+        (qdir / "queue.json").write_text(json.dumps({"id": 1, "name": q}))
+        (qdir.parent.parent / "workspace.json").write_text(json.dumps({"id": 1, "name": ws}))
+
+    _queue("org-a/s1", "W1", "Q1")
+    _queue("org-a/s2", "W2", "Q2")
+    _queue("org-b", "W3", "Q3")  # no subdirectories declared -> fallback to org-b/
+
+    out = run_inspect(tmp_path)
+    assert out["environments"] == ["org-a", "org-b"]
+    assert out["queue_count"] == 3
+    assert out["workspace_count"] == 3
+    assert {q["environment"] for q in out["queues"]} == {"org-a", "org-b"}
