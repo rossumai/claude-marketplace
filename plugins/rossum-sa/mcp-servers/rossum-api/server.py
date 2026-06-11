@@ -285,6 +285,42 @@ def _http_request_silent(url, *, method="GET"):
         return None
 
 
+def _http_request_status(url, *, method="GET", body=None):
+    """Make an authenticated request and return (status_code, parsed_body).
+
+    Never sends a tool_result and never raises: HTTP errors return their real
+    status code with the (JSON-parsed when possible) error body; network/SSL
+    failures return (None, error_message). Used by tools that must degrade
+    gracefully instead of erroring, e.g. rossum_get_automation_projections.
+    """
+    token = _cached_token
+    if not token:
+        return None, "Not connected to Rossum."
+    headers = {"Authorization": f"Bearer {token}"}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Reading/decoding the error body can itself fail (dropped connection,
+        # non-UTF-8 proxy page) — that must not escape the never-raise contract.
+        try:
+            error_body = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
+        except Exception:
+            error_body = str(e)
+        try:
+            error_body = json.loads(error_body)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return e.code, error_body
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
 def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_type=None):
     """POST raw bytes (e.g. multipart upload). Returns parsed JSON or None (error sent)."""
     token = _cached_token
@@ -1903,6 +1939,259 @@ def handle_list_queues(request_id, arguments):
 )
 def handle_get_queue(request_id, arguments):
     _rossum_get(request_id, f"/api/v1/queues/{arguments['queue_id']}")
+
+
+def _cache_automation_payload(queue_id, kind, payload):
+    """Write a full automation payload to .rossum-cache/automation/queue_<id>_<kind>.json.
+
+    Returns the CWD-relative path string, or None on failure. Best-effort —
+    failures must not break the response.
+    """
+    try:
+        import os
+        cache_dir = os.path.join(os.getcwd(), ".rossum-cache", "automation")
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, f"queue_{queue_id}_{kind}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+        try:
+            return os.path.relpath(path, os.getcwd())
+        except ValueError:
+            return path
+    except OSError:
+        return None
+
+
+_EXAMPLE_IDS_KEPT = 5
+
+
+def _compact_automation_blockers(blockers, *, keep_example_ids):
+    """Project document_blockers items; truncate the up-to-50-ID example lists."""
+    compacted = []
+    for item in blockers or ():
+        ids = item.get("example_annotation_ids") or []
+        row = {
+            "blocker": item.get("blocker"),
+            "granularity": item.get("granularity"),
+            "document_count": item.get("document_count"),
+        }
+        if keep_example_ids:
+            row["example_annotation_ids"] = ids[:_EXAMPLE_IDS_KEPT]
+            row["example_annotation_count"] = len(ids)
+        compacted.append(row)
+    return compacted
+
+
+def _automation_insights_digest(payload):
+    """Compact digest of an automation_insights payload: totals, window, blockers,
+    per-field statistics — without raw example-ID lists or full timeseries."""
+    timeseries = payload.get("document_automation_timeseries") or []
+    digest = {
+        "document_automation_rate": payload.get("document_automation_rate"),
+        "document_touchless_rate": payload.get("document_touchless_rate"),
+        "is_aurora_queue": payload.get("is_aurora_queue"),
+        "window": {
+            "start": timeseries[0]["date"] if timeseries else None,
+            "end": timeseries[-1]["date"] if timeseries else None,
+            "days": len(timeseries),
+            "total_documents": sum(
+                (d.get("automated_count") or 0) + (d.get("non_automated_count") or 0)
+                for d in timeseries
+            ),
+            "automated_documents": sum(d.get("automated_count") or 0 for d in timeseries),
+            "touchless_documents": sum(d.get("touchless_count") or 0 for d in timeseries),
+        },
+        "document_blockers": _compact_automation_blockers(
+            payload.get("document_blockers"), keep_example_ids=True
+        ),
+    }
+    fields = []
+    for stat in payload.get("datapoint_statistics") or ():
+        fields.append({
+            "schema_id": stat.get("schema_id"),
+            "confidence_threshold": stat.get("confidence_threshold"),
+            "estimated_error_rate": stat.get("estimated_error_rate"),
+            "is_quality_estimate": stat.get("is_quality_estimate"),
+            "blocked_document_counts": stat.get("blocked_document_counts"),
+            "blockers": _compact_automation_blockers(
+                stat.get("blockers"), keep_example_ids=False
+            ),
+        })
+    fields.sort(
+        key=lambda f: -sum((f.get("blocked_document_counts") or {}).values())
+    )
+    digest["datapoint_statistics"] = fields
+    error_ts = payload.get("estimated_error_rate_timeseries") or []
+    digest["estimated_error_rate_timeseries_points"] = len(error_ts)
+    if error_ts:
+        digest["estimated_error_rate_latest"] = error_ts[-1]
+    return digest
+
+
+@_tool(
+    "rossum_get_automation_insights",
+    "Retrieves queue-level automation analytics: automation/touchless rates, a per-day "
+    "automation timeseries, document-level blockers with example annotation IDs, and "
+    "per-field (datapoint) statistics with confidence thresholds and estimated error "
+    "rates. Available on every queue; empty queues return zeroed data. By default "
+    "returns a compact digest and caches the full payload to "
+    ".rossum-cache/automation/ for follow-up analysis.",
+    {
+        "type": "object",
+        "required": ["queue_id"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "The queue ID.",
+            },
+            "summary": {
+                "type": "boolean",
+                "description": "When true (default), return a compact digest (truncated "
+                "example-ID lists, summarized timeseries) and cache the full payload to "
+                ".rossum-cache/automation/. When false, return the full raw payload.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_get_automation_insights(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    queue_id = arguments["queue_id"]
+    payload = _http_request(
+        request_id, f"{base_url}/api/v1/queues/{queue_id}/automation_insights"
+    )
+    if payload is None:
+        return
+    if arguments.get("summary") is False:
+        tool_result(request_id, json.dumps(payload, indent=2))
+        return
+    digest = _automation_insights_digest(payload)
+    cache_path = _cache_automation_payload(queue_id, "insights", payload)
+    if cache_path:
+        digest["full_payload_cache"] = cache_path
+    tool_result(request_id, json.dumps(digest, indent=2))
+
+
+@_tool(
+    "rossum_get_automation_projections",
+    "Simulates automation at recalibrated confidence thresholds for a queue (POST "
+    "automation_projections). Returns baseline + projected scenarios with automation "
+    "rates, estimated error rates, and per-field thresholds. Never errors on "
+    "unavailability: returns {available: false, status_code, reason} when the endpoint "
+    "is missing, forbidden, or has no projection scenarios (queues without enough "
+    "reviewed documents return HTTP 200 with an empty projections list). Full payload "
+    "is cached to .rossum-cache/automation/ when available.",
+    {
+        "type": "object",
+        "required": ["queue_id"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "The queue ID.",
+            },
+            "fields": {
+                "type": "array",
+                "description": "Optional per-field error-rate constraints for the "
+                "simulation. Each entry sets the maximum acceptable estimated error "
+                "rate for one field. Defaults to [] (server picks scenarios).",
+                "items": {
+                    "type": "object",
+                    "required": ["error_rate_limit"],
+                    "properties": {
+                        "schema_id": {
+                            "type": "string",
+                            "description": "Schema field ID the limit applies to.",
+                        },
+                        "error_rate_limit": {
+                            "type": "number",
+                            "description": "Maximum acceptable estimated error rate "
+                            "(e.g. 0.01 for 1%).",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_get_automation_projections(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    queue_id = arguments["queue_id"]
+    status, body = _http_request_status(
+        f"{base_url}/api/v1/queues/{queue_id}/automation_projections",
+        method="POST",
+        body={"fields": arguments.get("fields") or []},
+    )
+    if status != 200:
+        tool_result(
+            request_id,
+            json.dumps(
+                {"available": False, "status_code": status, "reason": body}, indent=2
+            ),
+        )
+        return
+    if not isinstance(body, dict):
+        tool_result(
+            request_id,
+            json.dumps(
+                {
+                    "available": False,
+                    "status_code": 200,
+                    "reason": "malformed response: expected a JSON object, got "
+                    f"{type(body).__name__}",
+                },
+                indent=2,
+            ),
+        )
+        return
+    projections = body.get("projections") or []
+    if not projections:
+        tool_result(
+            request_id,
+            json.dumps(
+                {
+                    "available": False,
+                    "status_code": 200,
+                    "reason": "no projection scenarios returned — the queue does not "
+                    "have enough reviewed documents for a simulation",
+                    "total_document_count": body.get("total_document_count"),
+                    "used_document_count": body.get("used_document_count"),
+                },
+                indent=2,
+            ),
+        )
+        return
+    baseline = body.get("baseline") or {}
+    response = {
+        "available": True,
+        "total_document_count": body.get("total_document_count"),
+        "used_document_count": body.get("used_document_count"),
+        "baseline": {
+            "document_automation_rate": baseline.get("document_automation_rate"),
+            "estimated_error_rate": baseline.get("estimated_error_rate"),
+            "document_touchless_rate": baseline.get("document_touchless_rate"),
+        },
+        "projections": [
+            {
+                "document_automation_rate": p.get("document_automation_rate"),
+                "estimated_error_rate": p.get("estimated_error_rate"),
+                "document_touchless_rate": p.get("document_touchless_rate"),
+                "field_count": len(p.get("datapoint_statistics") or ()),
+            }
+            for p in projections
+        ],
+    }
+    cache_path = _cache_automation_payload(queue_id, "projections", body)
+    if cache_path:
+        response["full_payload_cache"] = cache_path
+    tool_result(request_id, json.dumps(response, indent=2))
 
 
 @_tool(
@@ -3817,7 +4106,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.19.1"},
+                    "serverInfo": {"name": "rossum-api", "version": "0.20.0"},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "

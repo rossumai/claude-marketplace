@@ -1,0 +1,100 @@
+{
+  "total_document_count": 80,
+  "used_document_count": 20,
+  "baseline": {
+    "document_automation_rate": 0.1,
+    "estimated_error_rate": 0.0,
+    "document_touchless_rate": 0.3,
+    "is_aurora_queue": true,
+    "document_automation_timeseries": [],
+    "document_blockers": [],
+    "datapoint_statistics": [],
+    "estimated_error_rate_timeseries": []
+  },
+  "projections": [
+    {
+      "document_automation_rate": 0.125,
+      "estimated_error_rate": 0.001,
+      "document_touchless_rate": 0.3,
+      "is_aurora_queue": true,
+      "document_automation_timeseries": [
+        {"date": "2026-05-07", "automated_count": 5, "non_automated_count": 5, "touchless_count": 6, "touched_count": 4},
+        {"date": "2026-05-08", "automated_count": 5, "non_automated_count": 5, "touchless_count": 4, "touched_count": 6},
+        {"date": "2026-05-09", "automated_count": 0, "non_automated_count": 0, "touchless_count": 0, "touched_count": 0},
+        {"date": "2026-05-10", "automated_count": 0, "non_automated_count": 0, "touchless_count": 0, "touched_count": 0}
+      ],
+      "document_blockers": [
+        {"blocker": "low_score", "granularity": "datapoint", "document_count": 15, "example_annotation_ids": []}
+      ],
+      "datapoint_statistics": [
+        {
+          "schema_id": "sender_id",
+          "blocked_document_counts": {"low_score": 10},
+          "estimated_error_rate": 0.002,
+          "confidence_threshold": 0.93,
+          "is_quality_estimate": false,
+          "blockers": []
+        },
+        {
+          "schema_id": "delivery_date",
+          "blocked_document_counts": {"extension": 6},
+          "estimated_error_rate": 0.0,
+          "confidence_threshold": 0.85,
+          "is_quality_estimate": false,
+          "blockers": []
+        },
+        {
+          "schema_id": "amount_total",
+          "blocked_document_counts": {"low_score": 1},
+          "estimated_error_rate": 0.0,
+          "confidence_threshold": 0.6,
+          "is_quality_estimate": false,
+          "blockers": []
+        }
+      ],
+      "estimated_error_rate_timeseries": []
+    },
+    {
+      "document_automation_rate": 0.2,
+      "estimated_error_rate": 0.004,
+      "document_touchless_rate": 0.3,
+      "is_aurora_queue": true,
+      "document_automation_timeseries": [
+        {"date": "2026-05-07", "automated_count": 8, "non_automated_count": 2, "touchless_count": 9, "touched_count": 1},
+        {"date": "2026-05-08", "automated_count": 8, "non_automated_count": 2, "touchless_count": 7, "touched_count": 3},
+        {"date": "2026-05-09", "automated_count": 0, "non_automated_count": 0, "touchless_count": 0, "touched_count": 0},
+        {"date": "2026-05-10", "automated_count": 0, "non_automated_count": 0, "touchless_count": 0, "touched_count": 0}
+      ],
+      "document_blockers": [
+        {"blocker": "low_score", "granularity": "datapoint", "document_count": 10, "example_annotation_ids": []}
+      ],
+      "datapoint_statistics": [
+        {
+          "schema_id": "sender_id",
+          "blocked_document_counts": {"low_score": 6},
+          "estimated_error_rate": 0.005,
+          "confidence_threshold": 0.9,
+          "is_quality_estimate": false,
+          "blockers": []
+        },
+        {
+          "schema_id": "delivery_date",
+          "blocked_document_counts": {"extension": 6},
+          "estimated_error_rate": 0.0,
+          "confidence_threshold": 0.7,
+          "is_quality_estimate": false,
+          "blockers": []
+        },
+        {
+          "schema_id": "amount_total",
+          "blocked_document_counts": {},
+          "estimated_error_rate": 0.001,
+          "confidence_threshold": 0.5,
+          "is_quality_estimate": false,
+          "blockers": []
+        }
+      ],
+      "estimated_error_rate_timeseries": []
+    }
+  ]
+}

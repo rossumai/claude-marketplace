@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-14 skills · 10 reference packs · 69 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+15 skills · 10 reference packs · 71 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -81,6 +81,7 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | `/rossum-sa:init-claude-md [path]` | Generate a project-specific `CLAUDE.md` for a pulled prd2 project so future Claude Code sessions recognize it as a Rossum implementation |
 | `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 | `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
+| `/rossum-sa:automation-report [queue-id-or-url]` | Diagnose what blocks queue automation and produce an actionable report with threshold, schema, and rule recommendations |
 
 ## 📚 Autoloaded references
 
@@ -150,6 +151,8 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_workspace` | Get full workspace details |
 | `rossum_list_queues` | List queues (filter by workspace, status) |
 | `rossum_get_queue` | Get full queue details |
+| `rossum_get_automation_insights` | Queue automation analytics: rates, blockers, per-field statistics (compact digest by default, full payload cached) |
+| `rossum_get_automation_projections` | Simulate automation at recalibrated confidence thresholds; degrades gracefully when the queue has too little reviewed data |
 | `rossum_get_schema` | Get queue schema (datapoints, sections, tables) |
 | `rossum_patch_schema` | ✏️ Update a schema (name, content, metadata) |
 | `rossum_list_schemas` | List all schemas |

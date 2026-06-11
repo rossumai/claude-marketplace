@@ -1,0 +1,71 @@
+{
+  "document_automation_rate": 0.1,
+  "document_touchless_rate": 0.3,
+  "is_aurora_queue": true,
+  "document_automation_timeseries": [
+    {"date": "2026-05-01", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-02", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-03", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-04", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-05", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-06", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-07", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-08", "automated_count": 1, "non_automated_count": 9, "touchless_count": 3, "touched_count": 7},
+    {"date": "2026-05-09", "automated_count": 0, "non_automated_count": 0, "touchless_count": 0, "touched_count": 0},
+    {"date": "2026-05-10", "automated_count": 0, "non_automated_count": 0, "touchless_count": 0, "touched_count": 0}
+  ],
+  "document_blockers": [
+    {"blocker": "low_score", "granularity": "datapoint", "document_count": 78, "example_annotation_ids": [9001, 9002, 9003]},
+    {"blocker": "extension", "granularity": "datapoint", "document_count": 30, "example_annotation_ids": [9101, 9102]},
+    {"blocker": "error_message", "granularity": "datapoint", "document_count": 20, "example_annotation_ids": [9201]},
+    {"blocker": "error_message", "granularity": "annotation", "document_count": 4, "example_annotation_ids": [9301]},
+    {"blocker": "automation_disabled", "granularity": "annotation", "document_count": 3, "example_annotation_ids": [9401]},
+    {"blocker": "suggested_edit_present", "granularity": "annotation", "document_count": 2, "example_annotation_ids": [9501]}
+  ],
+  "datapoint_statistics": [
+    {
+      "schema_id": "sender_id",
+      "blocked_document_counts": {"low_score": 50, "extension": 10},
+      "estimated_error_rate": null,
+      "confidence_threshold": 0.95,
+      "is_quality_estimate": false,
+      "blockers": [
+        {"blocker": "low_score", "granularity": "datapoint", "document_count": 50, "example_annotation_ids": [3001, 3002, 3003]},
+        {"blocker": "extension", "granularity": "datapoint", "document_count": 10, "example_annotation_ids": [3101, 3102]}
+      ]
+    },
+    {
+      "schema_id": "delivery_date",
+      "blocked_document_counts": {"extension": 25, "low_score": 20},
+      "estimated_error_rate": null,
+      "confidence_threshold": 0.95,
+      "is_quality_estimate": false,
+      "blockers": [
+        {"blocker": "extension", "granularity": "datapoint", "document_count": 25, "example_annotation_ids": [201, 202, 203, 204, 205, 206, 207, 208, 209, 210]},
+        {"blocker": "low_score", "granularity": "datapoint", "document_count": 20, "example_annotation_ids": [3201, 3202]}
+      ]
+    },
+    {
+      "schema_id": "po_number",
+      "blocked_document_counts": {"error_message": 20, "low_score": 10},
+      "estimated_error_rate": null,
+      "confidence_threshold": 0.95,
+      "is_quality_estimate": false,
+      "blockers": [
+        {"blocker": "error_message", "granularity": "datapoint", "document_count": 20, "example_annotation_ids": [301, 302, 303, 304, 305]},
+        {"blocker": "low_score", "granularity": "datapoint", "document_count": 10, "example_annotation_ids": [3301, 3302]}
+      ]
+    },
+    {
+      "schema_id": "amount_total",
+      "blocked_document_counts": {"low_score": 5},
+      "estimated_error_rate": null,
+      "confidence_threshold": 0.8,
+      "is_quality_estimate": false,
+      "blockers": [
+        {"blocker": "low_score", "granularity": "datapoint", "document_count": 5, "example_annotation_ids": [3401]}
+      ]
+    }
+  ],
+  "estimated_error_rate_timeseries": []
+}
