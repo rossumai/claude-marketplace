@@ -1173,34 +1173,9 @@ Reasoning fields are "inline LLM fields" that generate predictions based on conf
 
 ## Master Data Hub
 
-The Master Data Hub matches extracted document data against uploaded reference datasets (vendor lists, GL codes, PO data, customer records).
+The Master Data Hub (Rossum Store: "Data matching v2") matches extracted data against uploaded reference datasets (vendors, GL codes, POs, customers) using MongoDB-style queries run in sequence, writing results into **enum** schema fields. Supports `.json`/`.xml`/`.csv`/`.xlsx`, exact and fuzzy matching, result actions for zero/one/multiple matches, and cascaded configs that reference earlier matches.
 
-**Capabilities**:
-- Validate vendors against existing databases
-- Match purchase orders for invoices
-- Match individual line items
-- Support multiple data formats: `.json`, `.xml`, `.csv`, `.xlsx`
-
-**Setup**: Available in Rossum Store as "Data matching v2". Requires admin-role token owner.
-
-**Configuration**:
-1. **Dataset**: Upload reference data (vendors, POs, etc.)
-2. **Matching queries**: MongoDB-style syntax, executed sequentially until match found
-3. **Result field**: Must be an `enum`-type schema field (`"type": "enum", "options": []`)
-4. **Result actions**: Define behavior for zero, one, or multiple matches (error/warning/info)
-5. **Default values**: Fallback when no matches occur
-
-**Query types**:
-- **Exact matching**: `{"find": {"fieldName": "{schema_id}"}}`
-- **Fuzzy matching**: Matches similar values within an error range (advanced, not in UI)
-
-**Cross-configuration**: Later configurations can reference values from previous matches.
-
-**Tip**: For numeric data types, use `"enum_value_type": "number"` for proper type conversion.
-
-**API**: `https://elis.rossum.ai/svc/master-data-hub/api/docs`
-
----
+For dataset CRUD and the API, the hook configuration model (MatchConfig, mapping, result actions, query cascades), query-design rules, score normalization, and worked examples, see the `mdh-reference` skill.
 
 ## Business Rules Validation
 
@@ -1427,6 +1402,8 @@ This includes read-only derived fields (e.g., supplier number, site code, commod
   "ui_configuration": {"type": "data", "edit": "disabled"}
 }
 ```
+
+See the `mdh-reference` skill for why MDH writes enum option lists, how `mapping`/`additional_mappings` targets bind, and the `enum_value_type` choice for numeric matches.
 
 ### Formula Field
 
