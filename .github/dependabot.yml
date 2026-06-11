@@ -1,9 +1,19 @@
 version: 2
 updates:
   # Keep the SHA-pinned GitHub Actions in .github/workflows up to date.
+  #
+  # Group ALL github-actions ecosystem updates into a single weekly PR. This
+  # prevents the "Dependabot rebase silently reverts another open Dependabot
+  # PR's bump" failure mode — when two PRs are open at once and one is rebased,
+  # its conflict resolution can roll back changes from the other. With a single
+  # grouped PR, all action bumps land atomically.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
