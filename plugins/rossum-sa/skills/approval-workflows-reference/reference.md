@@ -128,6 +128,6 @@ Use it to send a document back for re-review after a correction.
 
 Approval workflows are **configured by Rossum** (paid feature). The public API is read-only (live `OPTIONS` → `GET, HEAD, OPTIONS`), so you **cannot create or edit** a workflow, its steps, their conditions/modes/ordering, or the assignment rules through the API. To change any of that, coordinate with your Rossum contact.
 
-`prd2 pull` captures the workflow + steps as read-only JSON for inspection and version control. Because the API exposes no write methods for these objects, do not assume a local edit can be pushed back — confirm the change path with Rossum first.
+`prd2 pull` **does** capture the workflow and its steps as files — `workflows/<name>_[id]/workflow.json` and `workflow_steps/<name>_[id].json` — which is useful for inspection and version control. But **`prd2 push` does not push workflow objects:** edits to those pulled files are neither detected nor sent. Verified with **prd2 v2.18.0** (editing a pulled `workflow_step` and pushing produced no remote change, consistent with the read-only API). Treat the pulled workflow files as read-only snapshots, and re-check this if a later prd2 version adds workflow-push support.
 
 To re-run an annotation through an active workflow, use `reset` (above) — the one write the API exposes.
