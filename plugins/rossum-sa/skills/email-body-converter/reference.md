@@ -7,6 +7,7 @@ The Email Body Converter is a **Rossum-maintained hosted webhook** that converts
 - **[KB]** — stated verbatim in the KB article (or another official prose page, cited inline).
 - **[spec]** — present in the service's OpenAPI spec (key names/types/defaults only; the spec gives no prose semantics).
 - **[live]** — verified by the live probe.
+- **[field]** — confirmed in production use by the maintaining SA (June 2026), not exercised in the probe.
 - **[unverified]** — inference or untested; treat with care.
 
 ## Contents
@@ -79,6 +80,8 @@ It is **not a one-click Rossum Store tile** — the only documented install path
 | EU2 Frankfurt | — (not available) |
 | US east coast | `https://us.app.rossum.ai/svc/email-converter/api/v1/convert` |
 | Japan Tokyo | — (not available) |
+
+The table lists where the **service is hosted**, not which orgs can use it. Orgs in regions without a listed URL (EU2 Frankfurt, Japan Tokyo) point their webhook **cross-region** at whichever hosted URL is more convenient — confirmed in production from a Japan Tokyo org using the US URL [field]. Mind data residency: the email content is sent to and rendered in the chosen service region.
 
 [live] For multi-tenant `*.rossum.app` organizations, the org's **own domain serves the service path** — `https://<org>.rossum.app/svc/email-converter/api/v1/convert` worked end-to-end in the probe (and `GET …/svc/email-converter/api/healthz` answered 200 on the org domain, EU1, and US hosts alike).
 
@@ -224,7 +227,7 @@ The settings wrapper is the same `{"configurations": [...]}`; entries follow the
 
 ## Interactions & gotchas
 
-- **Regional availability.** EU1 Ireland and US east coast only [KB] — orgs on EU2 Frankfurt or Japan Tokyo have no listed converter URL. There is no documented workaround; pointing a webhook across regions is untested and likely unsupported [unverified]. `*.rossum.app` orgs: see [Setup](#setup) — the org domain serves the service [live].
+- **Regional availability.** The converter service is hosted in EU1 Ireland and US east coast only [KB], but that constrains where the *service* runs, not who can call it: orgs in other regions (EU2 Frankfurt, Japan Tokyo) point their webhook cross-region at the more convenient hosted URL — confirmed in production from a Japan Tokyo org using the US URL [field]. The email content is processed in the chosen service region — weigh that against data-residency requirements. `*.rossum.app` orgs: see [Setup](#setup) — the org domain serves the service [live].
 - **Raw HTML/TXT attachments import (and fail) regardless of the converter** [live]: the platform creates annotations for `.html`/`.txt` attachments that end in **`failed_import`** — observed with the converter completely disabled. With `convert_attachments` on, each such attachment therefore yields TWO annotations: the raw `failed_import` one (platform) and the converted `to_review` PDF (converter). Don't misread the `failed_import` entries as converter failures, and expect them as noise in the queue. (This also nuances the KB's "HTML documents are not processed" — they are *attempted* and fail.)
 - **A successful body conversion suppresses the no-attachment notification** [live]: with the queue's `email_with_no_attachments` notification enabled (default `true`; the inbox-level `bounce_email_with_no_attachments` is deprecated in favor of it), a body-only email that got converted produced **no** "Unfortunately, we have not received any document…" reply — the conversion yields an annotation, so the email no longer counts as having no processable documents. A body *below* `minimal_email_character_count` (or skipped by config) presumably still triggers it [unverified].
 - **Multiple `email.received` hooks** (e.g. converter + Advanced Email Filtering on the same queue): official API docs, verbatim — "If there are multiple hooks configured for the event, annotations are created only for files mentioned in all the responses (their values are merged together with the latest called hooks having the highest priority)." A filtering hook that omits files from its response can therefore veto imports; order and coexistence need care. [official docs; interplay with the converter's `additional_files` specifically: [unverified]]
@@ -245,4 +248,4 @@ The settings wrapper is the same `{"configurations": [...]}`; entries follow the
 | Nothing imports with `send_email_body_as_plain_document: true` | Live-observed behavior of this key — it suppressed all output in tests | Leave it `false` |
 | `POST /v1/emails/import` returns 400 "Invalid e-mail format" | Missing `Date` header / bare-LF line endings in the .eml [live] | Add `Date`, use CRLF |
 | Sender gets "no processable attachments" rejection | Body wasn't converted (too short / skipped / hook failed) — a successful conversion suppresses the notification [live] | `minimal_email_character_count`, skip flags, hook logs |
-| Everything configured, still nothing — org is on EU2/Japan | Converter not available in that region [KB] | Region table in [Setup](#setup) |
+| Org is in a region with no listed URL (EU2/Japan) and nothing imports | `config.url` points at a non-existent same-region path | Use a hosted region's URL — cross-region use works [field]; see [Setup](#setup) |
