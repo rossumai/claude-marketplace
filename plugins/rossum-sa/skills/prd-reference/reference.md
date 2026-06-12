@@ -135,7 +135,7 @@ Required fields the user must populate on the JSON for new objects (filesystem-d
 | Engine | `name`, `description` |
 | EngineField | `name` |
 
-### Engine-bound queues: schema editing rules
+#### Engine-bound queues: schema editing rules
 
 Before editing extraction-related schema properties, check the queue's binding: `queue.json` → `engine`. If it is non-null, the queue uses a custom extraction engine and the API enforces different rules on every `prd2 push` of `schema.json` (these arrive as HTTP 400, listed per field):
 
