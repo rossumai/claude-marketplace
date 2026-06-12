@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 .rossum-cache/
 .test-runs/
+issue-body.md
 
 # Session-local planning and design notes — not repo artifacts.
 # Per-session work (brainstorming specs, implementation plans) lives in the

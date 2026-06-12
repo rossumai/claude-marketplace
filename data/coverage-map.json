@@ -1,0 +1,327 @@
+{
+  "DELETE /hooks/{hookID}": {
+    "decision": "covered",
+    "summary": "Delete hook",
+    "tools": [
+      "rossum_delete_hook"
+    ]
+  },
+  "DELETE /rules/{ruleID}": {
+    "decision": "covered",
+    "summary": "Delete rule",
+    "tools": [
+      "rossum_delete_rule"
+    ]
+  },
+  "GET /annotations": {
+    "decision": "covered",
+    "summary": "List annotations",
+    "tools": [
+      "rossum_generate_export_payload",
+      "rossum_list_annotations",
+      "rossum_search_annotations"
+    ]
+  },
+  "GET /annotations/{annotationID}": {
+    "decision": "covered",
+    "summary": "Retrieve annotation",
+    "tools": [
+      "rossum_get_annotation",
+      "rossum_get_annotation_meta",
+      "rossum_refire_annotation"
+    ]
+  },
+  "GET /annotations/{annotationID}/content": {
+    "decision": "covered",
+    "summary": "Retrieve annotation content",
+    "tools": [
+      "rossum_get_annotation",
+      "rossum_get_annotation_content",
+      "rossum_refire_annotation"
+    ]
+  },
+  "GET /audit_logs": {
+    "decision": "covered",
+    "summary": "List audit logs",
+    "tools": [
+      "rossum_list_audit_logs"
+    ]
+  },
+  "GET /auth/user": {
+    "decision": "covered",
+    "summary": "Retrieve current user",
+    "tools": [
+      "rossum_whoami"
+    ]
+  },
+  "GET /connectors": {
+    "decision": "covered",
+    "summary": "List connectors",
+    "tools": [
+      "rossum_list_connectors"
+    ]
+  },
+  "GET /connectors/{connectorID}": {
+    "decision": "covered",
+    "summary": "Retrieve connector",
+    "tools": [
+      "rossum_get_connector"
+    ]
+  },
+  "GET /documents/{documentID}": {
+    "decision": "covered",
+    "summary": "Retrieve document",
+    "tools": [
+      "rossum_get_document"
+    ]
+  },
+  "GET /email_threads": {
+    "decision": "covered",
+    "summary": "List email threads",
+    "tools": [
+      "rossum_list_email_threads"
+    ]
+  },
+  "GET /email_threads/{emailThreadID}": {
+    "decision": "covered",
+    "summary": "Retrieve email thread",
+    "tools": [
+      "rossum_get_email_thread"
+    ]
+  },
+  "GET /emails": {
+    "decision": "covered",
+    "summary": "List emails",
+    "tools": [
+      "rossum_list_emails"
+    ]
+  },
+  "GET /emails/{emailID}": {
+    "decision": "covered",
+    "summary": "Retrieve email",
+    "tools": [
+      "rossum_get_email"
+    ]
+  },
+  "GET /groups": {
+    "decision": "covered",
+    "summary": "List user roles",
+    "tools": [
+      "rossum_list_groups"
+    ]
+  },
+  "GET /hooks": {
+    "decision": "covered",
+    "summary": "List hooks",
+    "tools": [
+      "rossum_list_hooks"
+    ]
+  },
+  "GET /hooks/logs": {
+    "decision": "covered",
+    "summary": "List hook call logs",
+    "tools": [
+      "rossum_get_annotation",
+      "rossum_list_hook_logs",
+      "rossum_refire_annotation"
+    ]
+  },
+  "GET /hooks/{hookID}": {
+    "decision": "covered",
+    "summary": "Retrieve hook",
+    "tools": [
+      "rossum_extract_export_template",
+      "rossum_generate_export_payload",
+      "rossum_get_hook"
+    ]
+  },
+  "GET /hooks/{hookID}/secrets_keys": {
+    "decision": "covered",
+    "summary": "Retrieve secret keys list",
+    "tools": [
+      "rossum_get_hook_secret_keys"
+    ]
+  },
+  "GET /inboxes/{inboxID}": {
+    "decision": "covered",
+    "summary": "Retrieve inbox",
+    "tools": [
+      "rossum_get_inbox"
+    ]
+  },
+  "GET /organizations/{organizationID}": {
+    "decision": "covered",
+    "summary": "Retrieve organization",
+    "tools": [
+      "rossum_get_organization"
+    ]
+  },
+  "GET /queues": {
+    "decision": "covered",
+    "summary": "List queues",
+    "tools": [
+      "rossum_list_queues"
+    ]
+  },
+  "GET /queues/{id}": {
+    "decision": "covered",
+    "summary": "Retrieve queue",
+    "tools": [
+      "rossum_get_queue"
+    ]
+  },
+  "GET /rules": {
+    "decision": "covered",
+    "summary": "List rules",
+    "tools": [
+      "rossum_list_rules"
+    ]
+  },
+  "GET /rules/{ruleID}": {
+    "decision": "covered",
+    "summary": "Retrieve rule",
+    "tools": [
+      "rossum_get_rule"
+    ]
+  },
+  "GET /rules_execution_logs": {
+    "decision": "covered",
+    "summary": "List rules execution logs",
+    "tools": [
+      "rossum_list_rule_execution_logs"
+    ]
+  },
+  "GET /schemas": {
+    "decision": "covered",
+    "summary": "List schemas",
+    "tools": [
+      "rossum_list_schemas"
+    ]
+  },
+  "GET /schemas/{schemaID}": {
+    "decision": "covered",
+    "summary": "Retrieve schema",
+    "tools": [
+      "rossum_get_schema"
+    ]
+  },
+  "GET /users": {
+    "decision": "covered",
+    "summary": "List users",
+    "tools": [
+      "rossum_list_users"
+    ]
+  },
+  "GET /workspaces": {
+    "decision": "covered",
+    "summary": "List workspaces",
+    "tools": [
+      "rossum_list_workspaces"
+    ]
+  },
+  "GET /workspaces/{workspaceID}": {
+    "decision": "covered",
+    "summary": "Retrieve workspace",
+    "tools": [
+      "rossum_get_workspace"
+    ]
+  },
+  "PATCH /annotations/{annotationID}": {
+    "decision": "covered",
+    "summary": "Partial update annotation",
+    "tools": [
+      "rossum_patch_annotation",
+      "rossum_refire_annotation"
+    ]
+  },
+  "PATCH /hooks/{hookID}": {
+    "decision": "covered",
+    "summary": "Partial update hook",
+    "tools": [
+      "rossum_patch_hook"
+    ]
+  },
+  "PATCH /rules/{ruleID}": {
+    "decision": "covered",
+    "summary": "Partial update rule",
+    "tools": [
+      "rossum_patch_rule"
+    ]
+  },
+  "PATCH /schemas/{schemaID}": {
+    "decision": "covered",
+    "summary": "Partial update schema",
+    "tools": [
+      "rossum_patch_schema"
+    ]
+  },
+  "POST /annotations/{annotationID}/cancel": {
+    "decision": "covered",
+    "summary": "Cancel validation",
+    "tools": [
+      "rossum_cancel_annotation",
+      "rossum_refire_annotation",
+      "rossum_update_annotation_content"
+    ]
+  },
+  "POST /annotations/{annotationID}/content/operations": {
+    "decision": "covered",
+    "summary": "Bulk update annotation content",
+    "tools": [
+      "rossum_update_annotation_content"
+    ]
+  },
+  "POST /annotations/{annotationID}/content/validate": {
+    "decision": "covered",
+    "summary": "Validate annotation content",
+    "tools": [
+      "rossum_refire_annotation",
+      "rossum_validate_content"
+    ]
+  },
+  "POST /annotations/{annotationID}/start": {
+    "decision": "covered",
+    "summary": "Start validation",
+    "tools": [
+      "rossum_refire_annotation",
+      "rossum_start_annotation",
+      "rossum_update_annotation_content"
+    ]
+  },
+  "POST /hooks": {
+    "decision": "covered",
+    "summary": "Create hook",
+    "tools": [
+      "rossum_create_hook"
+    ]
+  },
+  "POST /hooks/{hookID}/generate_payload": {
+    "decision": "covered",
+    "summary": "Generate hook payload",
+    "tools": [
+      "rossum_generate_export_payload",
+      "rossum_test_hook"
+    ]
+  },
+  "POST /hooks/{hookID}/test": {
+    "decision": "covered",
+    "summary": "Test hook",
+    "tools": [
+      "rossum_test_hook"
+    ]
+  },
+  "POST /rules": {
+    "decision": "covered",
+    "summary": "Create rule",
+    "tools": [
+      "rossum_create_rule"
+    ]
+  },
+  "POST /users": {
+    "decision": "covered",
+    "summary": "Create user",
+    "tools": [
+      "rossum_create_user"
+    ]
+  }
+}
