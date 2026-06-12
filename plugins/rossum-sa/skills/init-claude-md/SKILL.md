@@ -45,7 +45,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/inspect.py <project_dir>
 
 Capture stdout as JSON. Check the `tool` field first:
 
-- If `tool` is `"prd2"`, proceed — the JSON also contains `project_name`, `environments`, `workspace_count`, `queue_count`, `queues[]`, `hook_count`, `hooks[]`, and `integration_target`.
+- If `tool` is `"prd2"`, proceed — the JSON also contains `project_name`, `environments`, `workspace_count`, `queue_count`, `queues[]` (each with `name`, `workspace`, `environment`, `schema_field_count`, `engine`), `hook_count`, `hooks[]`, and `integration_target`.
 - If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}`), **stop** and tell the user: "This doesn't look like a prd2 project (no `prd_config.yaml`). `init-claude-md` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
 
 ### Step 3: Render the template
@@ -65,6 +65,10 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placehol
 | `{{deployment_workflow_block}}` | The full contents of `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/fragments/<tool>.md` (today `fragments/prd2.md`), inserted verbatim — the deployment-tool-specific workflow, layout, commands, and safety rules. |
 
 `{{tree_listing}}` is filled as before; `{{deployment_workflow_block}}` is filled by reading `fragments/<tool>.md` for the `tool` the inspector reported.
+
+If any queue has a non-null `engine`, add an invariant to the generated CLAUDE.md (in the same section as other safety rules):
+
+> **Engine-bound queues:** <comma-separated `name` list of queues with non-null `engine`> use a custom extraction engine. Their schema datapoints bind to engine fields by name match — engine-extracted fields must keep `rir_field_names: []`, must not set `disable_prediction: true`, and a matching engine field must exist before a new captured datapoint is pushed. See rossum-sa:rossum-reference → Extraction Engines.
 
 ### Step 4: Build the conditional skills block
 

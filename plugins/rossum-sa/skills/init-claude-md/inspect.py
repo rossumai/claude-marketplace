@@ -124,6 +124,7 @@ def discover_queues(project_dir: Path, directories: list[dict]) -> list[dict]:
                     "workspace": workspace_name,
                     "environment": d["name"],
                     "schema_field_count": field_count,
+                    "engine": queue.get("engine"),
                 })
     return out
 

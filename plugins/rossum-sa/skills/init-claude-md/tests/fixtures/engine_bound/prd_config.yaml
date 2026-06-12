@@ -1,0 +1,4 @@
+project_name: engine_bound
+directories:
+  dev-env:
+    api_base: https://example.rossum.app/api/v1
