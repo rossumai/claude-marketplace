@@ -9,8 +9,6 @@ The Email Body Converter is a **Rossum-maintained hosted webhook** that converts
 - **[live]** — verified by the live probe.
 - **[unverified]** — inference or untested; treat with care.
 
-> Official spelling is "Email Body Convert**er**" — the `…/email-body-convertor` KB slug returns 404. Searches for "convertor" should land here too.
-
 ## Contents
 
 - [What it is & when to use it](#what-it-is--when-to-use-it)
@@ -232,7 +230,7 @@ The settings wrapper is the same `{"configurations": [...]}`; entries follow the
 - **Multiple `email.received` hooks** (e.g. converter + Advanced Email Filtering on the same queue): official API docs, verbatim — "If there are multiple hooks configured for the event, annotations are created only for files mentioned in all the responses (their values are merged together with the latest called hooks having the highest priority)." A filtering hook that omits files from its response can therefore veto imports; order and coexistence need care. [official docs; interplay with the converter's `additional_files` specifically: [unverified]]
 - **Stored email body is truncated at 4 kB** — the email *object*'s `body_text_plain`/`body_text_html` are "shortened to 4kB" (rossum.app OpenAPI). The hook payload is delivered at `email.received` time and may carry the full body, so conversion of long emails is likely unaffected — but this is [unverified] (probe bodies were small).
 - **Inbox filters** (`filters.allowed_senders`/`denied_senders`, `document_rejection_conditions` like min resolution and MIME filters) are documented for *incoming attachments*; whether any of them apply to the converter-generated PDF is not documented [unverified].
-- **`POST /v1/emails/import` quirks** [live]: it rejects messages without a `Date` header / with bare-LF line endings as HTTP 400 "Invalid e-mail format", and it does **not** thread imported emails by `In-Reply-To` (`parent` stays null) — which also makes `skip_if_email_is_a_reply` untestable this way and may matter for reply-handling tests generally.
+- **`POST /v1/emails/import` quirks** [live]: it rejects messages without a `Date` header / with bare-LF line endings as HTTP 400 "Invalid e-mail format", and it does **not** thread imported emails by `In-Reply-To` (`parent` stays null) — relevant for anyone testing reply handling via this endpoint, and the reason `skip_if_email_is_a_reply`'s semantics remain unverified.
 - **This extension vs. `email_body:*` fields.** `rir_field_names: ["email_body:text_html"]` copies raw body text into a *field* of an annotation created from some other file; the converter creates a *new document* from the body. They solve different problems and can coexist.
 
 ## Troubleshooting
