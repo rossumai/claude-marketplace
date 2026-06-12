@@ -1,0 +1,8 @@
+project_name: subdirs-sample
+directories:
+  dev-env:
+    org_id: '100'
+    api_base: https://elis.rossum.ai/api/v1
+    subdirectories:
+      default:
+        regex: ''
