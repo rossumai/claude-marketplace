@@ -32,7 +32,7 @@ The public API is **read-only** for workflows, steps, runs, and activities. A li
 | POST   | `/v1/workflow_runs/{id}/reset` | **The only write action** — see [Resetting a run](#resetting-a-run). |
 | GET    | `/v1/workflow_activities` | List activity log. Filter (live-confirmed): `workflow_run` (also `annotation`). |
 
-`/v1/workflow_step_users` **does not exist** (live: HTTP 404). There is no `/v1/assignment_rules` endpoint either, and `/v1/rules/{django_pk}` for an assignment rule returns 404 (the public `/v1/rules` list contains only user-authored business rules). See [Approvers & assignment rules](#approvers--assignment-rules).
+`/v1/workflow_step_users` **does not exist** (live: HTTP 404). There is no `/v1/assignment_rules` endpoint either, and the public `/v1/rules` list contains only user-authored business rules — not the assignment rules that route approvers. See [Approvers & assignment rules](#approvers--assignment-rules).
 
 ## Workflow object
 
@@ -65,7 +65,7 @@ The step body carries **no approver/user/assignee field** (confirmed live, inclu
 
 ## Approvers & assignment rules
 
-Approvers are **not** set on the step object. Each step routes to approvers through an internal **Assignment rule** (a Rossum `Rule`-type object; visible in Django as e.g. *"Assignment rule: rule [778]"*). This assignment rule is **not exposed in the public API** — its Django PK is not a `/v1/rules` id, and there is no `/v1/assignment_rules` endpoint.
+Approvers are **not** set on the step object. Each step routes to approvers through an internal **assignment rule** managed on the Rossum side. This assignment rule is **not exposed in the public API** — there is no `/v1/assignment_rules` endpoint, and it does not appear in the `/v1/rules` list (which holds only user-authored business rules).
 
 What *is* observable: when a step with a matching assignment rule is entered, the resulting **`workflow_activity` carries the resolved approvers in `assignees[]`** as a list of user URLs (live: `["https://…/v1/users/386147"]`). So to see who a step routed to, read the run's activities — not the step.
 
