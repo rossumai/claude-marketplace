@@ -127,5 +127,5 @@ def test_multi_org_and_subdir_discovery(tmp_path):
 def test_engine_bound_queue_is_flagged():
     out = run_inspect(FIXTURES / "engine_bound")
     by_name = {q["name"]: q for q in out["queues"]}
-    assert by_name["Engine Queue"]["engine"] is not None
+    assert by_name["Engine Queue"]["engine"] == "https://example.rossum.app/api/v1/engines/40"
     assert by_name["Generic Queue"]["engine"] is None

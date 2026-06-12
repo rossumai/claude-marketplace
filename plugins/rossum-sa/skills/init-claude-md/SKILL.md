@@ -66,7 +66,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placehol
 
 `{{tree_listing}}` is filled as before; `{{deployment_workflow_block}}` is filled by reading `fragments/<tool>.md` for the `tool` the inspector reported.
 
-If any queue has a non-null `engine`, add an invariant to the generated CLAUDE.md (in the same section as other safety rules):
+If any queue has a non-null `engine`, add an invariant to the generated CLAUDE.md immediately after the `{{deployment_workflow_block}}` substitution (i.e., between the deployment workflow section and `## Coding Conventions (Rossum platform)`):
 
 > **Engine-bound queues:** <comma-separated `name` list of queues with non-null `engine`> use a custom extraction engine. Their schema datapoints bind to engine fields by name match — engine-extracted fields must keep `rir_field_names: []`, must not set `disable_prediction: true`, and a matching engine field must exist before a new captured datapoint is pushed. See rossum-sa:rossum-reference → Extraction Engines.
 
