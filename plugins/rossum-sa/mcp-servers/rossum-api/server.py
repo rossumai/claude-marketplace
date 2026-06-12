@@ -529,7 +529,7 @@ _HOOK_LOG_FIELDS = (
     "status", "log_level", "message", "timestamp", "start", "end",
 )
 _ANNOTATION_FIELDS = ("id", "queue", "status", "document", "modifier", "modified_at", "confirmed_at", "exported_at")
-_QUEUE_FIELDS = ("id", "name", "workspace", "schema", "hooks", "status", "dedicated_engine")
+_QUEUE_FIELDS = ("id", "name", "workspace", "schema", "hooks", "status", "engine", "dedicated_engine", "generic_engine")
 _HOOK_FIELDS = ("id", "name", "type", "events", "queues", "active", "run_after", "token_owner")
 _RULE_FIELDS = ("id", "name", "enabled", "queues")
 _RULE_EXEC_LOG_FIELDS = (
@@ -1894,7 +1894,10 @@ def handle_get_annotation_content(request_id, arguments):
 @_tool(
     "rossum_list_queues",
     "Lists all queues in the Rossum organization. Queues are the core processing unit — "
-    "each represents a document intake pipeline with its own schema and hooks.",
+    "each represents a document intake pipeline with its own schema and hooks. Each result "
+    "includes the extraction binding triple (engine / dedicated_engine / generic_engine): "
+    "a non-null 'engine' means a custom engine is bound and schema fields follow engine "
+    "binding rules (see rossum-reference → Extraction Engines).",
     {
         "type": "object",
         "properties": {
