@@ -69,6 +69,9 @@ def test_list_queues_projects_and_compacts(monkeypatch):
             "id": 7, "name": "Q",
             "workspace": f"{BASE}/api/v1/workspaces/3",
             "schema": f"{BASE}/api/v1/schemas/4",
+            "engine": f"{BASE}/api/v1/engines/99",
+            "dedicated_engine": None,
+            "generic_engine": None,
             "secret": "should be dropped",
         }],
         "pagination": {"total": 1, "next": None},
@@ -84,7 +87,16 @@ def test_list_queues_projects_and_compacts(monkeypatch):
     # output: only _QUEUE_FIELDS kept, URL refs compacted to bare ids, secret dropped
     out = emitted_payload(emitted)
     assert out["total"] == 1
-    assert out["results"] == [{"id": 7, "name": "Q", "workspace": 3, "schema": 4}]
+    # workspace/schema are in _URL_REF_FIELDS → compacted to bare integer IDs
+    # engine/dedicated_engine/generic_engine are NOT in _URL_REF_FIELDS:
+    #   engine URL passes through as-is (full URL string), None fields stay None
+    assert out["results"] == [{
+        "id": 7, "name": "Q",
+        "workspace": 3, "schema": 4,
+        "engine": f"{BASE}/api/v1/engines/99",
+        "dedicated_engine": None,
+        "generic_engine": None,
+    }]
 
 
 # --- get pattern: passthrough of a single resource ---
