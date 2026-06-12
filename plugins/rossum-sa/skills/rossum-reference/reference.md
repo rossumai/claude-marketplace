@@ -1114,9 +1114,11 @@ Verified order of operations:
 4. Clean the schema: every engine-extracted datapoint gets `rir_field_names: []` and explicit `ui_configuration: {"type": "captured", "edit": "enabled"}`; remove `disable_prediction` from ALL datapoints (captured or not); keep the multivalue's own `rir_field_names`; leave `formula`/`data`/`manual` fields otherwise untouched.
 5. `PATCH /v1/queues/{id}` with `{"engine": "<engine url>"}` — on success the platform auto-nulls `generic_engine`.
 
+For a brand-new queue, `POST /v1/queues` accepts `engine` directly in the creation body (live-verified 2026-06-12) — the queue is born engine-bound with `generic_engine: null`, no create-then-PATCH step needed.
+
 ### Reverting to the generic engine
 
-*Unverified — confirm before relying on this:* `PATCH /v1/queues/{id}` with `{"engine": null, "generic_engine": "<generic url>"}`, then restore `rir_field_names` from a pre-conversion snapshot (or map back from each engine field's `pre_trained_field_id`). Verify on a sandbox before using on production.
+Live-verified 2026-06-12: `PATCH /v1/queues/{id}` with `{"engine": null, "generic_engine": "<generic url>"}` rebinds the queue to the generic engine in one call; then restore `rir_field_names` from a pre-conversion snapshot, or map back from each engine field's `pre_trained_field_id` (tabular fields restore to their `table_column_*` catalog names). The reverted queue can be converted again afterwards without errors (round-trip verified).
 
 ### Deletion semantics
 
