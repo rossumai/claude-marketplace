@@ -486,7 +486,10 @@ project_root/
       rules/
         RuleName_[ID].json
       engines/
-        EngineName_[ID].json
+        EngineName_[ID]/
+          engine.json
+          engine_fields/
+            FieldName_[ID].json
       workspaces/
         WorkspaceName_[ID]/
           workspace.json
