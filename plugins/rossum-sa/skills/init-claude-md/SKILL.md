@@ -46,7 +46,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/inspect.py <project_dir>
 Capture stdout as JSON. Check the `tool` field first:
 
 - If `tool` is `"prd2"`, proceed — the JSON also contains `project_name`, `environments`, `workspace_count`, `queue_count`, `queues[]`, `hook_count`, `hooks[]`, and `integration_target`.
-- If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}`), **stop** and tell the user: "This doesn't look like a prd2 project (no `prd_config.yaml`). `init-claude-md` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
+- If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}` — also returned for a degenerate `prd_config.yaml` with no usable directory entries), **stop** and tell the user: "This doesn't look like a prd2 project (no `prd_config.yaml`). `init-claude-md` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
 
 ### Step 3: Render the template
 

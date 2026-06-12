@@ -88,6 +88,22 @@ def test_subdir_layout_is_discovered():
     assert {h["name"] for h in out["hooks"]} == {"Validator"}
 
 
+def test_degenerate_prd_config_reports_unsupported(tmp_path):
+    # Umbrella-folder style config: a null directory key with empty org_id/api_base.
+    (tmp_path / "prd_config.yaml").write_text(
+        "directories:\n"
+        "  null:\n"
+        "    org_id:\n"
+        "    api_base:\n"
+        "    subdirectories:\n"
+        "      null:\n"
+        "        regex:\n"
+    )
+    out = run_inspect(tmp_path)
+    assert out["tool"] == "unknown"
+    assert out["supported"] is False
+
+
 def test_env_facts_org_id_and_api_base_are_captured():
     out = run_inspect(FIXTURES / "prd2-subdirs")
     d = out["directories"][0]

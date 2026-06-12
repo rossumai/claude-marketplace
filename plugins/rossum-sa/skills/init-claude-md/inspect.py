@@ -18,7 +18,8 @@ from pathlib import Path
 def detect_tool(project_dir: Path) -> str:
     """Identify which deployment tool manages this project. Extensible: add a branch
     here, a sibling inspector, and a fragments/<tool>.md to support another deployment
-    tool/format. Currently only prd2 is supported."""
+    tool/format. Currently only prd2 is supported; main() additionally rejects
+    degenerate configs with no usable directory entries."""
     if (project_dir / "prd_config.yaml").is_file():
         return "prd2"
     return "unknown"
@@ -225,6 +226,11 @@ def main(project_dir_str: str) -> None:
 
     facts = parse_prd_config(project_dir)
     facts["tool"] = "prd2"
+    if not any(d["org_id"] or d["api_base"] for d in facts["directories"]):
+        # Degenerate config (e.g. an umbrella folder's empty template) — not a real project.
+        json.dump({"tool": "unknown", "supported": False}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
     directories = facts["directories"]
     queues = discover_queues(project_dir, directories)
     hooks = discover_hooks(project_dir, directories)
