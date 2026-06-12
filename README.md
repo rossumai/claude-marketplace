@@ -97,7 +97,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **Coupa Integration Baseline (CIB)** — schema, MDH matching, export pipeline, business rules
 - **prd2 CLI** — deployment and management commands
 - **Structured Formats Import (SFI)** — XML/JSON import setup, XPath/JMESPath selectors, e-invoicing (ZUGFeRD, X-Rechnung)
-- **Approval workflows** — read-only workflow/step/run API + the `reset` action, step modes & conditions (a paid, Rossum-configured feature)
+- **Approval workflows** — read-only workflow/step/run/activity API + the `reset` action, step modes & conditions, approver assignees (a paid, Rossum-configured feature)
 - **Business rules & validation** — native Rules vs. the legacy Business Rules Validation extension, conditions, actions, automation blocking
 
 ## 💡 What can you do with this?
