@@ -14,7 +14,7 @@ Reconciles schema datapoints ↔ engine fields ↔ queue binding, then sets `que
 ## Safety
 
 - **Every mode defaults to dry-run.** Show the user the printed plan (engine fields to create, schema changes) and get explicit confirmation before re-running with `--execute`. Never skip this for production queues.
-- Convert/revert write a pre-state snapshot with `--snapshot-dir` — always pass it; the snapshot is the revert path.
+- Convert/attach/revert write a pre-state snapshot with `--snapshot-dir` — always pass it; the snapshot is the revert path.
 - A 403 on engine creation means the org/token lacks the permission — stop and advise the user to contact Rossum support; record which org/role combination failed.
 
 ## Running
@@ -31,7 +31,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/queue-engine-binding/engine_binding.py \
 | `convert` | `--queue-id` | Generic-bound queue → new engine: derive engine fields from the schema (pretrained-catalog seeding), clean the schema (`rir_field_names: []`, normalize `ui_configuration`, strip `disable_prediction`), create engine + fields, flip the queue. |
 | `greenfield` | `--schema-file --queue-name --workspace-url` | New queue born engine-bound from a local schema JSON. |
 | `attach` | `--queue-id --engine-id` | Bind to an existing engine; creates only the missing engine fields, then cleans + flips. |
-| `revert` | `--queue-id --generic-engine-url` | Detach to generic engine and restore `rir_field_names` from `pre_trained_field_id` mappings (or restore the snapshot schema manually for exact pre-state). |
+| `revert` | `--queue-id --generic-engine-url` | Detach to generic engine and restore `rir_field_names` from `pre_trained_field_id` mappings (or restore the snapshot schema manually for exact pre-state). Find the `--generic-engine-url` value in the convert snapshot's `pre_queue.json` under `generic_engine`, or in any sibling generic-bound queue's `queue.json`. |
 
 ## Interpreting failures
 

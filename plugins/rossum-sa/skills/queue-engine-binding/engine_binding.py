@@ -77,6 +77,8 @@ def clean_schema(content):
             if dp.get("rir_field_names"):
                 changes.append(f"{dp['id']}: rir_field_names {dp['rir_field_names']} -> []")
             dp["rir_field_names"] = []
+            if dp.get("ui_configuration") != {"type": "captured", "edit": "enabled"}:
+                changes.append(f"{dp['id']}: ui_configuration -> captured/enabled")
             dp["ui_configuration"] = {"type": "captured", "edit": "enabled"}
     return cleaned, changes
 
@@ -101,12 +103,18 @@ def api(base_url, token, method, path, body=None):
     try:
         with urllib.request.urlopen(request) as response:
             raw = response.read()
-            return response.status, json.loads(raw) if raw else {}
+            try:
+                return response.status, json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                fail(f"non-JSON response from {path} ({response.status}): "
+                     f"{raw.decode('utf-8', 'replace')[:200]}")
     except urllib.error.HTTPError as error:
         try:
             return error.code, json.loads(error.read())
         except Exception:
             return error.code, {}
+    except urllib.error.URLError as error:
+        fail(f"connection failed: {error.reason}")
 
 
 def fail(message, payload=None):
@@ -142,6 +150,16 @@ def snapshot(args, label, payload):
             json.dump(payload, handle, indent=2)
 
 
+def check_nonempty_plan(args, fields):
+    if fields:
+        return
+    message = ("no engine-extracted datapoints found in the schema — nothing to bind; "
+               "check ui_configuration types")
+    if args.execute:
+        fail(message)
+    print(f"WARNING: {message}", file=sys.stderr)
+
+
 # ---------- modes ----------
 
 def mode_convert(args, token):
@@ -164,6 +182,7 @@ def mode_convert(args, token):
 
     catalog = fetch_catalog(base, token)
     fields = derive_engine_fields(schema["content"], catalog)
+    check_nonempty_plan(args, fields)
     cleaned, changes = clean_schema(schema["content"])
     plan = {
         "mode": "convert", "queue": queue["id"], "engine_name": args.engine_name or queue["name"],
@@ -192,8 +211,13 @@ def mode_convert(args, token):
     status, resp = api(base, token, "PATCH", f"/api/v1/queues/{queue['id']}", {"engine": engine["url"]})
     if status != 200:
         fail(f"queue flip failed ({status}); violations listed in non_field_errors", resp)
+    result = {"flipped": True, "engine": engine["url"]}
     status, stats = api(base, token, "GET", f"/api/v1/engines/{engine['id']}/queue_stats")
-    print(json.dumps({"flipped": True, "engine": engine["url"], "queue_stats": stats}, indent=2))
+    if status == 200:
+        result["queue_stats"] = stats
+    else:
+        print(f"warning: queue_stats fetch failed ({status})", file=sys.stderr)
+    print(json.dumps(result, indent=2))
 
 
 def mode_attach(args, token):
@@ -201,8 +225,15 @@ def mode_attach(args, token):
     status, queue = api(base, token, "GET", f"/api/v1/queues/{args.queue_id}")
     if status != 200:
         fail(f"queue fetch failed ({status})", queue)
+    status, engine = api(base, token, "GET", f"/api/v1/engines/{args.engine_id}")
+    if status != 200:
+        fail(f"engine fetch failed ({status})", engine)
     schema_id = queue["schema"].rstrip("/").split("/")[-1]
     status, schema = api(base, token, "GET", f"/api/v1/schemas/{schema_id}")
+    if status != 200:
+        fail(f"schema fetch failed ({status})", schema)
+    snapshot(args, "pre_attach_queue", queue)
+    snapshot(args, "pre_attach_schema", schema)
     existing = {f["name"] for f in fetch_engine_fields(base, token, args.engine_id)}
     catalog = fetch_catalog(base, token)
     needed = derive_engine_fields(schema["content"], catalog)
@@ -213,7 +244,6 @@ def mode_attach(args, token):
     if not args.execute:
         print("\nDry run. Re-run with --execute to apply.", file=sys.stderr)
         return
-    status, engine = api(base, token, "GET", f"/api/v1/engines/{args.engine_id}")
     for field in missing:
         status, created = api(base, token, "POST", "/api/v1/engine_fields",
                               {**field, "engine": engine["url"]})
@@ -230,10 +260,18 @@ def mode_attach(args, token):
 
 def mode_greenfield(args, token):
     base = args.base_url
-    with open(args.schema_file) as handle:
-        content = json.load(handle)["content"]
+    try:
+        with open(args.schema_file) as handle:
+            content = json.load(handle)["content"]
+    except FileNotFoundError:
+        fail(f"schema file not found: {args.schema_file}")
+    except json.JSONDecodeError as error:
+        fail(f"schema file is not valid JSON: {args.schema_file} ({error})")
+    except KeyError:
+        fail(f"schema file has no 'content' key: {args.schema_file}")
     catalog = fetch_catalog(base, token)
     fields = derive_engine_fields(content, catalog)
+    check_nonempty_plan(args, fields)
     cleaned, changes = clean_schema(content)
     print(json.dumps({"mode": "greenfield", "engine_fields": fields,
                       "schema_changes": changes}, indent=2))
@@ -269,6 +307,9 @@ def mode_greenfield(args, token):
             fail(f"queue engine flip failed ({status})", queue)
     status, resp = api(base, token, "PATCH", f"/api/v1/engines/{engine['id']}",
                        {"training_queues": [queue["url"]]})
+    if status != 200:
+        fail(f"engine training_queues update failed ({status}) — the queue was created but the "
+             f"engine has no training queue; PATCH /v1/engines/{engine['id']} manually", resp)
     print(json.dumps({"created": True, "queue": queue["url"], "engine": engine["url"]}, indent=2))
 
 
@@ -317,6 +358,7 @@ def main():
     parser.add_argument("--snapshot-dir", help="directory for pre-state snapshots")
     parser.add_argument("--execute", action="store_true", help="apply changes (default: dry run)")
     args = parser.parse_args()
+    args.base_url = args.base_url.rstrip("/")
 
     token = os.environ.get("ROSSUM_TOKEN")
     if not token:

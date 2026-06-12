@@ -6,7 +6,12 @@ from pathlib import Path
 FIXTURES = Path(__file__).parent / "fixtures"
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from engine_binding import clean_schema, derive_engine_fields  # noqa: E402
+from engine_binding import (  # noqa: E402
+    clean_schema,
+    derive_engine_fields,
+    iter_datapoints,
+    restore_rir,
+)
 
 
 def _load(name):
@@ -61,3 +66,51 @@ def test_clean_schema_matches_ground_truth_rules():
     assert by_id["vendor_match"]["ui_configuration"]["type"] == "data"
     # change log mentions every touched field
     assert any("document_id" in c for c in changes)
+
+
+def test_derive_custom_field_branch():
+    """A captured datapoint with no catalog match becomes a cold custom engine field."""
+    content = [
+        {"category": "section", "id": "header", "children": [
+            {"category": "datapoint", "id": "contract_date", "label": "Contract Date",
+             "type": "date", "rir_field_names": ["not_in_catalog"],
+             "ui_configuration": {"type": "captured", "edit": "enabled"}},
+        ]},
+    ]
+    catalog = [{"name": "date_issue", "label": "Issue Date", "type": "date",
+                "subtype": "period_begin", "tabular": False, "multiline": "false"}]
+    fields = derive_engine_fields(content, catalog)
+    assert len(fields) == 1
+    field = fields[0]
+    assert field["pre_trained_field_id"] is None
+    assert field["subtype"] is None
+    assert field["multiline"] == "false"
+    assert field["type"] == "date"          # schema type mapped via SCHEMA_TYPE_DEFAULTS
+    assert field["tabular"] is False
+
+
+def test_restore_rir():
+    """Revert maps pre_trained_field_id back; custom and non-extracted fields stay put."""
+    content = [
+        {"category": "section", "id": "header", "children": [
+            {"category": "datapoint", "id": "issue_date", "type": "date",
+             "rir_field_names": [],
+             "ui_configuration": {"type": "captured", "edit": "enabled"}},
+            {"category": "datapoint", "id": "internal_ref", "type": "string",
+             "rir_field_names": [],
+             "ui_configuration": {"type": "captured", "edit": "enabled"}},
+            {"category": "datapoint", "id": "vendor_match", "type": "string",
+             "rir_field_names": [],
+             "ui_configuration": {"type": "data"}},
+        ]},
+    ]
+    engine_fields = [
+        {"name": "issue_date", "pre_trained_field_id": "date_issue"},
+        {"name": "internal_ref", "pre_trained_field_id": None},
+        {"name": "vendor_match", "pre_trained_field_id": "sender_name"},
+    ]
+    restored = restore_rir(content, engine_fields)
+    by_id = {dp["id"]: dp for dp, _ in iter_datapoints(restored)}
+    assert by_id["issue_date"]["rir_field_names"] == ["date_issue"]
+    assert by_id["internal_ref"]["rir_field_names"] == []   # custom field: unrestorable
+    assert by_id["vendor_match"]["rir_field_names"] == []   # ui type "data": untouched
