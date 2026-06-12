@@ -35,12 +35,7 @@ Best-practices sections (from the source article that motivated this skill):
 
 ### Step 1: Resolve the project directory
 
-If `$ARGUMENTS` is a path, use it. Otherwise use the current working directory. Confirm it looks like a prd2 project:
-
-- Required: `prd_config.yaml` at the root.
-- Strongly suggested: at least one environment subdirectory listed in that file with `workspaces/` underneath.
-
-If `prd_config.yaml` is missing, stop and tell the user: "This does not look like a prd2 project (no `prd_config.yaml` found). Run `prd2 pull` first or pass the project path explicitly."
+If `$ARGUMENTS` is a path, use it. Otherwise use the current working directory. Pass this directory straight to the inspector (Step 2) — the inspector detects the deployment tool via its marker file and decides whether the project is supported, so don't pre-gate on specific files here. (The single "not supported" stop lives in Step 2.)
 
 ### Step 2: Run the inspector
 
@@ -48,20 +43,10 @@ If `prd_config.yaml` is missing, stop and tell the user: "This does not look lik
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/inspect.py <project_dir>
 ```
 
-Capture stdout as JSON. The inspector returns:
+Capture stdout as JSON. Check the `tool` field first:
 
-```
-{
-  "project_name": "...",
-  "environments": ["dev-env", "prod-env"],
-  "workspace_count": N,
-  "queue_count": M,
-  "queues": [{"name": "...", "workspace": "...", "environment": "...", "schema_field_count": K}, ...],
-  "hook_count": H,
-  "hooks": [{"name": "...", "type": "...", "runtime": "...", "environment": "...", "queue_count": Q}, ...],
-  "integration_target": "Coupa" | "SAP" | "SFI" | "SFTP" | "Generic REST" | "unknown"
-}
-```
+- If `tool` is `"prd2"`, proceed — the JSON also contains `project_name`, `environments`, `workspace_count`, `queue_count`, `queues[]`, `hook_count`, `hooks[]`, and `integration_target`.
+- If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}`), **stop** and tell the user: "This doesn't look like a prd2 project (no `prd_config.yaml`). `init-claude-md` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
 
 ### Step 3: Render the template
 
@@ -77,10 +62,13 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placehol
 | `{{integration_target}}` | `facts["integration_target"]` (if `"unknown"`, append a "fill in — integration target not auto-detected" note) |
 | `{{tree_listing}}` | Output of `tree -L 4 -I '__pycache__|node_modules' <project_dir>` truncated to ~40 lines. If `tree` is not installed, fall back to `find <project_dir> -maxdepth 4 -type d \| sort \| head -40`. |
 | `{{conditional_skills_block}}` | See Step 4 |
+| `{{deployment_workflow_block}}` | The full contents of `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/fragments/<tool>.md` (today `fragments/prd2.md`), inserted verbatim — the deployment-tool-specific workflow, layout, commands, and safety rules. |
+
+`{{tree_listing}}` is filled as before; `{{deployment_workflow_block}}` is filled by reading `fragments/<tool>.md` for the `tool` the inspector reported.
 
 ### Step 4: Build the conditional skills block
 
-Always include the three baseline references already mentioned in section 9 above the placeholder. Then, based on the inspector's signals, append:
+Always include the three baseline references already mentioned in the Recommended Skills section above the placeholder. Then, based on the inspector's signals, append:
 
 - If `integration_target == "Coupa"` → `- \`rossum-sa:coupa-baseline-reference\` — Coupa Integration Baseline (CIB)`
 - If `integration_target == "SAP"` → `- \`rossum-sa:sap-reference\` — SAP integration patterns`
@@ -110,7 +98,7 @@ After writing, print:
 
 - Path written
 - One-paragraph summary of what landed in CLAUDE.md (env names, queue count, hook count, detected integration target)
-- Suggested follow-up: "Open `CLAUDE.md` and fill in section 10 (Project-Specific Notes) with anything unique to this implementation. Then commit the file."
+- Suggested follow-up: "Open `CLAUDE.md` and fill in the Project-Specific Notes section with anything unique to this implementation. Then commit the file."
 
 Do **not** auto-commit. The user decides when to commit a memory file.
 
@@ -120,3 +108,7 @@ Do **not** auto-commit. The user decides when to commit a memory file.
 - The skill itself only reads/writes local files. No network.
 - Re-running on a project that already has a generated CLAUDE.md only refreshes the marked section; user notes below stay intact.
 - If the integration target comes back `unknown`, the generated file says so explicitly — review and fill in if you know the answer.
+
+## Extensibility
+
+This skill supports prd2 today. It is structured so support for additional deployment tools/formats can be added without touching the core: add a branch to `detect_tool` in `inspect.py`, a sibling inspector function for that tool's layout, and a `fragments/<tool>.md` carrying its workflow/commands/safety/layout. The CLAUDE.md skeleton (`template.md`) and integration-target detection are tool-independent and reused as-is.

@@ -1,6 +1,6 @@
 ---
 name: txscript-reference
-description: Rossum field-expression reference for TxScript serverless hooks, native Rossum Rule entities, and schema-field formulas. Covers (a) TxScript Python 3.12 API, (b) Rule trigger_condition language and Rule.actions shape including the FIRE-vs-PASS polarity convention and defensive is_empty guards, and (c) schema-field formula expressions (default_to, is_set, is_empty, line-item .all_values, helpers, multi-line formulas, the "absorb" refactoring pattern). Use when writing or debugging any Rossum field-expression code — a hook .py file, a Rule trigger, or a schema formula.
+description: Rossum field-expression reference for TxScript serverless hooks, native Rossum Rule trigger_condition expressions, and schema-field formulas. Covers (a) TxScript Python 3.12 API, (b) the native Rule trigger_condition expression language and the defensive is_empty guard convention (the Rule entity, actions[], and FIRE-vs-PASS polarity live in business-rules-reference), and (c) schema-field formula expressions (default_to, is_set, is_empty, line-item .all_values, helpers, multi-line formulas, the "absorb" refactoring pattern). Use when writing or debugging any Rossum field-expression code — a hook .py file, a Rule trigger_condition, or a schema formula.
 user-invocable: false
 ---
 
@@ -9,7 +9,7 @@ user-invocable: false
 This skill is the practical reference for every Rossum surface that runs a Python-flavored expression on annotation data:
 
 1. **TxScript serverless hooks** (`.py` files invoked by webhook events) — full Python 3.12, with the `TxScript` helper class.
-2. **Native Rossum Rules** (`POST /v1/rules` — `trigger_condition` expression + `actions` array).
+2. **Native Rule `trigger_condition` expressions** (`POST /v1/rules`) — the boolean condition language. The Rule *entity*, `actions[]`, and FIRE-vs-PASS polarity are documented in the `business-rules-reference` skill.
 3. **Schema-field formulas** (`formulas/<field_id>.py` next to `schema.json`) — multi-line Python expressions where the last expression is the field's value.
 
 All three share the same Python expression sublanguage (operators, comparisons, helpers like `default_to` / `is_empty`) but the *evaluation context* differs (event-driven hook vs. validation-time rule vs. derived-field formula). See [reference.md](reference.md) for the full reference; the rest of this SKILL.md indexes when to consult what.
@@ -21,10 +21,11 @@ All three share the same Python expression sublanguage (operators, comparisons, 
 
 Use this knowledge when:
 - Writing or debugging a TxScript serverless hook (the original audience)
-- Authoring a native Rossum Rule (`trigger_condition` + `actions`)
+- Writing a native Rule `trigger_condition` expression (the Rule entity and `actions[]` live in `business-rules-reference`)
 - Authoring a schema-field formula (single-expression or multi-line)
 - Looking up common schema field IDs and their conventions
 
 Cross-references:
-- `rossum-reference` covers the platform overall (the Business Rules Validation hook syntax cheat-sheet lives there).
+- `business-rules-reference` covers the rule/validation *feature*: the native Rule entity, `actions[]`, and FIRE-vs-PASS polarity, plus the legacy Business Rules Validation extension and its own `{field}`-brace expression engine.
+- `rossum-reference` covers the platform overall.
 - `prd-reference` covers the local file layout and `prd2` push/pull workflow.

@@ -797,6 +797,23 @@ Both endpoints receive POST requests with JSON annotation data matching the queu
 | `annotation.failed_export` | Export failed |
 | `email.received` | Email arrives at inbox |
 
+### Hook event triggers — decision table
+
+Pick the right event when you create a hook, otherwise it silently won't fire.
+
+| Event | Fires when | Use for |
+|-------|------------|---------|
+| `annotation_status.changed` | Annotation enters a new status (`to_review`, `reviewing`, `confirmed`, `rejected`, `exporting`, `exported`, `failed_export`, `purged`, `deleted`) | Anything keyed on workflow / status transitions: rejection notifications, per-level approval emails, single-line generator on `to_review`, post-export side effects |
+| `annotation_content.initialize` | Right after OCR, before user sees the doc | Pre-fill / seed fields, default values, suggest line items |
+| `annotation_content.user_update` | User edits a field in the UI | Live recalculation, formula-style cross-field updates, real-time validation messages |
+| `annotation_content.updated` | Any content change incl. API/import | Same as above when you also want to react to programmatic edits |
+| `annotation_content.started` | User opens an annotation for review | Show one-time info messages, lazy lookups |
+| `annotation_content.export` | Just before export payload is built | Last-mile transformations on the export representation |
+| `email.received` | Inbound email arrives in the inbox | Email parsing / routing hooks |
+| `invocation.manual` | Operator clicks "Run" on a function hook | One-off batch / cron-style tasks (combined with a queue list) |
+
+Common confusion: a **rejection notification belongs on `annotation_status.changed`** filtered to `to.status == "rejected"`, *not* on `annotation.rejected` (which is a Rule/Trigger event, not a hook event).
+
 ### Hook Operations Examples
 
 ```bash
@@ -970,6 +987,8 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 
 **Rule conditions**: Field value matches/contains, numerical comparisons, date ranges, AND/OR logic.
 
+For the Rule *feature* in depth — `trigger_condition` + `actions[]`, FIRE-vs-PASS polarity, lifecycle, and the legacy Business Rules Validation extension — see the `business-rules-reference` skill. The `trigger_condition` expression language itself lives in `txscript-reference`.
+
 ### Triggers
 
 | Method | Endpoint | Purpose |
@@ -987,70 +1006,9 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 
 ## Approval Workflows
 
-Approval workflows route documents through an ordered chain of decision steps. Each step has its own approvers, condition, type, and mode. The model is **workflow → ordered workflow_steps → workflow_runs**.
+Approval workflows route documents through an ordered chain of decision steps before export (model: workflow → ordered `workflow_steps` → `workflow_runs`). Each step has its own approvers, condition, type, and mode.
 
-**Verification note:** the read endpoints below were confirmed against a live Rossum instance (organization 113187, workflow 126). The write endpoints (POST/PATCH/DELETE) and `workflow_step_users` are *unverified* — they have NOT been observed working in real probes, and `/v1/workflow_step_users` returned **404** in one probe. **Confirm against the official API docs at <https://rossum.app/api/docs/openapi/guides/getting-started/#introduction> or with `prd2 pull` before writing code against them.**
-
-### Verified (read-only)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET    | `/v1/workflows/{id}` | Retrieve workflow (includes ordered `steps` URLs and linked queues) |
-| GET    | `/v1/workflow_steps?workflow={id}` | List steps for a workflow |
-| GET    | `/v1/workflow_steps/{id}` | Retrieve a single step (full body) |
-| GET    | `/v1/workflow_runs?annotation__queue={qid}` | List workflow runs (per annotation) — includes `current_step`, `workflow_status` (`approved` / `rejected` / in progress) |
-
-### Unverified — confirm before use
-
-| Method | Endpoint | Status |
-|--------|----------|--------|
-| POST / PATCH / DELETE | `/v1/workflows` and `/v1/workflows/{id}` | not confirmed against a live instance |
-| POST / PATCH / DELETE | `/v1/workflow_steps` and `/v1/workflow_steps/{id}` | not confirmed; prefer `prd2 pull` + edit + `prd2 push` until verified |
-| any | `/v1/workflow_step_users` | **returned 404** in one probe — likely does not exist; approver assignments may live on the step object itself or via a different resource |
-
-### `workflow_step` real fields (from a verified GET response)
-
-- `id` — integer
-- `url` — self URL
-- `organization` — organization URL
-- `workflow` — parent workflow URL
-- **`name`** — UI label of the step (e.g. `"District Director"`). NOT `label`.
-- `ordering` — integer; lower runs first
-- `type` — observed value: `"approval"`
-- `mode` — observed values: `"all"` (every assigned approver must approve), `"any"` (likely — confirm)
-- `condition` — Rossum expression object evaluated against the annotation. Two observed shapes:
-  - Plain map form: `{"field.approver_threshold_level_1": ""}` — equality match against a schema field
-  - MongoDB-style: `{"$expr": {"$gte": ["$field.item_max_price", 0]}}` — supports `$gte`/`$lte`/`$gt`/`$lt`/`$eq` etc.
-  When the condition evaluates falsy the step is skipped.
-
-Fields *not* observed in any GET response and previously documented in error: `label`, `automatic`. Do not rely on these without verifying against the OpenAPI spec.
-
-### Approach to changing a workflow
-
-Until POST/PATCH on workflow_steps is verified end-to-end, the safe path is:
-
-1. `prd2 pull` the source environment to get the workflow + steps as JSON.
-2. Edit locally (rename, reorder, change condition).
-3. `prd2 push --indexed-only -f` after explicit user approval.
-
-Direct API writes are possible but unverified — probe with a throwaway workflow on a non-production environment first.
-
-### Hook event triggers — decision table
-
-Pick the right event when you create a hook, otherwise it silently won't fire.
-
-| Event | Fires when | Use for |
-|-------|------------|---------|
-| `annotation_status.changed` | Annotation enters a new status (`to_review`, `reviewing`, `confirmed`, `rejected`, `exporting`, `exported`, `failed_export`, `purged`, `deleted`) | Anything keyed on workflow / status transitions: rejection notifications, per-level approval emails, single-line generator on `to_review`, post-export side effects |
-| `annotation_content.initialize` | Right after OCR, before user sees the doc | Pre-fill / seed fields, default values, suggest line items |
-| `annotation_content.user_update` | User edits a field in the UI | Live recalculation, formula-style cross-field updates, real-time validation messages |
-| `annotation_content.updated` | Any content change incl. API/import | Same as above when you also want to react to programmatic edits |
-| `annotation_content.started` | User opens an annotation for review | Show one-time info messages, lazy lookups |
-| `annotation_content.export` | Just before export payload is built | Last-mile transformations on the export representation |
-| `email.received` | Inbound email arrives in the inbox | Email parsing / routing hooks |
-| `invocation.manual` | Operator clicks "Run" on a function hook | One-off batch / cron-style tasks (combined with a queue list) |
-
-Common confusion: a **rejection notification belongs on `annotation_status.changed`** filtered to `to.status == "rejected"`, *not* on `annotation.rejected` (which is a Rule/Trigger event, not a hook event).
+For the verified read-only API vs. the unverified write endpoints, the real `workflow_step` fields, and the safe `prd2`-based procedure for changing a workflow, see the `approval-workflows-reference` skill.
 
 ---
 
@@ -1148,133 +1106,11 @@ Records include: request sent, response received, timestamp, duration, success/f
 
 ## TxScript & Formula Fields
 
-TxScript is Rossum's Python-based scripting language used in both **Formula Fields** (schema-level computed fields) and **Serverless Functions** (hook-level custom logic).
+TxScript is Rossum's Python-flavored expression language, used in schema-field formulas (datapoints of type `formula`), serverless function hooks, and native Rule `trigger_condition`s. Formula fields compute derived values automatically; serverless functions run custom logic on hook events.
 
-### Formula Fields
+> **Editing rule:** edit `formulas/<field_id>.py` (formulas) or the `.py` next to a hook's JSON (serverless) — never the `formula`/`code` field in JSON; `prd2` does the round-trip.
 
-Formula fields are schema datapoints of type `formula` that compute derived values. They execute automatically before and after extensions.
-
-> **Editing rule:** When working with formula fields locally, always edit the `formulas/<field_id>.py` file. Never edit the `formula` property inside `schema.json` — `prd2` extracts formulas into `.py` files on pull and merges them back on push.
-
-**Key characteristics**:
-- Max 2000 characters per formula
-- Cannot make HTTP requests or access document objects
-- Extensions cannot overwrite formula field values (use a separate "data" field instead)
-- A formula field must never reference itself (circular reference error)
-- For 200+ row operations, prefer serverless functions
-
-### TxScript Syntax Reference
-
-**Field access**:
-```python
-field.amount                          # Get field value
-field.amount.id                       # System ID
-field.amount.attr.rir_confidence      # AI confidence score
-field.amount.attr.ocr_raw_text        # OCR extracted text
-field.amount.attr.rir_raw_text        # RIR extracted text
-field.table_name[0].column_name       # Table cell access
-field._index                          # Line item index (0-based)
-field.column_name.all_values          # All values in a line item column (as list)
-field.column_name.attr.value          # Original string formatting
-field.enum_field.attr.options          # Enum options
-```
-
-**Annotation data access**:
-```python
-annotation.id                          # Annotation ID
-annotation.metadata                    # Metadata dict
-annotation.document.original_file_name # Document filename
-annotation.email.subject               # Email subject
-```
-
-**Conditional checks**:
-```python
-is_set(field.amount)                   # True if field has value
-is_empty(field.amount)                 # True if field is empty
-default_to(field.amount, 0)            # Fallback value for empty fields
-```
-
-**String operations**:
-```python
-substitute(r"[^0-9]", r"", field.document_id)  # Regex substitution
-re.sub(r"[^0-9]", r"", field.document_id)      # Direct regex
-```
-
-**Messaging** (display to user in UI):
-```python
-show_info("message")                   # Info message (global)
-show_info("message", field.amount)     # Info message on specific field
-show_warning("message")                # Warning message
-show_warning("message", field.amount)  # Warning on field
-show_error("message")                  # Error - ALWAYS blocks automation
-show_error("message", field.amount)    # Error on field
-```
-
-**Automation blockers** (explicitly block automation without error):
-```python
-automation_blocker("message", field.amount)
-```
-
-**Pre-imported modules**: `datetime`, `timedelta`, `date`, `re`
-
-**Date operations**:
-```python
-field.date_issue.year                  # Year from date field
-field.date_issue.month                 # Month from date field
-datetime.datetime.now().date()         # Current date
-```
-
-**Line item handling**: Formulas on line items execute per-row. Use `all_values` to aggregate across rows:
-```python
-line_items_sum = sum(default_to(field.item_amount_total.all_values, 0))
-```
-
-**No return statements**: The last expression evaluated is automatically used as the output.
-
-### Serverless Functions (TxScript Flavor)
-
-Serverless functions use the `rossum_hook_request_handler` entry point with the TxScript runtime:
-
-```python
-from txscript import TxScript
-
-def rossum_hook_request_handler(payload):
-    t = TxScript.from_payload(payload)
-
-    # Read fields
-    order_id = t.field.order_id
-
-    # Write fields (serverless only)
-    t.field.order_id_normalized = order_id.upper()
-
-    # Set multivalue fields
-    t.field.multivalue_field.all_values = ["AAA", "BBB"]
-
-    # Set enum options dynamically
-    t.field.enum_field.attr.options = [{"label": "Option A", "value": "a"}]
-    t.field.enum_field = "a"
-
-    # Messages
-    t.show_info("Processing complete")
-    t.show_error("Invalid amount", t.field.amount)
-    t.automation_blocker("Needs review", t.field.vendor_name)
-
-    return t.hook_response()
-```
-
-**Payload structure** includes: `rossum_authorization_token`, `schema`, `document`, `annotations`, `settings`, `secrets`, `updated_datapoints` (list of recently modified field IDs)
-
-**Enable TxScript in serverless**: In webhook settings, enable "Schemas" under "Additional notification metadata"
-
-**Backward compatibility**: `from rossum_python import RossumPython` also supported
-
-**Best practices**:
-- Python 3.12 runtime (AWS Lambda-style)
-- Store configuration in `hook.settings` JSON, not hardcoded
-- Store secrets via `hook.secrets_schema`
-- Use `print()` for debugging (output in Extensions → Logs → Detail → "output" key)
-- Prefer single-threaded; use `asyncio`/`httpx` only for I/O-bound parallel operations
-- Catch specific exceptions, not broad `Exception`
+For the full reference — field/annotation access, helpers (`is_set`/`is_empty`/`default_to`), messaging, line-item `all_values`, the serverless `rossum_hook_request_handler` payload and `TxScript` API, formula constraints, and best practices — see the `txscript-reference` skill.
 
 ---
 
@@ -1295,89 +1131,15 @@ Reasoning fields are "inline LLM fields" that generate predictions based on conf
 
 ## Master Data Hub
 
-The Master Data Hub matches extracted document data against uploaded reference datasets (vendor lists, GL codes, PO data, customer records).
+The Master Data Hub (Rossum Store: "Data matching v2") matches extracted data against uploaded reference datasets (vendors, GL codes, POs, customers) using MongoDB-style queries run in sequence, writing results into **enum** schema fields. Supports `.json`/`.xml`/`.csv`/`.xlsx`, exact and fuzzy matching, result actions for zero/one/multiple matches, and cascaded configs that reference earlier matches.
 
-**Capabilities**:
-- Validate vendors against existing databases
-- Match purchase orders for invoices
-- Match individual line items
-- Support multiple data formats: `.json`, `.xml`, `.csv`, `.xlsx`
-
-**Setup**: Available in Rossum Store as "Data matching v2". Requires admin-role token owner.
-
-**Configuration**:
-1. **Dataset**: Upload reference data (vendors, POs, etc.)
-2. **Matching queries**: MongoDB-style syntax, executed sequentially until match found
-3. **Result field**: Must be an `enum`-type schema field (`"type": "enum", "options": []`)
-4. **Result actions**: Define behavior for zero, one, or multiple matches (error/warning/info)
-5. **Default values**: Fallback when no matches occur
-
-**Query types**:
-- **Exact matching**: `{"find": {"fieldName": "{schema_id}"}}`
-- **Fuzzy matching**: Matches similar values within an error range (advanced, not in UI)
-
-**Cross-configuration**: Later configurations can reference values from previous matches.
-
-**Tip**: For numeric data types, use `"enum_value_type": "number"` for proper type conversion.
-
-**API**: `https://elis.rossum.ai/svc/master-data-hub/api/docs`
-
----
+For dataset CRUD and the API, the hook configuration model (MatchConfig, mapping, result actions, query cascades), query-design rules, score normalization, and worked examples, see the `mdh-reference` skill.
 
 ## Business Rules Validation
 
-Validates extracted data using an expression engine. Runs at end of extension chain to prevent confirmation/automation of invalid documents.
+Rossum validates extracted data and blocks automation two ways: **native Rossum Rules** (the `/v1/rules` entity — `trigger_condition` + `actions[]`) and the **legacy Business Rules Validation Store extension** (a `checks[]` config with its own curly-brace expression engine). Both run at validation time to surface messages and block confirmation/automation of invalid documents.
 
-> See also: the native **Rossum Rule** entity (`POST /v1/rules`) offers similar functionality at the platform level (a `trigger_condition` expression plus `actions`). See the [`txscript-reference`](../txscript-reference/SKILL.md) skill for the native Rule expression language and JSON shape.
-
-**Configuration**:
-```json
-{
-  "checks": [
-    {
-      "rule": "has_value({document_id})",
-      "message": "Invoice number must not be empty",
-      "type": "error",
-      "automation_blocker": true,
-      "active": true,
-      "queue_ids": [],
-      "condition": ""
-    }
-  ]
-}
-```
-
-### Expression Engine Syntax
-
-**Operators**: `+`, `-`, `/`, `//`, `*`, `%`, `and`, `or`, `xor`, `==`, `!=`, `<`, `>`, `<=`, `>=`
-
-**Data types**: integer, float, string, date. Auto-cast order: float → integer → date → string.
-
-**Manual casting**: `int()`, `float()`, `date()` (requires `YYYY-MM-DD`), `str()`
-
-**Empty checks**: `has_value({field})`, `is_empty({field})` (do NOT use `== ''`)
-
-**Aggregation**: `all()`, `any()`, `sum()`, `min()`, `max()`, `len()`, `unique_len()`, `first_value()`
-
-**Filter**: `filter({column}, [0, None])` — removes specified values
-
-**Defaults**: `{value, default=0}` or `{value, default=value('other_field')}`
-
-**Date functions**: `today()`, `timedelta(days=N)`, `timedelta(years=N, months=N)`
-
-**String functions**: `substring(search, value)`, `regexp(pattern, value, ignore_case=True)`, `similarity(value, search)` (Levenshtein), `list_contains(column, search)`
-
-**Examples**:
-```
-{issue_date} > "2023-01-01"
-{item_price} * {item_amount} == {item_total}
-sum({item_total}) == {total_price}
-today() + timedelta(days=2) > {due_date}
-```
-
-**Limitation**: One rule can only work with one table.
-
----
+For both implementations — the native Rule entity, actions, and FIRE-vs-PASS polarity; the legacy extension's `checks[]` config and its expression engine; and how to choose — see the `business-rules-reference` skill. (The native Rule `trigger_condition` is written in TxScript — see `txscript-reference`.)
 
 ## Duplicate Detection
 
@@ -1421,42 +1183,21 @@ Unblocks specified datapoints when conditions are met. Evaluates fields and upda
 
 ## Export Pipeline
 
-Chains sequential components for structured data delivery:
+Rossum delivers structured output two ways. The **legacy export pipeline** chains separate extensions via run-after (Custom Format Templating Purge → Custom Format Templating → REST API Export → Data Value Extractor → Export Evaluator → SFTP/S3 Export). The modern **Request Processor** consolidates these into a single JSON-configured hook and is preferred for new builds.
 
-1. **Custom Format Templating Purge**: Cleans pipeline for export
-2. **Custom Format Templating**: Structures data into desired output format
-3. **REST API Export**: Sends data to REST API, stores reply
-4. **Data Value Extractor**: Extracts info from API responses (downstream IDs, HTTP status)
-5. **Export Evaluator**: Determines success/failure (e.g., check for HTTP 200/201)
-6. **SFTP/S3 Export**: Uploads to file storage
-
-Components connect via "run-after" extension chaining.
-
----
+For the Request Processor (stages, templating, auth, response handlers, SFTP export, migration from Pipeline v1), see the `export-pipeline-reference` skill. To author the legacy Custom Format Templating (Jinja2) templates, see the `render-export-template` skill.
 
 ## SFTP & S3 Import/Export
 
-Available extensions for file storage integration:
+Rossum integrates with file storage via Store extensions: **imports** ("Import Master Data From SFTP/S3", "Import Documents From SFTP/S3"; scheduled trigger) and **export** ("Export To SFTP/S3"). Configuration is JSON — credentials (host, port, auth type), import rules (dataset names, formats, regex patterns), and result actions (archive/failed directories). Endpoints are region-specific (EU1/EU2/US/JP).
 
-**Import extensions**: Import Master Data From SFTP/S3, Import Documents From SFTP/S3
-
-**Export extensions**: Export To SFTP/S3
-
-**Configuration**: JSON with credentials (host, port, auth type), import rules (dataset names, file formats, regex patterns), and result actions (archive/failed directories).
-
-**Trigger**: "Scheduled" for imports, "Export" for exports. Region-specific endpoints (EU1/EU2/US/JP).
-
----
+For the **export** side via the Request Processor's `file-storage-export` service (credentials, export rules, filename templates), see the `export-pipeline-reference` skill. The **import** extensions are not yet covered by a dedicated pack — configure them per the overview above.
 
 ## Structured Formats Import
 
-Processes non-visual documents (XML, JSON, EDI) by extracting data and rendering a PDF representation for review.
+Structured Formats Import (SFI) processes non-visual documents (XML, JSON, e-invoices) by extracting data with XPath/JMESPath selectors and rendering a PDF for review. It runs as a webhook extension on `upload.created` and requires the relevant structured MIME types to be enabled.
 
-**Setup**: Requires enabling XML/JSON MIME types. Uses webhook extension triggered on `upload.created`.
-
-**Configuration**: Maps source data to datapoints using XPath (XML) or JSONPath (JSON) selectors. Supports file splitting and embedded PDF extraction.
-
----
+For end-to-end setup, field mapping, value transformations, document splitting, PDF rendering, and production e-invoicing examples (ZUGFeRD, X-Rechnung), see the `sfi-reference` skill.
 
 ## Embedded Mode
 
@@ -1550,6 +1291,8 @@ This includes read-only derived fields (e.g., supplier number, site code, commod
 }
 ```
 
+See the `mdh-reference` skill for why MDH writes enum option lists, how `mapping`/`additional_mappings` targets bind, and the `enum_value_type` choice for numeric matches.
+
 ### Formula Field
 
 ```json
@@ -1604,26 +1347,9 @@ The memorization extension saves user corrections to a Data Storage collection f
 
 ## Export Mapping (Jinja2)
 
-Export templates use Jinja2 syntax to structure extracted data for downstream systems.
+The legacy Custom Format Templating export step renders a Jinja2 template into the file a downstream system ingests (CSV, XML, EDI, custom JSON). Header fields are `{{ field.schema_id }}`; line items iterate with `{% for item in field.line_items %}`; standard Jinja2 conditionals and filters (`| default(0, true)`, `| tojson`, `| upper`, `| lower`) apply.
 
-**Header fields**: `{{ field.schema_id }}`
-
-**Line items**: iterate with `{% for item in field.line_items %}` and access as `{{ item.schema_id }}`
-
-**Conditional logic:**
-```
-{% if field.po_payment_term_code_match != "" %}
-   "code": "{{ field.po_payment_term_code_match }}"
-{% elif field.sender_payment_terms_code_match != "" %}
-   "code": "{{ field.sender_payment_terms_code_match }}"
-{% else %}
-   "code": "{{ field.payment_terms_match }}"
-{% endif %}
-```
-
-**Common filters**: `| default(0, true)`, `| tojson`, `| upper`, `| lower`
-
----
+To author, render, and debug these templates against a real annotation, see the `render-export-template` skill. For the modern JSON-stage alternative, see `export-pipeline-reference`.
 
 ## Document Sorting
 

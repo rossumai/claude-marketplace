@@ -3,7 +3,7 @@
 Rossum's **Master Data Hub (MDH)** manages master data datasets (suppliers, GL codes, cost centers, remit-to addresses, etc.) for use in document processing workflows. MDH provides dataset CRUD, CSV/XLSX upload, fuzzy search, and a powerful hook configuration model for matching extracted document data against master data records using MongoDB-style queries.
 
 - **Base URL:** `/svc/master-data-hub`
-- **Auth:** Bearer token (`Authorization: Bearer <token>`)
+- **Auth:** Bearer token (`Authorization: Bearer <token>`). The matching hook's **token owner must have an admin role**.
 - **All mutating dataset operations are async** -- return `202 Accepted` with a `Location` header pointing to the operation status URL
 - **Maximum file upload size:** 50 MB
 - **Supported upload formats:** CSV, XLSX (multipart/form-data)
@@ -114,6 +114,8 @@ List all recent operations for the organization.
 ### `POST /api/v1/fuzzy_search/{dataset_name}` -- Enable Fuzzy Search
 
 Enable fuzzy text search on a dataset. This builds a search index for use with `$search` in aggregation queries.
+
+> Fuzzy matching is an **advanced** feature — it is **not exposed in the Rossum UI**. Enable it via this endpoint (or the hook config), then reference it with `$search` in an aggregation query.
 
 **Path params:** `dataset_name` (string, required)
 
@@ -316,6 +318,8 @@ Schema fields in Rossum annotations use these types:
 | `number` | Numeric value | Amounts, quantities, unit prices |
 | `enum` | Dropdown / selection from options | Currency, document type, matched supplier |
 | `button` | Action button | Manual triggers |
+
+> **Numeric enum results:** when an MDH-matched value is numeric (e.g. a GL code or supplier number), set `"enum_value_type": "number"` on the enum result field so the value type-converts correctly — the default treats option values as strings.
 
 **Common datapoint fields:**
 | Field | Type | Description |
