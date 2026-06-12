@@ -112,7 +112,7 @@ Create a task list with one task per applicable phase to track progress.
 0. **Check the queue's engine binding first** (`queue.json` → `engine`). On engine-bound queues, extraction wiring uses engine fields (name match, empty `rir_field_names`), not `rir_field_names` — and new captured fields need their engine field created first. See `rossum-reference` → Extraction Engines.
 
 1. **List all fields needed** per queue — group by:
-   - **Captured** (OCR-extracted): `type: "string"`, `ui_configuration.type: "captured"`
+   - **Captured** (OCR-extracted): `type: "string"`, `ui_configuration.type: "captured"` (on engine-bound queues a matching engine field must exist — see step 0)
    - **Enum (MDH target)**: `type: "enum"`, `ui_configuration.type: "data"` — used for ANY field populated by MDH, including additional mappings
    - **Formula (derived)**: `type: "string"` or `type: "enum"`, `ui_configuration.type: "formula"` — auto-calculated from other fields
    - **Manual**: `type: "string"` or `type: "enum"`, `ui_configuration.type: "captured"`, `edit: "enabled"` — user-entered values
