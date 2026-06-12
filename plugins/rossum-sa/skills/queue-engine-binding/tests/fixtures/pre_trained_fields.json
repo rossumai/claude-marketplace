@@ -1,0 +1,752 @@
+[
+  {
+    "name": "account_num",
+    "label": "Bank Account",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Bank account number. Whitespaces are stripped."
+  },
+  {
+    "name": "bank_num",
+    "label": "Sort Code",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Sort code. Numerical code of the bank."
+  },
+  {
+    "name": "iban",
+    "label": "IBAN",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "iban",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Bank account number in IBAN format."
+  },
+  {
+    "name": "bic",
+    "label": "BIC/SWIFT",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Bank BIC or SWIFT code."
+  },
+  {
+    "name": "const_sym",
+    "label": "Constant Symbol",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Statistical code on payment order."
+  },
+  {
+    "name": "spec_sym",
+    "label": "Specific Symbol",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Payee id on the payment order, or similar."
+  },
+  {
+    "name": "var_sym",
+    "label": "Variable symbol",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "numeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "In some countries used by the supplier to match the payment received against the invoice. Possible non-numeric characters are stripped."
+  },
+  {
+    "name": "terms",
+    "label": "Terms",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "true",
+    "description": "Payment terms as written on the document (e.g. \"45 days\", \"upon receipt\")."
+  },
+  {
+    "name": "payment_method",
+    "label": "Payment method",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "[BETA] Payment method defined on a document (e.g. 'Cheque', 'Pay order', 'Before delivery')"
+  },
+  {
+    "name": "customer_id",
+    "label": "Customer Number",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "The number by which the customer is registered in the system of the supplier. Whitespaces are stripped."
+  },
+  {
+    "name": "date_due",
+    "label": "Date Due",
+    "section": "Identifiers",
+    "type": "date",
+    "subtype": "period_end",
+    "tabular": false,
+    "multiline": "false",
+    "description": "The due date of the invoice."
+  },
+  {
+    "name": "date_issue",
+    "label": "Issue Date",
+    "section": "Identifiers",
+    "type": "date",
+    "subtype": "period_begin",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Date of issue of the document."
+  },
+  {
+    "name": "date_uzp",
+    "label": "Tax Point Date",
+    "section": "Identifiers",
+    "type": "date",
+    "subtype": "period_end",
+    "tabular": false,
+    "multiline": "false",
+    "description": "The date of taxable event."
+  },
+  {
+    "name": "document_id",
+    "label": "Document Identifier",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Document number. Whitespaces are stripped."
+  },
+  {
+    "name": "order_id",
+    "label": "Order Number",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Purchase order identification (Order Numbers not captured as \"sender_order_id\"). Whitespaces are stripped."
+  },
+  {
+    "name": "recipient_address",
+    "label": "Recipient Address",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "true",
+    "description": "Address of the customer."
+  },
+  {
+    "name": "recipient_dic",
+    "label": "Recipient Tax Number",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "vat_number",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Tax identification number of the customer. Whitespaces are stripped."
+  },
+  {
+    "name": "recipient_ic",
+    "label": "Recipient Company ID",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "vat_number",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Company identification number of the customer. Possible non-numeric characters are stripped."
+  },
+  {
+    "name": "recipient_name",
+    "label": "Recipient Name",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "true",
+    "description": "Name of the customer."
+  },
+  {
+    "name": "recipient_vat_id",
+    "label": "Recipient VAT Number",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "vat_number",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Customer VAT Number"
+  },
+  {
+    "name": "recipient_delivery_name",
+    "label": "Recipient Delivery Name",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "true",
+    "description": "[BETA] Name of the recipient to whom the goods will be delivered."
+  },
+  {
+    "name": "recipient_delivery_address",
+    "label": "Recipient Delivery Address",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "true",
+    "description": "[BETA] Address of the reciepient where the goods will be delivered."
+  },
+  {
+    "name": "sender_address",
+    "label": "Supplier Address",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "true",
+    "description": "Address of the supplier."
+  },
+  {
+    "name": "sender_dic",
+    "label": "Supplier Tax Number",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "vat_number",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Tax identification number of the supplier. Whitespaces are stripped."
+  },
+  {
+    "name": "sender_ic",
+    "label": "Supplier Company ID",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "vat_number",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Business/organization identification number of the supplier. Possible non-numeric characters are stripped."
+  },
+  {
+    "name": "sender_name",
+    "label": "Supplier Name",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "true",
+    "description": "Name of the supplier."
+  },
+  {
+    "name": "sender_vat_id",
+    "label": "Supplier VAT Number",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "vat_number",
+    "tabular": false,
+    "multiline": "false",
+    "description": "VAT identification number of the supplier."
+  },
+  {
+    "name": "sender_email",
+    "label": "Supplier Email",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "[BETA] Email of the sender."
+  },
+  {
+    "name": "sender_order_id",
+    "label": "Supplier's Order ID",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "[BETA] Internal order ID in the suppliers system."
+  },
+  {
+    "name": "delivery_note_id",
+    "label": "Delivery Note ID",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "[BETA] Delivery note ID defined on the invoice."
+  },
+  {
+    "name": "supply_place",
+    "label": "Place of Supply",
+    "section": "Identifiers",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "[BETA] Place of supply (the name of the city or state where the goods will be supplied)."
+  },
+  {
+    "name": "currency",
+    "label": "Currency",
+    "section": "Document attributes",
+    "type": "enum",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "The currency which the invoice is to be paid in. Possible values: CZK, DKK, EUR, GBP, NOK, SEK, HUF, USD, AUD, INR, CHF, CNY, JPY, PLN, RON, RUB or other. May be also in lowercase."
+  },
+  {
+    "name": "document_type",
+    "label": "Document Type",
+    "section": "Document attributes",
+    "type": "enum",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Possible values: credit_note, debit_note, tax_invoice (most typical), proforma, receipt, delivery_note, order or other."
+  },
+  {
+    "name": "language",
+    "label": "Language",
+    "section": "Document attributes",
+    "type": "enum",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "The language which the document was written in. Possible values: ces, deu, eng, fra, slk, esp, hun, swe, dan, fin, ital, nor, pol, por or other."
+  },
+  {
+    "name": "payment_method_type",
+    "label": "Payment Method Type",
+    "section": "Document attributes",
+    "type": "enum",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Payment method used for the transaction. Possible values: card, cash."
+  },
+  {
+    "name": "amount_due",
+    "label": "Amount Due",
+    "section": "Amounts",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Final amount including tax to be paid after deducting all discounts and advances."
+  },
+  {
+    "name": "amount_rounding",
+    "label": "Amount Rounding",
+    "section": "Amounts",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Remainder after rounding amount_total."
+  },
+  {
+    "name": "amount_total",
+    "label": "Total Amount",
+    "section": "Amounts",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Subtotal over all items, including tax."
+  },
+  {
+    "name": "amount_paid",
+    "label": "Amount paid",
+    "section": "Amounts",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Amount paid already."
+  },
+  {
+    "name": "amount_total_base",
+    "label": "Tax Base Total",
+    "section": "Amounts",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Base amount for tax calculation."
+  },
+  {
+    "name": "amount_total_tax",
+    "label": "Tax Total",
+    "section": "Amounts",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": false,
+    "multiline": "false",
+    "description": "Total tax amount."
+  },
+  {
+    "name": "tax_detail_base",
+    "label": "Tax Base",
+    "section": "Tax details table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Sum of tax bases for items with the same tax rate."
+  },
+  {
+    "name": "tax_detail_rate",
+    "label": "Tax Rate",
+    "section": "Tax details table",
+    "type": "number",
+    "subtype": "rate",
+    "tabular": true,
+    "multiline": "false",
+    "description": "One of the tax rates in the tax breakdown."
+  },
+  {
+    "name": "tax_detail_tax",
+    "label": "Tax Amount",
+    "section": "Tax details table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Sum of taxes for items with the same tax rate."
+  },
+  {
+    "name": "tax_detail_total",
+    "label": "Tax Total",
+    "section": "Tax details table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Total amount including tax for all items with the same tax rate."
+  },
+  {
+    "name": "tax_detail_code",
+    "label": "Tax Code",
+    "section": "Tax details table",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": true,
+    "multiline": "false",
+    "description": "[BETA] Text on document describing tax code of the tax rate (e.g. 'GST', 'CGST', 'DPH', 'TVA'). If multiple tax rates belong to one tax code on the document, the tax code will be assigned only to the first tax rate. (in future such tax code will be distributed to all matching tax rates.)"
+  },
+  {
+    "name": "table_column_code",
+    "label": "Item Code/Id",
+    "section": "Line items table",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Can be the SKU, EAN, a custom code (string of letters/numbers) or even just the line number."
+  },
+  {
+    "name": "table_column_description",
+    "label": "Item Description",
+    "section": "Line items table",
+    "type": "string",
+    "subtype": "",
+    "tabular": true,
+    "multiline": "true",
+    "description": "Line item description. Can be multi-line with details."
+  },
+  {
+    "name": "table_column_quantity",
+    "label": "Item Quantity",
+    "section": "Line items table",
+    "type": "number",
+    "subtype": "",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Quantity of the item."
+  },
+  {
+    "name": "table_column_uom",
+    "label": "Item Unit of Measure",
+    "section": "Line items table",
+    "type": "string",
+    "subtype": "",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Unit of measure of the item (kg, container, piece, gallon, ...)."
+  },
+  {
+    "name": "table_column_rate",
+    "label": "Item Rate",
+    "section": "Line items table",
+    "type": "number",
+    "subtype": "rate",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Tax rate for the line item."
+  },
+  {
+    "name": "table_column_tax",
+    "label": "Item Tax",
+    "section": "Line items table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Tax amount for the line. Rule of thumb: tax = rate * amount_base."
+  },
+  {
+    "name": "table_column_amount_base",
+    "label": "Amount Base",
+    "section": "Line items table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Unit price without tax. (This is the primary unit price extracted.)"
+  },
+  {
+    "name": "table_column_amount",
+    "label": "Amount",
+    "section": "Line items table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Unit price with tax. Rule of thumb: amount = amount_base + tax."
+  },
+  {
+    "name": "table_column_amount_total_base",
+    "label": "Amount Total Base",
+    "section": "Line items table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "The total amount to be paid for all the items excluding the tax. Rule of thumb: amount_total_base = amount_base * quantity."
+  },
+  {
+    "name": "table_column_amount_total",
+    "label": "Amount Total",
+    "section": "Line items table",
+    "type": "number",
+    "subtype": "amount",
+    "tabular": true,
+    "multiline": "false",
+    "description": "The total amount to be paid for all the items including the tax. Rule of thumb: amount_total = amount * quantity."
+  },
+  {
+    "name": "table_column_other",
+    "label": "Other",
+    "section": "Line items table",
+    "type": "string",
+    "subtype": "",
+    "tabular": true,
+    "multiline": "false",
+    "description": "Unrecognized data type."
+  },
+  {
+    "name": "barcode_qrcode",
+    "label": "QR Code",
+    "section": "QR codes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_ean2",
+    "label": "EAN-2",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_ean5",
+    "label": "EAN-5",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_ean8",
+    "label": "EAN-8",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_ean13",
+    "label": "EAN-13",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_code39",
+    "label": "Code 39",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_code93",
+    "label": "Code 93",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_code128",
+    "label": "Code 128",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_isbn10",
+    "label": "ISBN-10",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_isbn13",
+    "label": "ISBN-13",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_upca",
+    "label": "UPC-A",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_upce",
+    "label": "UPC-E",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_databar",
+    "label": "DataBar",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_databar_exp",
+    "label": "DataBar Expanded",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_codabar",
+    "label": "Codabar",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_pdf417",
+    "label": "PDF417",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_sqcode",
+    "label": "SQCode",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  },
+  {
+    "name": "barcode_i25",
+    "label": "Interleaved 2 of 5",
+    "section": "Barcodes",
+    "type": "string",
+    "subtype": "",
+    "tabular": false,
+    "multiline": "false",
+    "description": ""
+  }
+]

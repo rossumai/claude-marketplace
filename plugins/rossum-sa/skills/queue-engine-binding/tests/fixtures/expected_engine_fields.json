@@ -1,0 +1,119 @@
+[
+  {
+    "name": "document_id",
+    "label": "Document ID",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "pre_trained_field_id": "document_id",
+    "tabular": false,
+    "multiline": "false"
+  },
+  {
+    "name": "date_issue",
+    "label": "Issue Date",
+    "type": "date",
+    "subtype": "period_begin",
+    "pre_trained_field_id": "date_issue",
+    "tabular": false,
+    "multiline": "false"
+  },
+  {
+    "name": "date_due",
+    "label": "Due Date",
+    "type": "date",
+    "subtype": "period_end",
+    "pre_trained_field_id": "date_due",
+    "tabular": false,
+    "multiline": "false"
+  },
+  {
+    "name": "document_type",
+    "label": "Document Type",
+    "type": "enum",
+    "subtype": "",
+    "pre_trained_field_id": "document_type",
+    "tabular": false,
+    "multiline": "false"
+  },
+  {
+    "name": "amount_total",
+    "label": "Total Amount",
+    "type": "number",
+    "subtype": "amount",
+    "pre_trained_field_id": "amount_total",
+    "tabular": false,
+    "multiline": "false"
+  },
+  {
+    "name": "currency",
+    "label": "Currency",
+    "type": "enum",
+    "subtype": "",
+    "pre_trained_field_id": "currency",
+    "tabular": false,
+    "multiline": "false"
+  },
+  {
+    "name": "sender_name",
+    "label": "Vendor Name",
+    "type": "string",
+    "subtype": "",
+    "pre_trained_field_id": "sender_name",
+    "tabular": false,
+    "multiline": "true"
+  },
+  {
+    "name": "sender_vat_id",
+    "label": "Vendor VAT ID",
+    "type": "string",
+    "subtype": "vat_number",
+    "pre_trained_field_id": "sender_vat_id",
+    "tabular": false,
+    "multiline": "false"
+  },
+  {
+    "name": "item_code",
+    "label": "Code",
+    "type": "string",
+    "subtype": "alphanumeric",
+    "pre_trained_field_id": "table_column_code",
+    "tabular": true,
+    "multiline": "false"
+  },
+  {
+    "name": "item_description",
+    "label": "Description",
+    "type": "string",
+    "subtype": "",
+    "pre_trained_field_id": "table_column_description",
+    "tabular": true,
+    "multiline": "true"
+  },
+  {
+    "name": "item_quantity",
+    "label": "Quantity",
+    "type": "number",
+    "subtype": "",
+    "pre_trained_field_id": "table_column_quantity",
+    "tabular": true,
+    "multiline": "false"
+  },
+  {
+    "name": "item_amount",
+    "label": "Unit Price",
+    "type": "number",
+    "subtype": "amount",
+    "pre_trained_field_id": "table_column_amount",
+    "tabular": true,
+    "multiline": "false"
+  },
+  {
+    "name": "item_amount_total",
+    "label": "Line Total",
+    "type": "number",
+    "subtype": "amount",
+    "pre_trained_field_id": "table_column_amount_total",
+    "tabular": true,
+    "multiline": "false"
+  }
+]
