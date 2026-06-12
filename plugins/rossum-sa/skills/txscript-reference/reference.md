@@ -59,6 +59,27 @@ def rossum_hook_request_handler(payload: dict) -> dict:
 t = TxScript.from_payload(payload)
 ```
 
+### Hook payload structure
+
+The raw `payload` dict passed to `rossum_hook_request_handler` carries:
+
+| Key | Contents |
+|---|---|
+| `rossum_authorization_token` | Temporary API token for callbacks to the Rossum API |
+| `base_url` | Org API base URL (for building resource URLs) |
+| `annotation` | The annotation object (`url`, `content`, `labels`, …) |
+| `annotations` | List form, on events that batch annotations |
+| `document` | The source document object |
+| `schema` | The queue's schema |
+| `settings` | The hook's `settings` JSON — store config here, not hard-coded |
+| `secrets` | The hook's `secrets` (credentials) |
+| `updated_datapoints` | Schema IDs of fields changed since the last run |
+| `event`, `action` | The triggering event/action — verify these before acting |
+
+`TxScript.from_payload(payload)` wraps this so `t.field.<id>` works regardless of whether the raw `content` tree shipped with the event.
+
+> **Enabling `t.field` / schema metadata:** in the hook's webhook settings, enable **Schemas** under *Additional notification metadata* so the schema ships in the payload. **Backward compatibility:** `from rossum_python import RossumPython` is an accepted alias for `from txscript import TxScript`.
+
 ### Field Access
 ```python
 # Read field value
@@ -98,6 +119,23 @@ setattr(t.field, "date_issue_normalized", src)    # writes the underlying date
 ```
 
 If you're reading from a raw payload content tree (when `t.field` isn't available), use `content.get("normalized_value")` — which is the ISO string — NOT `content.get("value")`, which is the display variant.
+
+#### Writing multivalue and enum fields
+
+Set every value of a single-column multivalue field in one assignment:
+
+```python
+t.field.multivalue_field.all_values = ["AAA", "BBB"]
+```
+
+This replaces the column's values. For adding or removing table *rows* (structural changes) return an `operations` list instead — `t.field.<table>` is read-only for structural changes; see *Creating / Replacing Line-Item Rows* below.
+
+Populate an enum field's options dynamically, then select one:
+
+```python
+t.field.enum_field.attr.options = [{"label": "Option A", "value": "a"}]
+t.field.enum_field = "a"
+```
 
 #### Reading datapoint metadata (OCR raw text, confidence, position, etc.)
 
@@ -355,6 +393,12 @@ Both `add` and `remove` can be sent in the same call — useful for "swap label 
 - Favor meaningful variable names and modular code
 - Always verify `payload["event"]` and `payload["action"]` before execution in raw hooks
 
+### Runtime & debugging
+- Python 3.12 runtime (AWS Lambda-style). Store configuration in `hook.settings` and credentials in `hook.secrets_schema` — never hard-code them.
+- `print(...)` output appears in Extensions → Logs → Detail under the `output` key (alongside `t.show_info` messages).
+- Prefer single-threaded code; reach for `asyncio`/`httpx` only for genuinely I/O-bound parallel calls.
+- Catch specific exceptions rather than a broad `except Exception`.
+
 ### Formula Fields vs Serverless Functions
 - **Prefer Formula Fields** for simple text transformations (lowercase, concatenation, etc.) — stored at schema level, copied automatically between queues
 - **Use Serverless Functions** for complex logic: API calls, multi-field validation, conditional enrichment, MongoDB lookups
@@ -419,40 +463,11 @@ The `rir_field_names` attribute in schema maps OCR predictions to internal field
 
 ---
 
-# Native Rossum Rule reference
+# Native Rossum Rule trigger_condition language
 
-> **Note — not the same as Business Rules Validation.** The BRV extension covered in `rossum-reference` uses a different `{field}`-brace expression engine (e.g. `has_value({document_id})`). Native Rules use Python-style `field.X` attribute access (e.g. `is_empty(field.document_id)`). The two are independent surfaces; do not mix syntaxes.
+> This section covers how to **write a Rule `trigger_condition` expression** — a subset of Python shared with schema-field formulas. For the Rule *entity* (the `/v1/rules` JSON shape, `actions[]` types, FIRE-vs-PASS polarity, and conventional action pairings), see the `business-rules-reference` skill, which owns the rule/validation *feature* (native Rules and the legacy Business Rules Validation extension). Native Rules use Python-style `field.X` access — distinct from the Business Rules Validation extension's `{field}`-brace engine (also documented in `business-rules-reference`).
 
-A **Rule** (`POST /v1/rules`) defines a single boolean `trigger_condition` that, when evaluated to `True` at validation time, emits one or more `actions` (messages, automation blockers, show/hide toggles).
-
-## Rule JSON shape
-
-```json
-{
-  "id": <auto-assigned by API; do not rely on client-supplied id>,
-  "name": "Human-readable label",
-  "description": "Optional free-text",
-  "enabled": true,
-  "trigger_condition": "<Python boolean expression — fires when TRUE>",
-  "actions": [
-    { "id": "<arbitrary stable slug>", "enabled": true,
-      "type": "show_message",
-      "event": "validation",
-      "payload": { "type": "error|warning|info",
-                   "content": "<message text>",
-                   "schema_id": "<field to anchor the message on>" } },
-    { "id": "<arbitrary stable slug>", "enabled": true,
-      "type": "add_automation_blocker",
-      "event": "validation",
-      "payload": { "content": "<blocker text>",
-                   "schema_id": "<field to anchor the blocker on>" } }
-  ],
-  "queues": ["https://api.elis.rossum.ai/api/v1/queues/<id>", ...],
-  "organization": "https://api.elis.rossum.ai/api/v1/organizations/<id>"
-}
-```
-
-`action.id` is a non-empty string identifying the action within the rule. The API does not constrain the format — any string unique within the rule works. Use whichever convention is consistent within your project (semantic slugs, indexed pairs, UUIDs all work). Keep ids stable across rule versions if you care about diff readability.
+A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition` at validation time; when it is `True`, the rule emits its `actions`.
 
 ## trigger_condition expression language
 
@@ -483,27 +498,6 @@ A subset of Python. The expression evaluates to a boolean; the rule fires when i
 
 **Line-item rule semantics.** When a rule is attached to a line-item field (e.g. `schema_id: "item_order_id"` in the message payload), the trigger evaluates **once per line item** and fires per row. `field.item_X` is the current row. Aggregations require `.all_values`.
 
-## Polarity: `trigger_condition` is the FIRE predicate
-
-`trigger_condition` is the **fire** predicate — the rule fires (emits actions) when the expression evaluates to `True`. Read the rule's `message` text to confirm intent: the message describes the **problem state**, and `trigger_condition` should be `True` in that state.
-
-Example — a rule that requires `item_order_id` to start with `"AU"`:
-```python
-# Rule fires (and shows the error) when the ID is non-empty AND does not start with AU
-trigger_condition = (
-    "not is_empty(field.item_order_id) and "
-    "not bool(re.search('^AU.{4,}', str(field.item_order_id)))"
-)
-# message: "PO number must start with AU"
-# actions: show_message(error) + add_automation_blocker on item_order_id
-```
-
-Two common ways to get polarity wrong:
-- **Porting a check whose source expresses the OK state.** If you have an expression that means "the data is good", invert it before putting it into `trigger_condition`.
-- **Problem-indicator fields.** Some schema fields are populated *only when there's a problem* — common naming conventions include `*_tag`, `*_mismatch_tag`, `*_match`, `*_inactive`, `*_indicator`, `*_issue`. For these, the rule fires on `not is_empty(field.X)`, not on `is_empty(...)`. Read the field name and the rule message text together: if the message describes a *problem* (e.g. "Fraudulent supplier detected", "ELE name mismatch") and the field name reads like a positive-detection marker, the fire condition is `not is_empty(...)`.
-
-In either case, the rule's `message` text reads naturally in the fire state — use that as the primary disambiguation when the field-naming convention isn't conclusive.
-
 ## Defensive `not is_empty(field.X)` guard convention
 
 Native Rule expressions are evaluated against arbitrary field values, including empty/None. Several common operators raise or produce surprising results on empty input:
@@ -518,56 +512,21 @@ Native Rule expressions are evaluated against arbitrary field values, including 
 
 Ground-truth Rossum rules consistently include the defensive `not is_empty(field.X)` prefix even when logically redundant (e.g. before `field.X == 'literal'`). Mirror that convention so a downstream reader doesn't have to mentally prove the guard isn't needed.
 
-## Rule.actions — types and payload shape
-
-Three action types are commonly used at validation time:
-
-**`show_message`** — surface a banner on the annotation:
-```json
-{ "id": "rule-slug-msg", "enabled": true, "type": "show_message", "event": "validation",
-  "payload": {
-    "type": "error" | "warning" | "info",   // banner severity
-    "content": "Free-text message shown to the user",
-    "schema_id": "field_to_anchor_on"        // where the banner attaches
-  } }
-```
-
-**`add_automation_blocker`** — prevent automatic export of the annotation:
-```json
-{ "id": "rule-slug-block", "enabled": true, "type": "add_automation_blocker", "event": "validation",
-  "payload": {
-    "content": "Free-text reason; same as the show_message content by convention",
-    "schema_id": "field_to_anchor_on"
-  } }
-```
-
-**`show_hide_field`** — toggle field visibility based on the trigger:
-```json
-{ "id": "rule-slug-sh", "enabled": true, "type": "show_hide_field", "event": "validation",
-  "payload": {
-    "schema_id": "primary_field_id",          // legacy single-id form
-    "schema_ids": ["field_a", "field_b"]      // newer multi-id form (preferred)
-  } }
-```
-The field(s) listed are **shown** when the rule fires and **hidden** when it does not.
-
-`schema_ids` (plural array) is the canonical payload key — every existing rule with a `show_hide_field` action carries it. `schema_id` (singular) is a legacy key that older rules also carry alongside `schema_ids` (typically with the same primary field name). For new rules, emit only `schema_ids`. When patching a rule that already has both keys, preserve both to avoid an unintended schema-shape change.
-
-### Conventional action pairings
-
-The patterns that recur across well-formed Rossum rules:
-
-1. **Message + blocker pair.** When a rule warrants an automation blocker (`automation_blocker: true` on the source), it almost always also has a `show_message` with the same `content` and `schema_id`. The user sees the banner; export is also halted. If the source check carries an `automation_blocker: true`, emit both actions — don't pick one.
-2. **Tag-fire + reveal pair.** When the trigger is `not is_empty(field.<X>_tag)` (a "tag" field populated by MDH or another hook only when there's a problem), pair the `show_message` with a `show_hide_field` revealing `<X>_tag` and related context fields. Tag fields are conventionally hidden by default and become visible when populated — the `show_hide_field` action is what makes them visible.
-3. **Document-type → hidden-section.** When the trigger gates on `field.document_type == '...'` (e.g. credit note vs. invoice), pair it with a `show_hide_field` revealing the section relevant to that document type.
-
-A single rule may combine pairings (e.g. a tag-fire rule with a message+blocker+reveal triplet). Pair conventions are additive — pick whichever apply.
-
 ---
 
 # Schema-field formula expressions
 
 A schema-field formula derives a field's value from other fields. It's a Python expression (or multi-expression block) that evaluates whenever its inputs change.
+
+## Formula constraints
+
+Formulas run in a sandboxed expression runtime, with hard limits distinct from serverless functions:
+
+- **Max 2000 characters** per formula.
+- **No I/O** — a formula cannot make HTTP requests or access the document/file objects. Use a serverless function for lookups and enrichment.
+- **A formula must never reference its own field** (circular-reference error).
+- **Extensions cannot overwrite a formula field's value.** If a hook needs to write the value, use a separate `data`-type field, not a `formula` field.
+- For operations over **200+ line-item rows**, prefer a serverless function — large formulas hit the size/compute limits.
 
 ## Where formulas live
 
@@ -625,6 +584,23 @@ The `len(field.line_items) > 0` guard is the canonical "any rows present?" check
 | `str(x)`, `int(x)`, `float(x)`, `bool(x)` | Type coercion | `str(field.item_date_prepaid_start)[:7]` |
 | `re.search`, `re.sub`, `re.match` | Regex | `re.sub(r'[^0-9]', '', field.iban)` |
 | `date.today()`, `timedelta(...)` | Date arithmetic | `field.date_issue + timedelta(days=30)` |
+
+`datetime`, `date`, `timedelta`, and `re` are **pre-imported** in the expression runtime — no import statement is needed in a formula or Rule condition.
+
+## Annotation and date-component access
+
+Formulas and Rule conditions can read annotation-level data and date components directly (the same globals are available in both surfaces, since they share the runtime):
+
+```python
+annotation.id                            # annotation ID
+annotation.metadata                      # metadata dict
+annotation.document.original_file_name   # source filename
+annotation.email.subject                 # inbound email subject (email_header source)
+
+field.date_issue.year                    # year component, e.g. 2026
+field.date_issue.month                   # month component, e.g. 1
+datetime.datetime.now().date()           # current date
+```
 
 ## The "absorb" pattern
 
