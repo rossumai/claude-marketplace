@@ -55,7 +55,9 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placehol
 | Placeholder | Value source |
 |---|---|
 | `{{project_name}}` | `facts["project_name"]` |
+| `{{generated_date}}` | Today's date, `YYYY-MM-DD`. |
 | `{{environments_joined}}` | `", ".join(facts["environments"])` |
+| `{{environments_block}}` | One bullet per entry in `facts["directories"]`: `- <name>: org_id <org_id>, api_base <api_base>` (write `unknown` for an empty value). Final line: ``- credentials in `<env>/credentials.yaml` (gitignored, along with secrets & hook_sync_configs)`` |
 | `{{queue_count}}` | `facts["queue_count"]` |
 | `{{workspace_count}}` | `facts["workspace_count"]` |
 | `{{hook_count}}` | `facts["hook_count"]` |
