@@ -160,6 +160,15 @@ def check_nonempty_plan(args, fields):
     print(f"WARNING: {message}", file=sys.stderr)
 
 
+def warn_multi_source(content):
+    multi = [dp["id"] for dp, _t in iter_datapoints(content)
+             if is_engine_extracted(dp) and len(dp.get("rir_field_names") or []) > 1]
+    if multi:
+        print(f"warning: multi-source rir_field_names on {', '.join(multi)} — only the first "
+              f"catalog match becomes pre_trained_field_id; other sources are dropped",
+              file=sys.stderr)
+
+
 # ---------- modes ----------
 
 def mode_convert(args, token):
@@ -182,6 +191,7 @@ def mode_convert(args, token):
 
     catalog = fetch_catalog(base, token)
     fields = derive_engine_fields(schema["content"], catalog)
+    warn_multi_source(schema["content"])
     check_nonempty_plan(args, fields)
     cleaned, changes = clean_schema(schema["content"])
     plan = {
@@ -271,6 +281,7 @@ def mode_greenfield(args, token):
         fail(f"schema file has no 'content' key: {args.schema_file}")
     catalog = fetch_catalog(base, token)
     fields = derive_engine_fields(content, catalog)
+    warn_multi_source(content)
     check_nonempty_plan(args, fields)
     cleaned, changes = clean_schema(content)
     print(json.dumps({"mode": "greenfield", "engine_fields": fields,
@@ -296,7 +307,7 @@ def mode_greenfield(args, token):
                   "schema": schema["url"], "engine": engine["url"]}
     status, queue = api(base, token, "POST", "/api/v1/queues", queue_body)
     if status != 201:
-        # POST may not accept engine directly; fall back to create-then-PATCH
+        # POST /v1/queues accepts engine directly (verified live); keep a defensive fallback
         queue_body.pop("engine")
         status, queue = api(base, token, "POST", "/api/v1/queues", queue_body)
         if status != 201:
@@ -323,6 +334,8 @@ def mode_revert(args, token):
     engine_id = queue["engine"].rstrip("/").split("/")[-1]
     schema_id = queue["schema"].rstrip("/").split("/")[-1]
     status, schema = api(base, token, "GET", f"/api/v1/schemas/{schema_id}")
+    if status != 200:
+        fail(f"schema fetch failed ({status})", schema)
     snapshot(args, "pre_revert_queue", queue)
     snapshot(args, "pre_revert_schema", schema)
     engine_fields = fetch_engine_fields(base, token, engine_id)

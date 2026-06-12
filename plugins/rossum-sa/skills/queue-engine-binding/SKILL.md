@@ -33,6 +33,8 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/queue-engine-binding/engine_binding.py \
 | `attach` | `--queue-id --engine-id` | Bind to an existing engine; creates only the missing engine fields, then cleans + flips. |
 | `revert` | `--queue-id --generic-engine-url` | Detach to generic engine and restore `rir_field_names` from `pre_trained_field_id` mappings (or restore the snapshot schema manually for exact pre-state). Find the `--generic-engine-url` value in the convert snapshot's `pre_queue.json` under `generic_engine`, or in any sibling generic-bound queue's `queue.json`. |
 
+If the schema is shared by multiple queues, `convert` stops and tells you to copy the schema first (POST /v1/schemas with the same content, point this queue at the copy) — it does not copy automatically.
+
 ## Interpreting failures
 
 - Queue-flip 400s list ALL remaining violations in `non_field_errors` — read them verbatim; each names a field and the exact rule.
