@@ -193,13 +193,13 @@ Supported for upload/export endpoints: `Authorization: Basic {base64(username:pa
 - `engine` (URL, optional): modern custom extraction engine (`/v1/engines/{id}`) — see [Extraction Engines](#extraction-engines)
 - `dedicated_engine` (URL, optional): legacy dedicated ML engine
 - `generic_engine` (URL, optional): pretrained generic extraction engine (new queues auto-bind one)
-
-The three engine properties are mutually exclusive in practice — exactly one is non-null on a healthy queue. A non-null `engine` changes the schema editing rules (see [Extraction Engines](#extraction-engines)).
 - `locale` (string): Language/region code (e.g., `"en_US"`) affecting UI and extraction
 - `automation` (object): Auto-validation behavior settings
 - `accepted_mime_types` (array): File types permitted for upload
 - `rir_params` (object): Parameters for initializing field values
 - `metadata` (object, optional): Custom JSON (max 4 KB)
+
+The three engine properties are mutually exclusive in practice — exactly one is non-null on a healthy queue. A non-null `engine` changes the schema editing rules (see [Extraction Engines](#extraction-engines)).
 
 **Workflow settings**:
 - `confirmation` (object): Criteria for requiring manual confirmation
@@ -1108,7 +1108,7 @@ Verified order of operations:
 2. `POST /v1/engines` — name it (queue name is the convention), `type: "extractor"`, `learning_enabled: true`, `training_queues: [<queue url>]`.
 3. `POST /v1/engine_fields` — one per captured datapoint (header and table):
    - `name` = schema datapoint `id`, `label` = schema `label`,
-   - `pre_trained_field_id` = the first `rir_field_names` entry that matches a pretrained catalog name (else `null`); additional `rir_field_names` sources have no equivalent and are dropped,
+   - `pre_trained_field_id` = the first `rir_field_names` entry that matches a pretrained catalog name (else `null`); additional `rir_field_names` sources have no equivalent and are dropped (tabular datapoints' `rir_field_names` already use `table_column_*` catalog names, so the lookup works directly),
    - `type`/`subtype`/`multiline` copied from the catalog entry when seeded (e.g. `date_issue`→`period_begin`, `date_due`→`period_end`, amounts→`amount`, `sender_vat_id`→`vat_number`); for custom fields use the schema datapoint type, `subtype: null`, `multiline: "false"`,
    - `tabular` = whether the datapoint sits inside a multivalue.
 4. Clean the schema: every engine-extracted datapoint gets `rir_field_names: []` and explicit `ui_configuration: {"type": "captured", "edit": "enabled"}`; remove `disable_prediction` from ALL datapoints (captured or not); keep the multivalue's own `rir_field_names`; leave `formula`/`data`/`manual` fields otherwise untouched.
