@@ -41,7 +41,7 @@ At each phase, reference the appropriate skill for detailed guidance rather than
 | Phase | Reference Skills |
 |-------|-----------------|
 | 1 — Project Setup | `prd-reference` |
-| 2 — Schema Design | `rossum-reference` (schema templates) |
+| 2 — Schema Design | `rossum-reference` (schema templates, extraction engines) |
 | 3 — Master Data Hub | `mdh-reference`, `mongodb-reference`, `data-storage-reference` |
 | 4 — Extensions & Serverless Functions | `txscript-reference`, `rossum-reference` (hook patterns) |
 | 5 — Business Rules | `rossum-reference` (business rules validation) |
@@ -64,6 +64,7 @@ Before building anything, understand what needs to be built. If a SOW exists, us
 
 Based on answers, determine:
 - **Which phases are needed** (e.g., no master data = skip Phase 3, no export = skip Phase 6)
+- **Engine binding per queue** — generic engine vs. custom engine, decided by pretrained-catalog coverage of the required fields (see `rossum-reference` → Extraction Engines → "Choosing an engine")
 - **Relative complexity** — simple (1-2 queues, basic matching), medium (3-10 queues, MDH + export), complex (10+ queues, multi-region, multiple integrations)
 
 Create a task list with one task per applicable phase to track progress.
@@ -107,6 +108,8 @@ Create a task list with one task per applicable phase to track progress.
 **Goal:** All required fields exist in the queue schemas, with correct types.
 
 **Steps:**
+
+0. **Check the queue's engine binding first** (`queue.json` → `engine`). On engine-bound queues, extraction wiring uses engine fields (name match, empty `rir_field_names`), not `rir_field_names` — and new captured fields need their engine field created first. See `rossum-reference` → Extraction Engines.
 
 1. **List all fields needed** per queue — group by:
    - **Captured** (OCR-extracted): `type: "string"`, `ui_configuration.type: "captured"`
