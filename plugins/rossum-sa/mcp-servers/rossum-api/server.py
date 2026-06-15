@@ -3580,6 +3580,68 @@ def handle_cancel_annotation(request_id, arguments):
 
 
 @_tool(
+    "rossum_confirm_annotation",
+    "Confirms an annotation via POST /annotations/{id}/confirm — transitions it to "
+    "'exported'/'exporting' (or 'confirmed' if the confirmed-state feature is enabled, "
+    "or 'in_workflow' if an approval workflow is configured on the queue) and FIRES THE "
+    "DOWNSTREAM EXPORT / approval routing. This is a real, not-easily-reversible side "
+    "effect: use it to complete the validation→export path or to bulk-confirm. This is the "
+    "correct way to confirm correct data — do not patch the status directly. "
+    "PRECONDITION: the annotation must be in 'reviewing' (i.e. started) — confirming a "
+    "'to_review' annotation returns HTTP 409 ('Document is not being annotated'). Call "
+    "rossum_start_annotation first. "
+    "Optionally set skip_workflows to bypass approval workflows (requires "
+    "bypass_workflows_allowed in the queue settings).",
+    {
+        "type": "object",
+        "required": ["annotation_id"],
+        "properties": {
+            "annotation_id": {
+                "type": "integer",
+                "description": "The annotation ID to confirm.",
+            },
+            "skip_workflows": {
+                "type": "boolean",
+                "description": (
+                    "Skip approval-workflow evaluation (default false). Only effective "
+                    "when bypass_workflows_allowed is set in the queue's workflow settings."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_confirm_annotation(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    annotation_id = arguments["annotation_id"]
+    body = None
+    if "skip_workflows" in arguments:
+        body = {"skip_workflows": arguments["skip_workflows"]}
+    # 204 No Content on success -> parse_json=False returns the status code.
+    status_code = _http_request(
+        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/confirm",
+        method="POST", body=body, parse_json=False,
+    )
+    if status_code is None:
+        return
+    if 200 <= status_code < 300:
+        tool_result(
+            request_id,
+            f"Annotation {annotation_id} confirmed (HTTP {status_code}) — status now "
+            f"'exported'/'exporting' (or 'confirmed' if the confirmed-state feature is on, "
+            f"or 'in_workflow' if an approval workflow is configured). The downstream "
+            f"export / approval routing has been fired; this is not easily reversible.",
+        )
+    else:
+        # 409 'Document is not being annotated' means it was not in 'reviewing' —
+        # start it first (rossum_start_annotation) before confirming.
+        tool_result(request_id, f"Confirm returned HTTP {status_code}.", is_error=True)
+
+
+@_tool(
     "rossum_validate_content",
     "Fires the hook chain against an annotation by POSTing to /content/validate with the "
     "specified actions. Returns the freshly computed datapoints projected to the same compact "

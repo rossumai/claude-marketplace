@@ -309,6 +309,13 @@
       "rossum_update_annotation_content"
     ]
   },
+  "POST /annotations/{annotationID}/confirm": {
+    "decision": "covered",
+    "summary": "Confirm validation",
+    "tools": [
+      "rossum_confirm_annotation"
+    ]
+  },
   "POST /annotations/{annotationID}/content/operations": {
     "decision": "covered",
     "summary": "Bulk update annotation content",

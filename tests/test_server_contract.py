@@ -218,3 +218,36 @@ def test_handler_short_circuits_on_http_error(monkeypatch):
         f"handler should bail out silently when _http_request signals an error; "
         f"got unexpected emissions: {emitted}"
     )
+
+
+# --- confirm annotation: POST /confirm, side-effecting write ---
+
+def test_confirm_annotation_posts_and_reports(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_confirm_annotation", {"annotation_id": 55},
+        lambda url, method, body: 204 if url.endswith("/annotations/55/confirm") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/annotations/55/confirm")
+    assert call["body"] is None            # no skip_workflows -> empty body
+    assert call["parse_json"] is False     # 204 No Content -> status code, not JSON
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "55" in text and "confirm" in text.lower()
+
+
+def test_confirm_annotation_includes_skip_workflows(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_confirm_annotation",
+        {"annotation_id": 55, "skip_workflows": True},
+        lambda url, method, body: 204,
+    )
+    assert fake.calls[0]["body"] == {"skip_workflows": True}
+
+
+def test_confirm_annotation_surfaces_http_error(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_confirm_annotation", {"annotation_id": 55},
+        lambda url, method, body: 409,
+    )
+    assert emitted[-1]["result"].get("isError") is True
