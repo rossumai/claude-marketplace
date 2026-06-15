@@ -381,6 +381,38 @@ def _http_get_bytes(request_id, url):
         return None
 
 
+def _http_get_typed(request_id, url):
+    """GET that distinguishes JSON from non-JSON. Returns (content_type, parsed_json).
+
+    JSON response -> ("application/json", <parsed dict/list>). Non-JSON (PDF, zip,
+    csv, ...) -> (content_type, None), body not read. On error: sends a tool_result
+    and returns (None, None). urllib follows 3xx automatically, so a tasks/{id} 303
+    resolves to its result object."""
+    if not _cached_token:
+        return (None, None)
+    req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
+            ctype = resp.headers.get_content_type()
+            if ctype == "application/json":
+                return (ctype, json.loads(resp.read().decode("utf-8")))
+            return (ctype, None)
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else str(e)
+        if e.code == 401:
+            _invalidate_connection()
+            tool_result(request_id,
+                        f"Authentication failed (HTTP 401). Token may be expired. "
+                        f"Call rossum_set_token to re-authenticate.\n{error_body}",
+                        is_error=True)
+            return (None, None)
+        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        return (None, None)
+    except Exception as e:
+        tool_result(request_id, f"Error: {e}", is_error=True)
+        return (None, None)
+
+
 def _data_storage_call(request_id, path, body):
     """POST to a Data Storage API endpoint."""
     base_url, _ = _ensure_connection(request_id)
@@ -473,14 +505,19 @@ _URL_REF_FIELDS = frozenset({
 })
 
 
-def _paginate(request_id, url, *, max_results=None, pick_fields=None):
-    """Auto-paginate a Rossum list endpoint. Returns (results, api_total) or None on error."""
+def _paginate(request_id, url, *, max_results=None, pick_fields=None, initial_page=None):
+    """Auto-paginate a Rossum list endpoint. Returns (results, api_total) or None on error.
+
+    `initial_page` (an already-parsed first page) is used in place of fetching page 1,
+    so callers that already read page 1 don't pay for a second round-trip."""
     all_results = []
     api_total = None
+    page = initial_page
     while url:
-        page = _http_request(request_id, url)
         if page is None:
-            return None
+            page = _http_request(request_id, url)
+            if page is None:
+                return None
         if api_total is None:
             api_total = page.get("pagination", {}).get("total")
         for item in page.get("results", []):
@@ -497,6 +534,7 @@ def _paginate(request_id, url, *, max_results=None, pick_fields=None):
         if _validate_base_url(next_url) != _validate_base_url(url):
             break
         url = next_url
+        page = None
     return (all_results, api_total)
 
 
@@ -1011,6 +1049,81 @@ def handle_set_token(request_id, arguments):
 )
 def handle_whoami(request_id, arguments):
     _rossum_get(request_id, "/api/v1/auth/user")
+
+
+_GENERIC_GET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": (
+                "Rossum API path beginning '/api/v1/' (e.g. '/api/v1/engines', "
+                "'/api/v1/automation_blockers?annotation=123'), or a full object URL "
+                "returned by another call. Query string allowed."
+            ),
+        },
+        "max_results": {
+            "type": "integer",
+            "description": "Cap for paginated list endpoints (default 100).",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+@_tool(
+    "rossum_get",
+    "Read-only escape hatch: GET any Rossum API resource that has no dedicated tool "
+    "(engines, engine_fields, labels, automation_blockers, workflows, triggers, "
+    "relations, pages, tasks, ...). GET-only — cannot create, update, or delete. Pass "
+    "an '/api/v1/...' path. Full path catalog: the rossum-reference 'API coverage' doc "
+    "(api-coverage.md). Prefer a dedicated tool when one exists.",
+    _GENERIC_GET_SCHEMA,
+    annotations=_READ_ONLY,
+)
+def handle_rossum_get(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    raw = (arguments.get("path") or "").strip()
+    if not raw:
+        tool_result(request_id, "path is required.", is_error=True)
+        return
+    if raw.startswith(("http://", "https://")):
+        if _validate_base_url(raw) != _validate_base_url(base_url):
+            tool_result(request_id,
+                        f"Refusing: URL is not on the connected org ({base_url}).",
+                        is_error=True)
+            return
+        parsed = urlparse(raw)
+        path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    elif raw.startswith("/api/v1/"):
+        path = raw
+    else:
+        tool_result(request_id,
+                    "path must start with '/api/v1/' or be a full org URL.",
+                    is_error=True)
+        return
+    url = f"{base_url}{path}"
+    ctype, payload = _http_get_typed(request_id, url)
+    if ctype is None:
+        return  # error already sent (or token vanished — pre-existing guard pattern)
+    if ctype != "application/json":
+        tool_result(request_id, json.dumps({
+            "content_type": ctype,
+            "url": url,
+            "note": "Non-JSON (binary/export) response — open the URL to retrieve it.",
+        }, indent=2))
+        return
+    if isinstance(payload, dict) and "results" in payload and "pagination" in payload:
+        result = _paginate(request_id, url, max_results=arguments.get("max_results", 100), initial_page=payload)
+        if result is not None:
+            results, api_total = result
+            tool_result(request_id, json.dumps(
+                {"total": api_total, "returned": len(results), "results": results}, indent=2))
+        return
+    tool_result(request_id, json.dumps(payload, indent=2))
 
 
 @_tool(
