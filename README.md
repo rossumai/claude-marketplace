@@ -179,6 +179,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_list_rule_execution_logs` | List rule execution logs (filter by rule, queue, annotation, event, result, time) |
 | `rossum_list_annotations` | List annotations in a queue (filter by status) |
 | `rossum_search_annotations` | Search annotations across queues (filter by status, date range, workspace) |
+| `rossum_search_annotations_advanced` | Content/field-value + full-text search via `POST /annotations/search` (MongoDB-subset `query` + `query_string`); read-only despite being a POST |
 | `rossum_get_annotation` | Compact merged view: metadata + extracted fields + tables + resolved automation_blocker items + recent hook logs in one call. Caches raw payload to `.rossum-cache/annotations/<id>.json`. |
 | `rossum_get_annotation_meta` | Raw annotation metadata only (status, timestamps, URLs) — use when you want the unprojected resource |
 | `rossum_get_annotation_content` | Raw content tree (extracted data) — use when you need the unprojected nested structure |

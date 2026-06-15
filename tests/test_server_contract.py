@@ -251,3 +251,48 @@ def test_confirm_annotation_surfaces_http_error(monkeypatch):
         lambda url, method, body: 409,
     )
     assert emitted[-1]["result"].get("isError") is True
+
+
+# --- advanced annotation search: body shaping + POST-cursor pagination ---
+
+def test_paginate_search_follows_next_reposting_body(monkeypatch):
+    base = BASE
+    page1 = {"pagination": {"total": 3, "next": f"{base}/api/v1/annotations/search?cursor=ABC"},
+             "results": [{"id": 1, "queue": f"{base}/api/v1/queues/7", "status": "exported"}]}
+    page2 = {"pagination": {"total": 3, "next": None},
+             "results": [{"id": 2, "queue": f"{base}/api/v1/queues/7", "status": "exported"},
+                         {"id": 3, "queue": f"{base}/api/v1/queues/7", "status": "exported"}]}
+    def responder(url, method, body):
+        return page1 if "cursor" not in url else page2
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_search_annotations_advanced",
+        {"queue": 7, "query_string": "acme", "max_results": 10},
+        responder,
+    )
+    # Both calls are POST and carry the same body (cursor re-posts the query).
+    assert all(c["method"] == "POST" for c in fake.calls)
+    assert fake.calls[0]["body"] == {
+        "query": {"$and": [{"queue": {"$in": [f"{base}/api/v1/queues/7"]}}]},
+        "query_string": {"string": "acme"},
+    }
+    assert fake.calls[1]["body"] == fake.calls[0]["body"]   # body re-posted to next URL
+    assert "page_size=" in fake.calls[0]["url"]
+    out = emitted_payload(emitted)
+    assert out["total"] == 3 and out["returned"] == 3
+    assert [r["id"] for r in out["results"]] == [1, 2, 3]
+    # url-ref compaction: queue URL -> bare id, only _ANNOTATION_FIELDS kept
+    assert out["results"][0]["queue"] == 7
+
+
+def test_paginate_search_respects_max_results(monkeypatch):
+    base = BASE
+    page1 = {"pagination": {"total": 99, "next": f"{base}/api/v1/annotations/search?cursor=X"},
+             "results": [{"id": 1, "status": "exported"}, {"id": 2, "status": "exported"}]}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_search_annotations_advanced",
+        {"query_string": "acme", "max_results": 1},
+        lambda url, method, body: page1,
+    )
+    out = emitted_payload(emitted)
+    assert out["returned"] == 1 and out["total"] == 99
+    assert len(fake.calls) == 1   # stopped before following next
