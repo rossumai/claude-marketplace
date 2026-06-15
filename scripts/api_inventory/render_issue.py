@@ -28,7 +28,7 @@ def _digest(diff: dict, pending_ops: list[dict], stale: list[str]) -> str:
 
 
 def has_content(diff: dict, pending_ops: list[dict], stale: list[str]) -> bool:
-    """True if there's anything worth opening/keeping an issue for."""
+    """True if there's anything worth opening/keeping an issue for (pending_ops = uncovered writes only; reads are implicitly covered by rossum_get)."""
     return bool(diff.get("added") or diff.get("changed") or diff.get("removed")
                 or pending_ops or stale)
 
@@ -73,7 +73,8 @@ def render_issue_body(diff: dict, pending_ops: list[dict], stale: list[str]) -> 
     by_tag: dict[str, list] = defaultdict(list)
     for op in pending_ops:
         by_tag[op.get("tag") or "(untagged)"].append(op)
-    lines += [f"## Pending operations — no MCP tool yet ({len(pending_ops)})", ""]
+    lines += [f"## Pending operations — uncovered writes, no MCP tool yet ({len(pending_ops)})", "",
+              "_Reads are covered generically by `rossum_get`; only writes are tracked here._", ""]
     for tag in sorted(by_tag):
         ops = sorted(by_tag[tag], key=lambda o: (o["path"], o["method"]))
         lines.append(f"### {tag} ({len(ops)})")

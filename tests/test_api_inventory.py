@@ -73,7 +73,7 @@ def test_seed_coverage_map_is_covered_only():
     assert "GET /queues/{id}" not in cmap   # pending = simply absent from the map
     assert "GET /engines" not in cmap
     summ = coverage.summarize(inv, cmap)
-    assert summ == {"covered": 2, "pending": 2}
+    assert summ == {"covered": 2, "implicit": 2, "pending": 0}
 
 
 def test_diff_ignores_summary_only_changes():
@@ -103,20 +103,30 @@ def test_render_doc_groups_by_tag_with_status():
     cmap = coverage.seed_coverage_map(inv, coverage.extract_tool_endpoints(SERVER_SRC))
     md = render_doc.render_coverage_doc(inv, cmap)
     assert "# Rossum API coverage" in md
-    assert "2 covered · 2 pending" in md
+    assert "2 covered · 2 via rossum_get" in md
     assert "## Queue" in md and "## Engine" in md
     assert "`GET /queues`" in md and "covered" in md
-    assert "`GET /queues/{id}`" in md and "pending" in md
+    assert "`GET /queues/{id}`" in md and "via rossum_get" in md
+    assert "`GET /engines`" in md and "rossum_get" in md
 
 
 def test_pending_operations_excludes_classified():
     inv = build.extract_inventory(SPEC)
     cmap = coverage.seed_coverage_map(inv, coverage.extract_tool_endpoints(SERVER_SRC))
+    assert coverage.pending_operations(inv, cmap) == []
+
+
+def test_pending_operations_includes_uncovered_writes():
+    inv = [
+        {"method": "POST", "path": "/api/v1/queues", "tag": "Queue",
+         "operationId": "qc", "summary": "Create"},
+        {"method": "GET", "path": "/api/v1/queues", "tag": "Queue",
+         "operationId": "ql", "summary": "List"},
+    ]
+    cmap = {}  # nothing covered
     pending = coverage.pending_operations(inv, cmap)
-    keys = {(o["method"], o["path"]) for o in pending}
-    assert ("GET", "/api/v1/queues/{id}") in keys   # not covered -> pending
-    assert ("GET", "/api/v1/engines") in keys
-    assert ("GET", "/api/v1/queues") not in keys     # covered -> excluded
+    assert len(pending) == 1 and pending[0]["method"] == "POST"   # uncovered write -> pending
+    assert coverage.implicit_operations(inv, cmap) == [inv[1]]    # uncovered GET -> implicit
 
 
 def test_stale_coverage_entries():
@@ -133,6 +143,20 @@ def test_has_content_guard():
     assert render_issue.has_content(empty, [op], []) is True                       # pending
     assert render_issue.has_content({"added": [op], "changed": [], "removed": []}, [], []) is True  # diff
     assert render_issue.has_content(empty, [], ["GET /gone"]) is True              # stale
+
+
+def test_implicit_and_pending_split():
+    spec = {"paths": {
+        "/api/v1/engines": {"get": {"operationId": "e", "summary": "List", "tags": ["Engine"]}},
+        "/api/v1/engines/{id}": {"delete": {"operationId": "ed", "summary": "Del",
+                                             "tags": ["Engine"]}},
+    }}
+    inv = build.extract_inventory(spec)
+    cmap = {}  # nothing covered
+    pending = {f"{o['method']} {o['path']}" for o in coverage.pending_operations(inv, cmap)}
+    implicit = {f"{o['method']} {o['path']}" for o in coverage.implicit_operations(inv, cmap)}
+    assert pending == {"DELETE /api/v1/engines/{id}"}   # uncovered write -> pending
+    assert implicit == {"GET /api/v1/engines"}          # uncovered read -> generic
 
 
 def test_render_issue_body_sections_and_digest():

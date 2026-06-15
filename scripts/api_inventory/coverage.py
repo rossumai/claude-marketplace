@@ -85,20 +85,36 @@ def seed_coverage_map(inventory: list[dict], tool_endpoints: dict) -> dict:
     return cmap
 
 
-def summarize(inventory: list[dict], coverage_map: dict) -> dict:
-    """Counts per curated decision, plus implicit `pending` (inventory minus classified)."""
-    out = dict(Counter(v["decision"] for v in coverage_map.values()))
-    out["pending"] = len(inventory) - len(coverage_map)
-    return out
-
-
 def pending_operations(inventory: list[dict], coverage_map: dict) -> list[dict]:
-    """Operations with no curated decision (absent, or explicitly `pending`)."""
+    """Operations still needing a dedicated tool: uncovered WRITES, or explicit `pending`.
+
+    GET operations with no dedicated tool are NOT pending — they are implicitly
+    covered by the generic `rossum_get` tool (see implicit_operations)."""
     out = []
     for op in inventory:
         entry = coverage_map.get(f"{op['method']} {_display_path(op['path'])}")
-        if entry is None or entry.get("decision") == "pending":
+        if entry is None:
+            if op["method"] != "GET":
+                out.append(op)
+        elif entry.get("decision") == "pending":
             out.append(op)
+    return out
+
+
+def implicit_operations(inventory: list[dict], coverage_map: dict) -> list[dict]:
+    """GET operations with no dedicated tool — reachable via the generic rossum_get."""
+    return [op for op in inventory
+            if op["method"] == "GET"
+            and coverage_map.get(f"{op['method']} {_display_path(op['path'])}") is None]
+
+
+def summarize(inventory: list[dict], coverage_map: dict) -> dict:
+    """Counts per curated decision, plus derived `implicit` (reads via rossum_get)
+    and `pending` (uncovered writes)."""
+    out = {k: v for k, v in Counter(v["decision"] for v in coverage_map.values()).items()
+           if k != "pending"}
+    out["implicit"] = len(implicit_operations(inventory, coverage_map))
+    out["pending"] = len(pending_operations(inventory, coverage_map))
     return out
 
 
