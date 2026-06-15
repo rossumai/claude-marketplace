@@ -160,7 +160,7 @@ def _probe_token(base_url, token):
     """Validate a token with a lightweight API call. Returns (ok, error_detail)."""
     req = urllib.request.Request(
         f"{base_url}/api/v1/auth/user",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=_auth_headers(token=token),
         method="GET",
     )
     try:
@@ -208,6 +208,26 @@ def _invalidate_connection():
     _token_validated = False
 
 
+_SERVER_VERSION = "0.23.0"
+_USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
+_current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
+
+
+def _auth_headers(extra=None, token=None):
+    """Auth + telemetry headers for every Rossum API request.
+
+    Always sets Authorization (Bearer) and a stable User-Agent. When a tool call
+    is in flight, adds X-Rossum-MCP-Tool so server-side telemetry can attribute
+    traffic per tool. `extra` merges in/overrides (e.g. Content-Type). `token`
+    overrides _cached_token (used by the pre-auth validation probe)."""
+    headers = {"Authorization": f"Bearer {token or _cached_token}", "User-Agent": _USER_AGENT}
+    if _current_tool:
+        headers["X-Rossum-MCP-Tool"] = _current_tool
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 def _ensure_connection(request_id):
     """Guard: return cached (base_url, token) or send an error directing to rossum_set_token."""
     if _token_validated and _cached_base_url and _cached_token:
@@ -235,7 +255,7 @@ def _http_request(request_id, url, *, method="GET", body=None, parse_json=True):
     if not token:
         return None
 
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers()
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -274,7 +294,7 @@ def _http_request_silent(url, *, method="GET"):
     if not token:
         return None
     req = urllib.request.Request(
-        url, data=None, headers={"Authorization": f"Bearer {token}"}, method=method,
+        url, data=None, headers=_auth_headers(), method=method,
     )
     try:
         with urllib.request.urlopen(req, timeout=30, context=_ssl_context) as resp:
@@ -296,7 +316,7 @@ def _http_request_status(url, *, method="GET", body=None):
     token = _cached_token
     if not token:
         return None, "Not connected to Rossum."
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers()
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -326,9 +346,7 @@ def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_t
     token = _cached_token
     if not token:
         return None
-    headers = {"Authorization": f"Bearer {token}"}
-    if content_type:
-        headers["Content-Type"] = content_type
+    headers = _auth_headers({"Content-Type": content_type} if content_type else None)
     req = urllib.request.Request(url, data=raw_body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
@@ -350,7 +368,7 @@ def _http_get_bytes(request_id, url):
     token = _cached_token
     if not token:
         return None
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+    req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
     try:
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
             return resp.read()
@@ -4109,7 +4127,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.22.0"},
+                    "serverInfo": {"name": "rossum-api", "version": _SERVER_VERSION},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "
@@ -4136,7 +4154,12 @@ def main():
                 name = params.get("name")
                 handler = HANDLERS.get(name)
                 if handler:
-                    handler(request_id, params.get("arguments") or {})
+                    global _current_tool
+                    _current_tool = name
+                    try:
+                        handler(request_id, params.get("arguments") or {})
+                    finally:
+                        _current_tool = None
                 else:
                     tool_result(request_id, f"Unknown tool: {name}", is_error=True)
             elif method == "ping":

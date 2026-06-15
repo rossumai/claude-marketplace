@@ -153,3 +153,22 @@ def test_paginate_returns_none_on_error(monkeypatch):
     url = "https://elis.rossum.ai/api/v1/queues?page=1"
     _patch_http(monkeypatch, {url: None})   # _http_request signals error with None
     assert server._paginate(1, url) is None
+
+
+def test_auth_headers_includes_ua_without_marker(monkeypatch):
+    monkeypatch.setattr(server, "_cached_token", "tok")
+    monkeypatch.setattr(server, "_current_tool", None)
+    h = server._auth_headers()
+    assert h["Authorization"] == "Bearer tok"
+    assert h["User-Agent"] == f"rossum-sa-mcp/{server._SERVER_VERSION}"
+    assert "X-Rossum-MCP-Tool" not in h
+
+
+def test_auth_headers_adds_marker_and_extra(monkeypatch):
+    monkeypatch.setattr(server, "_cached_token", "tok")
+    monkeypatch.setattr(server, "_current_tool", "rossum_get")
+    h = server._auth_headers({"Content-Type": "application/json"})
+    assert h["X-Rossum-MCP-Tool"] == "rossum_get"
+    assert h["Content-Type"] == "application/json"
+    assert h["Authorization"] == "Bearer tok"
+    assert h["User-Agent"] == f"rossum-sa-mcp/{server._SERVER_VERSION}"
