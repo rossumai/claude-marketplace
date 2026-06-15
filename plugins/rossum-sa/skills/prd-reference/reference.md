@@ -142,7 +142,7 @@ Before editing extraction-related schema properties, check the queue's binding: 
 - Engine-extracted datapoints must have `rir_field_names: []` — adding any source (including `upload:`/`email_header:` prefixes) is rejected.
 - Engine-extracted datapoints must not have `disable_prediction: true`.
 - Every captured-looking datapoint (`ui_configuration.type` absent or `captured`) must have a matching engine field (`engine_fields/<schema_id>_[…].json` with `name` == the datapoint `id`). **Create the engine field first** — e.g. an `engine_fields/MyField_[].json` placeholder in the same push, which is safe because engine_field CREATEs run before schema updates in the dependency order — then add the datapoint.
-- Fields with `ui_configuration.type` of `formula`/`data`/`manual` are exempt; the multivalue container's own `rir_field_names` is also exempt.
+- Fields with `ui_configuration.type` of `formula`/`data`/`manual`/`reasoning` are exempt; the multivalue container's own `rir_field_names` is also exempt.
 
 Full rules, exact error texts, and the conversion recipe: rossum-sa:rossum-reference → "Extraction Engines".
 

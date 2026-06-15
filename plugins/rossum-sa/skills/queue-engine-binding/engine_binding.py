@@ -17,7 +17,7 @@ import sys
 import urllib.error
 import urllib.request
 
-NON_EXTRACTED_UI_TYPES = {"formula", "data", "manual"}
+NON_EXTRACTED_UI_TYPES = {"formula", "data", "manual", "reasoning"}
 
 SCHEMA_TYPE_DEFAULTS = {"string": "string", "number": "number", "date": "date", "enum": "enum"}
 

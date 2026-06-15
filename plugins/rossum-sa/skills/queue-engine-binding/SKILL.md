@@ -35,6 +35,8 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/queue-engine-binding/engine_binding.py \
 
 If the schema is shared by multiple queues, `convert` stops and tells you to copy the schema first (POST /v1/schemas with the same content, point this queue at the copy) — it does not copy automatically.
 
+Schema cleanup normalizes every engine-extracted datapoint to `ui_configuration: {"type": "captured", "edit": "enabled"}`. A captured-but-read-only field (`edit: "disabled"`) is therefore flipped to `"enabled"`; this matches the platform's own conversion behavior. Fields with `ui_configuration.type` `formula`/`data`/`manual`/`reasoning` are left untouched.
+
 ## Interpreting failures
 
 - Queue-flip 400s list ALL remaining violations in `non_field_errors` — read them verbatim; each names a field and the exact rule.

@@ -1092,7 +1092,7 @@ The API enforces these on every schema write and on the queue flip. Exact error 
 
 1. `Engine (id: N) restriction: extracted field 'X' must have empty rir_field_names` — applies to every engine-extracted datapoint; even `upload:`-prefixed sources are rejected.
 2. `Engine (id: N) restriction: extracted field 'X' must not have disable_prediction=true`.
-3. `Engine (id: N) restriction: extracted field 'X' is not present among names of engine fields` — every captured-looking datapoint must have a matching engine field. `disable_prediction: true` does NOT exempt a datapoint; only a `ui_configuration.type` of `formula`, `data`, or `manual` does.
+3. `Engine (id: N) restriction: extracted field 'X' is not present among names of engine fields` — every captured-looking datapoint must have a matching engine field. `disable_prediction: true` does NOT exempt a datapoint; only a `ui_configuration.type` of `formula`, `data`, `manual`, or `reasoning` does.
 4. The multivalue container's own `rir_field_names` (e.g. `["line_items"]`) is exempt — restrictions apply to datapoints only.
 
 Consequences:
@@ -1111,7 +1111,7 @@ Verified order of operations:
    - `pre_trained_field_id` = the first `rir_field_names` entry that matches a pretrained catalog name (else `null`); additional `rir_field_names` sources have no equivalent and are dropped (tabular datapoints' `rir_field_names` already use `table_column_*` catalog names, so the lookup works directly),
    - `type`/`subtype`/`multiline` copied from the catalog entry when seeded (e.g. `date_issue`→`period_begin`, `date_due`→`period_end`, amounts→`amount`, `sender_vat_id`→`vat_number`); for custom fields use the schema datapoint type, `subtype: null`, `multiline: "false"`,
    - `tabular` = whether the datapoint sits inside a multivalue.
-4. Clean the schema: every engine-extracted datapoint gets `rir_field_names: []` and explicit `ui_configuration: {"type": "captured", "edit": "enabled"}`; remove `disable_prediction` from ALL datapoints (captured or not); keep the multivalue's own `rir_field_names`; leave `formula`/`data`/`manual` fields otherwise untouched.
+4. Clean the schema: every engine-extracted datapoint gets `rir_field_names: []` and explicit `ui_configuration: {"type": "captured", "edit": "enabled"}` (note: this normalizes a captured-but-read-only field from `edit: "disabled"` to `"enabled"`); remove `disable_prediction` from ALL datapoints (captured or not); keep the multivalue's own `rir_field_names`; leave `formula`/`data`/`manual`/`reasoning` fields otherwise untouched.
 5. `PATCH /v1/queues/{id}` with `{"engine": "<engine url>"}` — on success the platform auto-nulls `generic_engine`.
 
 For a brand-new queue, `POST /v1/queues` accepts `engine` directly in the creation body (live-verified 2026-06-12) — the queue is born engine-bound with `generic_engine: null`, no create-then-PATCH step needed.

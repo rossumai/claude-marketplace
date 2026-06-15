@@ -68,6 +68,29 @@ def test_clean_schema_matches_ground_truth_rules():
     assert any("document_id" in c for c in changes)
 
 
+def test_reasoning_field_is_exempt():
+    """A reasoning datapoint (LLM-prompt-populated) is not engine-extracted: no engine
+    field is derived for it and clean_schema leaves its ui_configuration untouched."""
+    content = [
+        {"category": "section", "id": "header", "children": [
+            {"category": "datapoint", "id": "document_id", "label": "Document ID",
+             "type": "string", "rir_field_names": ["document_id"],
+             "ui_configuration": {"type": "captured", "edit": "enabled"}},
+            {"category": "datapoint", "id": "risk_summary", "label": "Risk Summary",
+             "type": "string", "rir_field_names": [],
+             "ui_configuration": {"type": "reasoning", "edit": "enabled"}},
+        ]},
+    ]
+    catalog = _load("pre_trained_fields.json")
+    names = {f["name"] for f in derive_engine_fields(content, catalog)}
+    assert "risk_summary" not in names      # reasoning -> not engine-extracted
+    assert "document_id" in names
+
+    cleaned, _changes = clean_schema(content)
+    by_id = {dp["id"]: dp for dp, _t in iter_datapoints(cleaned)}
+    assert by_id["risk_summary"]["ui_configuration"]["type"] == "reasoning"
+
+
 def test_derive_custom_field_branch():
     """A captured datapoint with no catalog match becomes a cold custom engine field."""
     content = [
