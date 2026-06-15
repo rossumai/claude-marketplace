@@ -15,7 +15,7 @@ Use the provided path (or current directory if none given). Discover and interna
 5. **Formulas** — `formulas/*.py` files: calculations, normalizations, export mappings
 6. **Rules** — `rules/*.json` files: validation conditions and actions
 7. **Inboxes** — `inbox.json` files: how documents arrive (email addresses, filtering)
-8. **Labels, email templates, dedicated engines** — any additional configuration
+8. **Labels, email templates, engines** — any additional configuration (engines = custom extraction engines, `engines/<Name>_[id]/`)
 9. **Deployment setup** — `deploy_files/*.yaml`, `prd_config.yaml`, environment structure
 10. **Existing documentation** — README files, inline comments, any markdown docs
 
@@ -69,7 +69,7 @@ project/
 - **Labels** — JSON files in `labels/` directories defining tags for categorization (priority, status, department)
 - **Formula files** — Python `.py` files in `formulas/` subdirectories of each queue; these implement field calculations, data normalization, export mappings, and MDH lookup logic. **Always edit the `.py` file, never the `formula` property in `schema.json`** — `prd2 push` syncs `.py` files into the schema JSON automatically.
 - **Email templates** — JSON files in `email_templates/` subdirectories for notification/rejection templates
-- **Dedicated Engines** — JSON files in `engines/` directories (custom AI extraction models)
+- **Engines** — `engines/<Name>_[id]/engine.json` + `engine_fields/*.json` (custom extraction engines; queues reference them via `queue.json` → `engine`)
 - **Deployment configs** — YAML files in `deploy_files/` defining environment-to-environment mappings (e.g., `dev_test.yaml`, `test_prod.yaml`); `prd_config.yaml` at the root defines org-level settings
 - **Credentials** — `credentials.yaml` in each org directory (API tokens, SFTP keys)
 - **Resources** — `__resources/` or similar directories with example documents, XML templates, business logic references
@@ -90,7 +90,7 @@ project/
 **/labels/*.json        — Labels/tags
 **/formulas/*.py        — Formula field implementations (Python)
 **/email_templates/*.json — Notification templates
-**/engines/*.json       — Dedicated Engine definitions
+**/engines/*/engine.json — Engine definitions (engine_fields/ alongside)
 **/deploy_files/*.yaml  — Deployment mappings
 **/credentials.yaml     — Credential files
 **/prd_config.yaml      — Global deployment config

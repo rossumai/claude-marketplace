@@ -190,13 +190,16 @@ Supported for upload/export endpoints: `Authorization: Basic {base64(username:pa
 
 **Processing settings**:
 - `default_score_threshold` (float 0-1): AI confidence cutoff for automatic field validation; overridable per datapoint
-- `dedicated_engine` (string, optional): URL to dedicated ML engine
-- `generic_engine` (string, optional): URL to generic extraction engine
+- `engine` (URL, optional): modern custom extraction engine (`/v1/engines/{id}`) — see [Extraction Engines](#extraction-engines)
+- `dedicated_engine` (URL, optional): legacy dedicated ML engine
+- `generic_engine` (URL, optional): pretrained generic extraction engine (new queues auto-bind one)
 - `locale` (string): Language/region code (e.g., `"en_US"`) affecting UI and extraction
 - `automation` (object): Auto-validation behavior settings
 - `accepted_mime_types` (array): File types permitted for upload
 - `rir_params` (object): Parameters for initializing field values
 - `metadata` (object, optional): Custom JSON (max 4 KB)
+
+The three engine properties are mutually exclusive in practice — exactly one is non-null on a healthy queue. A non-null `engine` changes the schema editing rules (see [Extraction Engines](#extraction-engines)).
 
 **Workflow settings**:
 - `confirmation` (object): Criteria for requiring manual confirmation
@@ -1012,9 +1015,131 @@ For the verified read-only API vs. the unverified write endpoints, the real `wor
 
 ---
 
+## Extraction Engines
+
+How a queue gets its AI extraction. Exactly one of three queue properties is non-null:
+
+| Queue property | Model | Field binding mechanism |
+|---|---|---|
+| `generic_engine` | Pretrained generic extraction — the default; new queues auto-bind one (e.g. `/v1/generic_engines/5`) | `rir_field_names` on schema datapoints |
+| `dedicated_engine` | Legacy dedicated models (see [Dedicated Engines](#dedicated-engines)) | `rir_field_names` |
+| `engine` | Custom engine (`/v1/engines`) — the newer engine model; pretrained-seeded, learning-enabled | **Name match**: engine field `name` == schema datapoint `id`; `rir_field_names` must be empty |
+
+All facts in this section were verified against a live org (2026-06-12; the `reasoning` ui-type exemption re-confirmed 2026-06-15 — an engine-bound queue carrying a `reasoning` datapoint flips successfully with no engine field for it).
+
+### Engine entity
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/v1/engines` | List engines |
+| POST | `/v1/engines` | Create engine |
+| GET/PUT/PATCH/DELETE | `/v1/engines/{id}` | Retrieve / update / delete |
+| POST | `/v1/engines/{id}/duplicate` | Duplicate (requires `name` in body) |
+| POST | `/v1/engines/{id}/check_template_compatibility` | Requires `name` in body (semantics unverified) |
+| GET | `/v1/engines/{id}/queue_stats` | Per-queue `number_of_used_engine_fields`, `training_queue`, `prediction_queue` |
+
+```json
+{
+  "id": 51877,
+  "url": ".../api/v1/engines/51877",
+  "organization": ".../api/v1/organizations/313278",
+  "name": "Sales Orders",
+  "type": "extractor",
+  "learning_enabled": true,
+  "training_queues": [".../api/v1/queues/2812478"],
+  "description": "",
+  "agenda_id": "egar_0e8c55db",
+  "settings": {"use_case": "generic_ap"}
+}
+```
+
+- `agenda_id` (ML-side identity) is auto-provisioned on POST — org admins can create engines via API with no extra setup.
+- `settings.use_case` defaults to `"generic_ap"`.
+- `learning_enabled` engines learn from confirmed annotations in `training_queues` (a list — one engine can serve and learn from multiple queues).
+- Only `type: "extractor"` has been verified; other types exist but are undocumented here.
+
+### Engine fields
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/v1/engine_fields?engine={id}` | List (cursor-paginated) |
+| POST | `/v1/engine_fields` | Create |
+| GET/PUT/PATCH/DELETE | `/v1/engine_fields/{id}` | Retrieve / update / delete |
+| GET | `/v1/engine_fields/pre_trained_fields` | Catalog of 75 pretrained fields: `name`, `label`, `section`, `type`, `subtype`, `tabular`, `multiline`, `description`. Header fields use plain names (`document_id`, `sender_name`, …); line-item columns use `table_column_*` names. |
+
+```json
+{
+  "id": 2662411,
+  "url": ".../api/v1/engine_fields/2662411",
+  "engine": ".../api/v1/engines/51877",
+  "name": "document_id",
+  "label": "Document ID",
+  "type": "string",
+  "subtype": "alphanumeric",
+  "pre_trained_field_id": "document_id",
+  "tabular": false,
+  "multiline": "false"
+}
+```
+
+- `pre_trained_field_id` non-null → the field is seeded from the pretrained catalog and extracts at catalog quality from day zero. `null` → custom field; starts cold and learns from confirmed annotations.
+- `tabular: true` → line-item column (datapoint inside a multivalue/tuple).
+- `name` is the binding key: it must equal the schema datapoint `id` it extracts into.
+
+### Binding rules on engine-bound queues
+
+The API enforces these on every schema write and on the queue flip. Exact error texts (HTTP 400):
+
+1. `Engine (id: N) restriction: extracted field 'X' must have empty rir_field_names` — applies to every engine-extracted datapoint; even `upload:`-prefixed sources are rejected.
+2. `Engine (id: N) restriction: extracted field 'X' must not have disable_prediction=true`.
+3. `Engine (id: N) restriction: extracted field 'X' is not present among names of engine fields` — every captured-looking datapoint must have a matching engine field. `disable_prediction: true` does NOT exempt a datapoint; only a `ui_configuration.type` of `formula`, `data`, `manual`, or `reasoning` does.
+4. The multivalue container's own `rir_field_names` (e.g. `["line_items"]`) is exempt — restrictions apply to datapoints only.
+
+Consequences:
+
+- **Adding a captured field to an engine-bound queue: create the engine field FIRST**, then add the schema datapoint. The reverse order fails with error 3.
+- Validation timing: `PATCH /queues/{id}` with `engine` enumerates ALL violations at once in `non_field_errors` (wording "should"); schema writes while bound return per-field errors under `content` (wording "must").
+
+### Converting a queue from the generic engine
+
+Verified order of operations:
+
+1. If the schema is shared by other queues, copy it and point this queue at the copy first.
+2. `POST /v1/engines` — name it (queue name is the convention), `type: "extractor"`, `learning_enabled: true`, `training_queues: [<queue url>]`.
+3. `POST /v1/engine_fields` — one per captured datapoint (header and table):
+   - `name` = schema datapoint `id`, `label` = schema `label`,
+   - `pre_trained_field_id` = the first `rir_field_names` entry that matches a pretrained catalog name (else `null`); additional `rir_field_names` sources have no equivalent and are dropped (tabular datapoints' `rir_field_names` already use `table_column_*` catalog names, so the lookup works directly),
+   - `type`/`subtype`/`multiline` copied from the catalog entry when seeded (e.g. `date_issue`→`period_begin`, `date_due`→`period_end`, amounts→`amount`, `sender_vat_id`→`vat_number`); for custom fields use the schema datapoint type, `subtype: null`, `multiline: "false"`,
+   - `tabular` = whether the datapoint sits inside a multivalue.
+4. Clean the schema: every engine-extracted datapoint gets `rir_field_names: []` and explicit `ui_configuration: {"type": "captured", "edit": "enabled"}` (note: this normalizes a captured-but-read-only field from `edit: "disabled"` to `"enabled"`); remove `disable_prediction` from ALL datapoints (captured or not); keep the multivalue's own `rir_field_names`; leave `formula`/`data`/`manual`/`reasoning` fields otherwise untouched.
+5. `PATCH /v1/queues/{id}` with `{"engine": "<engine url>"}` — on success the platform auto-nulls `generic_engine`.
+
+For a brand-new queue, `POST /v1/queues` accepts `engine` directly in the creation body (live-verified 2026-06-12) — the queue is born engine-bound with `generic_engine: null`, no create-then-PATCH step needed.
+
+### Reverting to the generic engine
+
+Live-verified 2026-06-12: `PATCH /v1/queues/{id}` with `{"engine": null, "generic_engine": "<generic url>"}` rebinds the queue to the generic engine in one call; then restore `rir_field_names` from a pre-conversion snapshot, or map back from each engine field's `pre_trained_field_id` (tabular fields restore to their `table_column_*` catalog names). The reverted queue can be converted again afterwards without errors (round-trip verified).
+
+### Deletion semantics
+
+- `DELETE /v1/engines/{id}` with active queues → 400 `engine_attached_to_active_queues`.
+- Queue deletion is async (202; can take up to 24 hours). Until it completes, engine deletion 400s with `engine_attached_to_queues_waiting_for_deletion` and dependent schema/engine-field deletes return 409.
+- Deletion order that works: detach or delete queues → wait for async deletion → delete engine fields → engine → schema.
+
+### Choosing an engine
+
+Decision guide for new queues and conversion candidates.
+
+- **Structural branch (a fact, not a quality judgment):** if any field you need extracted is missing from the pretrained catalog, the generic engine cannot emit it at all. The real choice is "custom engine vs. no extraction (formula/hook/MDH)", not "generic vs. custom". Standard doctype, full catalog coverage → generic engine, done.
+- **Standard doctype + a few custom fields:** a custom engine seeded with `pre_trained_field_id` mappings keeps catalog-grade extraction on the standard fields from day zero; only the custom fields start cold and learn from confirmed annotations. The main cost is the binding discipline above, not extraction quality.
+- **Existing queue:** convert when you need fields outside the catalog, or when captured-field quality has stalled despite threshold calibration (a custom engine learns from operator corrections; the generic engine does not learn org-specifically). Otherwise leave it on generic.
+- **Volume heuristic (heuristic, not verified):** custom fields need a steady stream of confirmed annotations to learn; on very low-volume queues prefer generic + formulas/hooks.
+
+---
+
 ## Dedicated Engines
 
-Custom AI models trained for specific document types or use cases.
+Legacy custom AI models trained for specific document types or use cases. For the current custom-engine model (`/v1/engines`, name-match binding), see [Extraction Engines](#extraction-engines).
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|

@@ -135,6 +135,17 @@ Required fields the user must populate on the JSON for new objects (filesystem-d
 | Engine | `name`, `description` |
 | EngineField | `name` |
 
+#### Engine-bound queues: schema editing rules
+
+Before editing extraction-related schema properties, check the queue's binding: `queue.json` → `engine`. If it is non-null, the queue uses a custom extraction engine and the API enforces different rules on every `prd2 push` of `schema.json` (these arrive as HTTP 400, listed per field):
+
+- Engine-extracted datapoints must have `rir_field_names: []` — adding any source (including `upload:`/`email_header:` prefixes) is rejected.
+- Engine-extracted datapoints must not have `disable_prediction: true`.
+- Every captured-looking datapoint (`ui_configuration.type` absent or `captured`) must have a matching engine field (`engine_fields/<schema_id>_[…].json` with `name` == the datapoint `id`). **Create the engine field first** — e.g. an `engine_fields/MyField_[].json` placeholder in the same push, which is safe because engine_field CREATEs run before schema updates in the dependency order — then add the datapoint.
+- Fields with `ui_configuration.type` of `formula`/`data`/`manual`/`reasoning` are exempt; the multivalue container's own `rir_field_names` is also exempt.
+
+Full rules, exact error texts, and the conversion recipe: rossum-sa:rossum-reference → "Extraction Engines".
+
 #### Deleting objects
 
 Delete the file (or folder) locally and run push. Push detects the deletion via `git status`, recovers the object's id from the `_[<id>]` segment in the path, and issues the DELETE. For `schema.json` and `inbox.json` (no id in the filename), the id is recovered from git history (staged or HEAD) — files that were never committed cannot be deleted via push.
@@ -207,7 +218,7 @@ Behavior:
 8. Pulls target directory to sync local files
 
 Not automatically migrated (must be set manually for newly created objects):
-- `queue.dedicated_engine` and `queue.generic_engine`
+- `queue.engine`, `queue.dedicated_engine` and `queue.generic_engine`
 - `queue.users` and `queue.workflows`
 - `hook.secrets` (use `secrets_file` in deploy file instead)
 
@@ -475,7 +486,10 @@ project_root/
       rules/
         RuleName_[ID].json
       engines/
-        EngineName_[ID].json
+        EngineName_[ID]/
+          engine.json
+          engine_fields/
+            FieldName_[ID].json
       workspaces/
         WorkspaceName_[ID]/
           workspace.json

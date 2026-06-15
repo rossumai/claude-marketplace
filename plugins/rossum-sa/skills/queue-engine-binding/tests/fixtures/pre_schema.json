@@ -1,0 +1,332 @@
+{
+  "content": [
+    {
+      "category": "section",
+      "id": "invoice_info",
+      "label": "Invoice Info",
+      "children": [
+        {
+          "rir_field_names": [
+            "document_id"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "document_id",
+          "label": "Document ID",
+          "type": "string"
+        },
+        {
+          "rir_field_names": [
+            "date_issue"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "date_issue",
+          "label": "Issue Date",
+          "type": "date",
+          "format": null
+        },
+        {
+          "rir_field_names": [
+            "date_due"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "date_due",
+          "label": "Due Date",
+          "type": "date",
+          "format": null
+        },
+        {
+          "rir_field_names": [
+            "document_type"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "document_type",
+          "label": "Document Type",
+          "type": "enum",
+          "options": [
+            {
+              "value": "tax_invoice",
+              "label": "Tax Invoice"
+            },
+            {
+              "value": "credit_note",
+              "label": "Credit Note"
+            },
+            {
+              "value": "proforma",
+              "label": "Proforma"
+            },
+            {
+              "value": "other",
+              "label": "Other"
+            }
+          ]
+        }
+      ],
+      "icon": null
+    },
+    {
+      "category": "section",
+      "id": "amounts_section",
+      "label": "Amounts",
+      "children": [
+        {
+          "rir_field_names": [
+            "amount_total",
+            "amount_due"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "amount_total",
+          "label": "Total Amount",
+          "type": "number",
+          "format": "# ##0.#"
+        },
+        {
+          "rir_field_names": [
+            "currency"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "currency",
+          "label": "Currency",
+          "type": "enum",
+          "options": [
+            {
+              "value": "aud",
+              "label": "AUD"
+            },
+            {
+              "value": "usd",
+              "label": "USD"
+            },
+            {
+              "value": "eur",
+              "label": "EUR"
+            },
+            {
+              "value": "gbp",
+              "label": "GBP"
+            },
+            {
+              "value": "czk",
+              "label": "CZK"
+            }
+          ]
+        },
+        {
+          "rir_field_names": [],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "amount_check",
+          "label": "Amount Check (formula)",
+          "disable_prediction": true,
+          "type": "number",
+          "ui_configuration": {
+            "type": "formula",
+            "edit": "disabled"
+          },
+          "formula": "field.amount_total",
+          "format": "# ##0.#"
+        }
+      ],
+      "icon": null
+    },
+    {
+      "category": "section",
+      "id": "vendor_section",
+      "label": "Vendor",
+      "children": [
+        {
+          "rir_field_names": [
+            "sender_name"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "sender_name",
+          "label": "Vendor Name",
+          "type": "string"
+        },
+        {
+          "rir_field_names": [
+            "sender_vat_id"
+          ],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "sender_vat_id",
+          "label": "Vendor VAT ID",
+          "type": "string"
+        },
+        {
+          "rir_field_names": [],
+          "constraints": {
+            "required": false
+          },
+          "default_value": null,
+          "category": "datapoint",
+          "id": "vendor_match",
+          "label": "Vendor Match (data)",
+          "disable_prediction": true,
+          "type": "enum",
+          "ui_configuration": {
+            "type": "data",
+            "edit": "enabled"
+          },
+          "options": [
+            {
+              "value": "matched",
+              "label": "Matched"
+            },
+            {
+              "value": "unmatched",
+              "label": "Unmatched"
+            }
+          ]
+        }
+      ],
+      "icon": null
+    },
+    {
+      "category": "section",
+      "id": "line_items_section",
+      "label": "Line Items",
+      "children": [
+        {
+          "rir_field_names": [
+            "line_items"
+          ],
+          "category": "multivalue",
+          "id": "line_items",
+          "label": "Line Items",
+          "children": {
+            "rir_field_names": [],
+            "category": "tuple",
+            "id": "line_item",
+            "label": "Line Item",
+            "children": [
+              {
+                "rir_field_names": [
+                  "table_column_code"
+                ],
+                "constraints": {
+                  "required": false
+                },
+                "default_value": null,
+                "category": "datapoint",
+                "id": "item_code",
+                "label": "Code",
+                "type": "string"
+              },
+              {
+                "rir_field_names": [
+                  "table_column_description"
+                ],
+                "constraints": {
+                  "required": false
+                },
+                "default_value": null,
+                "category": "datapoint",
+                "id": "item_description",
+                "label": "Description",
+                "type": "string"
+              },
+              {
+                "rir_field_names": [
+                  "table_column_quantity"
+                ],
+                "constraints": {
+                  "required": false
+                },
+                "default_value": null,
+                "category": "datapoint",
+                "id": "item_quantity",
+                "label": "Quantity",
+                "type": "number",
+                "format": "# ##0.#"
+              },
+              {
+                "rir_field_names": [
+                  "table_column_amount"
+                ],
+                "constraints": {
+                  "required": false
+                },
+                "default_value": null,
+                "category": "datapoint",
+                "id": "item_amount",
+                "label": "Unit Price",
+                "type": "number",
+                "format": "# ##0.#"
+              },
+              {
+                "rir_field_names": [
+                  "table_column_amount_total"
+                ],
+                "constraints": {
+                  "required": false
+                },
+                "default_value": null,
+                "category": "datapoint",
+                "id": "item_amount_total",
+                "label": "Line Total",
+                "type": "number",
+                "format": "# ##0.#"
+              },
+              {
+                "rir_field_names": [],
+                "constraints": {
+                  "required": false
+                },
+                "default_value": null,
+                "category": "datapoint",
+                "id": "item_note",
+                "label": "Note (data)",
+                "disable_prediction": true,
+                "type": "string",
+                "ui_configuration": {
+                  "type": "data",
+                  "edit": "enabled"
+                }
+              }
+            ]
+          },
+          "min_occurrences": null,
+          "max_occurrences": null,
+          "default_value": null,
+          "show_grid_by_default": false
+        }
+      ],
+      "icon": null
+    }
+  ]
+}

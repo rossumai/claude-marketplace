@@ -36,6 +36,7 @@ def test_queues_and_workspaces_are_discovered():
             "workspace": "Italy (DEV)",
             "environment": "dev-env",
             "schema_field_count": 3,
+            "engine": None,
         }
     ]
 
@@ -166,3 +167,10 @@ def test_multi_org_and_subdir_discovery(tmp_path):
     assert out["queue_count"] == 3
     assert out["workspace_count"] == 3
     assert {q["environment"] for q in out["queues"]} == {"org-a", "org-b"}
+
+
+def test_engine_bound_queue_is_flagged():
+    out = run_inspect(FIXTURES / "engine_bound")
+    by_name = {q["name"]: q for q in out["queues"]}
+    assert by_name["Engine Queue"]["engine"] == "https://example.rossum.app/api/v1/engines/40"
+    assert by_name["Generic Queue"]["engine"] is None

@@ -31,6 +31,7 @@ With the full picture from Phase 1, check for these issues:
 - **Contradictory rules** — rules where one requires what another forbids
 - **Environment drift** — configuration differences between dev/test/prod environments that look unintentional (not just ID differences)
 - **Plain-text secrets** — credentials, API keys, or secrets committed in plain text
+- **Engine-binding inconsistencies** — for each engine-bound queue (`queue.json` → `engine` non-null): captured datapoints with non-empty `rir_field_names`, with `disable_prediction: true`, or without a matching engine field name (compare schema datapoint ids against `engines/*/engine_fields/*.json` `name` values). The live API rejects these states, so any hit means a stale local tree or a change that will fail on the next push.
 - **Data Storage mismatches** — if the `rossum-api` MCP tools are available, verify MDH matching hook configs against live Data Storage:
   - Use `data_storage_list_collections` to check that every collection name referenced in matching configs actually exists
   - For each referenced collection, use `data_storage_list_indexes` and `data_storage_list_search_indexes` to retrieve its indexes
