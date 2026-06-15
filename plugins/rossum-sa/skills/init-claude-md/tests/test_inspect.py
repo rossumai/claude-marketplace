@@ -89,6 +89,51 @@ def test_subdir_layout_is_discovered():
     assert {h["name"] for h in out["hooks"]} == {"Validator"}
 
 
+def test_degenerate_prd_config_reports_unsupported(tmp_path):
+    # Umbrella-folder style config: a null directory key with empty org_id/api_base.
+    (tmp_path / "prd_config.yaml").write_text(
+        "directories:\n"
+        "  null:\n"
+        "    org_id:\n"
+        "    api_base:\n"
+        "    subdirectories:\n"
+        "      null:\n"
+        "        regex:\n"
+    )
+    out = run_inspect(tmp_path)
+    assert out["tool"] == "unknown"
+    assert out["supported"] is False
+
+
+def test_env_facts_org_id_and_api_base_are_captured():
+    out = run_inspect(FIXTURES / "prd2-subdirs")
+    d = out["directories"][0]
+    assert d["name"] == "dev-env"
+    assert d["org_id"] == "100"
+    assert d["api_base"] == "https://elis.rossum.ai/api/v1"
+
+
+def test_env_facts_default_to_empty_when_missing():
+    out = run_inspect(FIXTURES / "minimal")
+    d = out["directories"][0]
+    assert d["org_id"] == ""  # minimal fixture has api_base but no org_id
+    assert d["api_base"] == "https://elis.rossum.ai/api/v1"
+
+
+def test_env_facts_capture_non_eu1_cluster(tmp_path):
+    # api_base discriminates region/cluster — exercise a non-EU1 host (shared EU2).
+    (tmp_path / "prd_config.yaml").write_text(
+        "directories:\n"
+        "  prod:\n"
+        "    org_id: '7'\n"
+        "    api_base: https://shared-eu2.rossum.app/api/v1\n"
+    )
+    out = run_inspect(tmp_path)
+    d = out["directories"][0]
+    assert d["org_id"] == "7"
+    assert d["api_base"] == "https://shared-eu2.rossum.app/api/v1"
+
+
 def test_multi_org_and_subdir_discovery(tmp_path):
     # org-a declares two subdirectories; org-b declares none (falls back to <org>/).
     (tmp_path / "prd_config.yaml").write_text(

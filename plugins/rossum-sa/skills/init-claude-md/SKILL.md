@@ -46,7 +46,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/inspect.py <project_dir>
 Capture stdout as JSON. Check the `tool` field first:
 
 - If `tool` is `"prd2"`, proceed — the JSON also contains `project_name`, `environments`, `workspace_count`, `queue_count`, `queues[]` (each with `name`, `workspace`, `environment`, `schema_field_count`, `engine`), `hook_count`, `hooks[]`, and `integration_target`.
-- If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}`), **stop** and tell the user: "This doesn't look like a prd2 project (no `prd_config.yaml`). `init-claude-md` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
+- If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}` — also returned for a degenerate `prd_config.yaml` with no usable directory entries), **stop** and tell the user: "This doesn't look like a usable prd2 project — there's no `prd_config.yaml`, or it has no usable directory entries (each needs an `org_id` or `api_base`). `init-claude-md` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
 
 ### Step 3: Render the template
 
@@ -55,7 +55,9 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placehol
 | Placeholder | Value source |
 |---|---|
 | `{{project_name}}` | `facts["project_name"]` |
+| `{{generated_date}}` | Today's date, `YYYY-MM-DD`. |
 | `{{environments_joined}}` | `", ".join(facts["environments"])` |
+| `{{environments_block}}` | One bullet per entry in `facts["directories"]`: `- <name>: org_id <org_id>, api_base <api_base>` (write `unknown` for an empty value). Final line: ``- credentials in `<env>/credentials.yaml` (gitignored, along with secrets & hook_sync_configs)`` |
 | `{{queue_count}}` | `facts["queue_count"]` |
 | `{{workspace_count}}` | `facts["workspace_count"]` |
 | `{{hook_count}}` | `facts["hook_count"]` |
