@@ -87,13 +87,12 @@ def test_list_queues_projects_and_compacts(monkeypatch):
     # output: only _QUEUE_FIELDS kept, URL refs compacted to bare ids, secret dropped
     out = emitted_payload(emitted)
     assert out["total"] == 1
-    # workspace/schema are in _URL_REF_FIELDS → compacted to bare integer IDs
-    # engine/dedicated_engine/generic_engine are NOT in _URL_REF_FIELDS:
-    #   engine URL passes through as-is (full URL string), None fields stay None
+    # workspace/schema and the engine triple are all in _URL_REF_FIELDS → non-null
+    # URLs compacted to bare integer IDs; None engine bindings stay None
     assert out["results"] == [{
         "id": 7, "name": "Q",
         "workspace": 3, "schema": 4,
-        "engine": f"{BASE}/api/v1/engines/99",
+        "engine": 99,
         "dedicated_engine": None,
         "generic_engine": None,
     }]
