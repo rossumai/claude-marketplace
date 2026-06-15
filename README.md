@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-15 skills · 12 reference packs · 71 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+15 skills · 13 reference packs · 71 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -99,6 +99,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **Structured Formats Import (SFI)** — XML/JSON import setup, XPath/JMESPath selectors, e-invoicing (ZUGFeRD, X-Rechnung)
 - **Approval workflows** — read-only workflow/step/run/activity API + the `reset` action, step modes & conditions, approver assignees (a paid, Rossum-configured feature)
 - **Business rules & validation** — native Rules vs. the legacy Business Rules Validation extension, conditions, actions, automation blocking
+- **Email Body Converter** — hosted webhook that turns email HTML bodies (and HTML/TXT attachments or uploads) into PDF documents for extraction — setup, full settings schema, regional availability, body-only email recipes
 
 ## 💡 What can you do with this?
 
