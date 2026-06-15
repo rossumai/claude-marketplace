@@ -18,7 +18,8 @@ from pathlib import Path
 def detect_tool(project_dir: Path) -> str:
     """Identify which deployment tool manages this project. Extensible: add a branch
     here, a sibling inspector, and a fragments/<tool>.md to support another deployment
-    tool/format. Currently only prd2 is supported."""
+    tool/format. Currently only prd2 is supported; main() additionally rejects
+    degenerate configs with no usable directory entries."""
     if (project_dir / "prd_config.yaml").is_file():
         return "prd2"
     return "unknown"
@@ -27,9 +28,10 @@ def detect_tool(project_dir: Path) -> str:
 def parse_prd_config(project_dir: Path) -> dict:
     """Parse prd_config.yaml without a yaml dependency.
 
-    Captures project_name, the top-level directory entries (Rossum orgs), and the
-    subdirectories declared under each. prd2's machine-generated 2-space indentation
-    is assumed; nested subdirectory keys (e.g. regex) are intentionally ignored.
+    Captures project_name and the top-level directory entries (Rossum orgs) with
+    their org_id, api_base, and declared subdirectories. prd2's machine-generated
+    2-space indentation is assumed; nested subdirectory keys (e.g. regex) are
+    intentionally ignored.
     """
     cfg_path = project_dir / "prd_config.yaml"
     if not cfg_path.is_file():
@@ -47,20 +49,28 @@ def parse_prd_config(project_dir: Path) -> dict:
         indent = len(line) - len(line.lstrip())
         stripped = line.strip()
         key = stripped.split(":", 1)[0].strip()
+        val = stripped.partition(":")[2].strip().strip('"').strip("'")
         if indent == 0:
             if re.match(r"^project_name\s*:", line):
-                project_name = line.split(":", 1)[1].strip().strip('"').strip("'")
+                project_name = val
             in_directories = key == "directories"
             cur = None
             in_subdirs = False
         elif not in_directories:
             continue
         elif indent == 2 and stripped.endswith(":"):
-            cur = {"name": key, "subdirs": []}
+            cur = {"name": key, "org_id": "", "api_base": "", "subdirs": []}
             directories.append(cur)
             in_subdirs = False
         elif indent == 4 and cur is not None:
-            in_subdirs = key == "subdirectories"
+            if key == "org_id":
+                cur["org_id"] = val
+                in_subdirs = False
+            elif key == "api_base":
+                cur["api_base"] = val
+                in_subdirs = False
+            else:
+                in_subdirs = key == "subdirectories"
         elif indent == 6 and cur is not None and in_subdirs:
             cur["subdirs"].append(key)
 
@@ -216,6 +226,11 @@ def main(project_dir_str: str) -> None:
 
     facts = parse_prd_config(project_dir)
     facts["tool"] = "prd2"
+    if not any(d["org_id"] or d["api_base"] for d in facts["directories"]):
+        # Degenerate config (e.g. an umbrella folder's empty template) — not a real project.
+        json.dump({"tool": "unknown", "supported": False}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
     directories = facts["directories"]
     queues = discover_queues(project_dir, directories)
     hooks = discover_hooks(project_dir, directories)
