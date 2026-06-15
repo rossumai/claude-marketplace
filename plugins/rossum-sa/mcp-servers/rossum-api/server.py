@@ -160,7 +160,7 @@ def _probe_token(base_url, token):
     """Validate a token with a lightweight API call. Returns (ok, error_detail)."""
     req = urllib.request.Request(
         f"{base_url}/api/v1/auth/user",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=_auth_headers(token=token),
         method="GET",
     )
     try:
@@ -208,6 +208,26 @@ def _invalidate_connection():
     _token_validated = False
 
 
+_SERVER_VERSION = "0.23.0"
+_USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
+_current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
+
+
+def _auth_headers(extra=None, token=None):
+    """Auth + telemetry headers for every Rossum API request.
+
+    Always sets Authorization (Bearer) and a stable User-Agent. When a tool call
+    is in flight, adds X-Rossum-MCP-Tool so server-side telemetry can attribute
+    traffic per tool. `extra` merges in/overrides (e.g. Content-Type). `token`
+    overrides _cached_token (used by the pre-auth validation probe)."""
+    headers = {"Authorization": f"Bearer {token or _cached_token}", "User-Agent": _USER_AGENT}
+    if _current_tool:
+        headers["X-Rossum-MCP-Tool"] = _current_tool
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 def _ensure_connection(request_id):
     """Guard: return cached (base_url, token) or send an error directing to rossum_set_token."""
     if _token_validated and _cached_base_url and _cached_token:
@@ -235,7 +255,7 @@ def _http_request(request_id, url, *, method="GET", body=None, parse_json=True):
     if not token:
         return None
 
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers()
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -274,7 +294,7 @@ def _http_request_silent(url, *, method="GET"):
     if not token:
         return None
     req = urllib.request.Request(
-        url, data=None, headers={"Authorization": f"Bearer {token}"}, method=method,
+        url, data=None, headers=_auth_headers(), method=method,
     )
     try:
         with urllib.request.urlopen(req, timeout=30, context=_ssl_context) as resp:
@@ -296,7 +316,7 @@ def _http_request_status(url, *, method="GET", body=None):
     token = _cached_token
     if not token:
         return None, "Not connected to Rossum."
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers()
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -326,9 +346,7 @@ def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_t
     token = _cached_token
     if not token:
         return None
-    headers = {"Authorization": f"Bearer {token}"}
-    if content_type:
-        headers["Content-Type"] = content_type
+    headers = _auth_headers({"Content-Type": content_type} if content_type else None)
     req = urllib.request.Request(url, data=raw_body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
@@ -350,7 +368,7 @@ def _http_get_bytes(request_id, url):
     token = _cached_token
     if not token:
         return None
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+    req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
     try:
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
             return resp.read()
@@ -361,6 +379,38 @@ def _http_get_bytes(request_id, url):
     except Exception as e:
         tool_result(request_id, f"Error: {e}", is_error=True)
         return None
+
+
+def _http_get_typed(request_id, url):
+    """GET that distinguishes JSON from non-JSON. Returns (content_type, parsed_json).
+
+    JSON response -> ("application/json", <parsed dict/list>). Non-JSON (PDF, zip,
+    csv, ...) -> (content_type, None), body not read. On error: sends a tool_result
+    and returns (None, None). urllib follows 3xx automatically, so a tasks/{id} 303
+    resolves to its result object."""
+    if not _cached_token:
+        return (None, None)
+    req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
+            ctype = resp.headers.get_content_type()
+            if ctype == "application/json":
+                return (ctype, json.loads(resp.read().decode("utf-8")))
+            return (ctype, None)
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else str(e)
+        if e.code == 401:
+            _invalidate_connection()
+            tool_result(request_id,
+                        f"Authentication failed (HTTP 401). Token may be expired. "
+                        f"Call rossum_set_token to re-authenticate.\n{error_body}",
+                        is_error=True)
+            return (None, None)
+        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        return (None, None)
+    except Exception as e:
+        tool_result(request_id, f"Error: {e}", is_error=True)
+        return (None, None)
 
 
 def _data_storage_call(request_id, path, body):
@@ -455,14 +505,19 @@ _URL_REF_FIELDS = frozenset({
 })
 
 
-def _paginate(request_id, url, *, max_results=None, pick_fields=None):
-    """Auto-paginate a Rossum list endpoint. Returns (results, api_total) or None on error."""
+def _paginate(request_id, url, *, max_results=None, pick_fields=None, initial_page=None):
+    """Auto-paginate a Rossum list endpoint. Returns (results, api_total) or None on error.
+
+    `initial_page` (an already-parsed first page) is used in place of fetching page 1,
+    so callers that already read page 1 don't pay for a second round-trip."""
     all_results = []
     api_total = None
+    page = initial_page
     while url:
-        page = _http_request(request_id, url)
         if page is None:
-            return None
+            page = _http_request(request_id, url)
+            if page is None:
+                return None
         if api_total is None:
             api_total = page.get("pagination", {}).get("total")
         for item in page.get("results", []):
@@ -479,6 +534,7 @@ def _paginate(request_id, url, *, max_results=None, pick_fields=None):
         if _validate_base_url(next_url) != _validate_base_url(url):
             break
         url = next_url
+        page = None
     return (all_results, api_total)
 
 
@@ -993,6 +1049,81 @@ def handle_set_token(request_id, arguments):
 )
 def handle_whoami(request_id, arguments):
     _rossum_get(request_id, "/api/v1/auth/user")
+
+
+_GENERIC_GET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": (
+                "Rossum API path beginning '/api/v1/' (e.g. '/api/v1/engines', "
+                "'/api/v1/automation_blockers?annotation=123'), or a full object URL "
+                "returned by another call. Query string allowed."
+            ),
+        },
+        "max_results": {
+            "type": "integer",
+            "description": "Cap for paginated list endpoints (default 100).",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+@_tool(
+    "rossum_get",
+    "Read-only escape hatch: GET any Rossum API resource that has no dedicated tool "
+    "(engines, engine_fields, labels, automation_blockers, workflows, triggers, "
+    "relations, pages, tasks, ...). GET-only — cannot create, update, or delete. Pass "
+    "an '/api/v1/...' path. Full path catalog: the rossum-reference 'API coverage' doc "
+    "(api-coverage.md). Prefer a dedicated tool when one exists.",
+    _GENERIC_GET_SCHEMA,
+    annotations=_READ_ONLY,
+)
+def handle_rossum_get(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    raw = (arguments.get("path") or "").strip()
+    if not raw:
+        tool_result(request_id, "path is required.", is_error=True)
+        return
+    if raw.startswith(("http://", "https://")):
+        if _validate_base_url(raw) != _validate_base_url(base_url):
+            tool_result(request_id,
+                        f"Refusing: URL is not on the connected org ({base_url}).",
+                        is_error=True)
+            return
+        parsed = urlparse(raw)
+        path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    elif raw.startswith("/api/v1/"):
+        path = raw
+    else:
+        tool_result(request_id,
+                    "path must start with '/api/v1/' or be a full org URL.",
+                    is_error=True)
+        return
+    url = f"{base_url}{path}"
+    ctype, payload = _http_get_typed(request_id, url)
+    if ctype is None:
+        return  # error already sent (or token vanished — pre-existing guard pattern)
+    if ctype != "application/json":
+        tool_result(request_id, json.dumps({
+            "content_type": ctype,
+            "url": url,
+            "note": "Non-JSON (binary/export) response — open the URL to retrieve it.",
+        }, indent=2))
+        return
+    if isinstance(payload, dict) and "results" in payload and "pagination" in payload:
+        result = _paginate(request_id, url, max_results=arguments.get("max_results", 100), initial_page=payload)
+        if result is not None:
+            results, api_total = result
+            tool_result(request_id, json.dumps(
+                {"total": api_total, "returned": len(results), "results": results}, indent=2))
+        return
+    tool_result(request_id, json.dumps(payload, indent=2))
 
 
 @_tool(
@@ -1624,7 +1755,7 @@ def handle_create_user(request_id, arguments):
     "rossum_list_audit_logs",
     "List audit log entries. Requires admin or organization group admin role AND the audit log "
     "feature flag enabled on the organization. If this call returns HTTP 403, the feature is "
-    "likely disabled — check rossum_get_organization to verify feature flags. "
+    "likely disabled — check rossum_get with path /api/v1/organizations/{id} to verify feature flags. "
     "Logs are retained for 1 year. Returns up to max_results entries (default 100).",
     {
         "type": "object",
@@ -1659,27 +1790,6 @@ def handle_list_audit_logs(request_id, arguments):
     if "action" in arguments:
         params.append(("action", arguments["action"]))
     _rossum_list(request_id, "/api/v1/audit_logs", params, max_results=max_results)
-
-
-@_tool(
-    "rossum_get_hook_secret_keys",
-    "Retrieves the list of secret key names configured on a hook. "
-    "Only key names are returned — values are encrypted and cannot be retrieved via the API.",
-    {
-        "type": "object",
-        "required": ["hook_id"],
-        "properties": {
-            "hook_id": {
-                "type": "integer",
-                "description": "The hook ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_hook_secret_keys(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}/secrets_keys")
 
 
 @_tool(
@@ -3163,27 +3273,6 @@ def handle_get_workspace(request_id, arguments):
 
 
 @_tool(
-    "rossum_get_organization",
-    "Retrieves details of the organization including name, trial status, and feature flags. "
-    "The organization ID can be found in rossum_whoami output.",
-    {
-        "type": "object",
-        "required": ["organization_id"],
-        "properties": {
-            "organization_id": {
-                "type": "integer",
-                "description": "The organization ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_organization(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/organizations/{arguments['organization_id']}")
-
-
-@_tool(
     "rossum_get_document",
     "Retrieves metadata of a document (original file name, MIME type, creation time, "
     "annotations). Documents are referenced by annotations — extract the document ID "
@@ -3911,27 +4000,6 @@ def handle_refire_annotation(request_id, arguments):
 
 
 @_tool(
-    "rossum_get_inbox",
-    "Retrieves details of a queue's inbox including email address, bounce email, "
-    "and document processing settings. The inbox ID is found in the queue detail response.",
-    {
-        "type": "object",
-        "required": ["inbox_id"],
-        "properties": {
-            "inbox_id": {
-                "type": "integer",
-                "description": "The inbox ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_inbox(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/inboxes/{arguments['inbox_id']}")
-
-
-@_tool(
     "rossum_list_connectors",
     "Lists all connectors (export integrations) in the Rossum organization. "
     "Connectors define where confirmed documents are exported to.",
@@ -3952,28 +4020,6 @@ def handle_list_connectors(request_id, arguments):
     if "queue" in arguments:
         params.append(("queue", arguments["queue"]))
     _rossum_list(request_id, "/api/v1/connectors", params, pick_fields=_CONNECTOR_FIELDS)
-
-
-@_tool(
-    "rossum_get_connector",
-    "Retrieves full details of a single connector (export integration) including "
-    "service URL, authorization, parameters, and queue mapping. "
-    "Use rossum_list_connectors first to find connector IDs.",
-    {
-        "type": "object",
-        "required": ["connector_id"],
-        "properties": {
-            "connector_id": {
-                "type": "integer",
-                "description": "The connector ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_connector(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/connectors/{arguments['connector_id']}")
 
 
 @_tool(
@@ -4066,27 +4112,6 @@ def handle_list_email_threads(request_id, arguments):
     )
 
 
-@_tool(
-    "rossum_get_email_thread",
-    "Retrieves full details of a single email thread including root email, reply status, "
-    "annotation counts, and labels. Use rossum_list_email_threads first to find thread IDs.",
-    {
-        "type": "object",
-        "required": ["thread_id"],
-        "properties": {
-            "thread_id": {
-                "type": "integer",
-                "description": "The email thread ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_email_thread(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/email_threads/{arguments['thread_id']}")
-
-
 # --- Main loop ---
 
 
@@ -4109,7 +4134,7 @@ def main():
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rossum-api", "version": "0.22.0"},
+                    "serverInfo": {"name": "rossum-api", "version": _SERVER_VERSION},
                     "instructions": (
                         "SAFETY RULE — confirmation before writes: "
                         "Do NOT call any write, update, patch, create, or delete tool "
@@ -4136,7 +4161,12 @@ def main():
                 name = params.get("name")
                 handler = HANDLERS.get(name)
                 if handler:
-                    handler(request_id, params.get("arguments") or {})
+                    global _current_tool
+                    _current_tool = name
+                    try:
+                        handler(request_id, params.get("arguments") or {})
+                    finally:
+                        _current_tool = None
                 else:
                     tool_result(request_id, f"Unknown tool: {name}", is_error=True)
             elif method == "ping":

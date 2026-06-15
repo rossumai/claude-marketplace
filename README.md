@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 13 reference packs · 71 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 13 reference packs · 67 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -146,6 +146,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 |------|-------------|
 | `rossum_set_token` | Authenticate with a Rossum environment (API token, username+password, or pasted curl connection string) |
 | `rossum_whoami` | Show authenticated user, organization, and role |
+| `rossum_get` | Read-only GET of any API resource without a dedicated tool (engines, labels, automation_blockers, …) |
 
 #### Rossum API
 
@@ -165,7 +166,6 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) |
 | `rossum_delete_hook` | ⚠️ Delete a hook |
 | `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues) |
-| `rossum_get_hook_secret_keys` | List secret key names on a hook |
 | `rossum_extract_export_template` | Pull a Custom Format Templating export template out of a hook's `export_configs` into editable text |
 | `rossum_generate_export_settings` | Turn a local Jinja2 template into the `export_configs` settings block to push back |
 | `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |
@@ -189,14 +189,10 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_refire_annotation` | ✏️ Inner-loop re-fire primitive (`mode=validate\|toggle\|reupload`) with try/finally cancel, dedup auto-restore, and merged compact response |
 | `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); self-managing start→ops→release |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
-| `rossum_get_inbox` | Get inbox details (email address, config) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |
-| `rossum_get_connector` | Get full connector details |
 | `rossum_list_emails` | List emails (filter by queue, type) |
 | `rossum_get_email` | Get full email details (subject, body, attachments) |
 | `rossum_list_email_threads` | List email threads (filter by queue) |
-| `rossum_get_email_thread` | Get email thread details (replies, annotations) |
-| `rossum_get_organization` | Get organization details and feature flags |
 | `rossum_list_groups` | List available user roles (groups) and their IDs |
 | `rossum_list_users` | List organization users |
 | `rossum_create_user` | ✏️ Create a new user in the organization |

@@ -61,13 +61,6 @@
       "rossum_list_connectors"
     ]
   },
-  "GET /connectors/{connectorID}": {
-    "decision": "covered",
-    "summary": "Retrieve connector",
-    "tools": [
-      "rossum_get_connector"
-    ]
-  },
   "GET /documents/{documentID}": {
     "decision": "covered",
     "summary": "Retrieve document",
@@ -80,13 +73,6 @@
     "summary": "List email threads",
     "tools": [
       "rossum_list_email_threads"
-    ]
-  },
-  "GET /email_threads/{emailThreadID}": {
-    "decision": "covered",
-    "summary": "Retrieve email thread",
-    "tools": [
-      "rossum_get_email_thread"
     ]
   },
   "GET /emails": {
@@ -133,27 +119,6 @@
       "rossum_extract_export_template",
       "rossum_generate_export_payload",
       "rossum_get_hook"
-    ]
-  },
-  "GET /hooks/{hookID}/secrets_keys": {
-    "decision": "covered",
-    "summary": "Retrieve secret keys list",
-    "tools": [
-      "rossum_get_hook_secret_keys"
-    ]
-  },
-  "GET /inboxes/{inboxID}": {
-    "decision": "covered",
-    "summary": "Retrieve inbox",
-    "tools": [
-      "rossum_get_inbox"
-    ]
-  },
-  "GET /organizations/{organizationID}": {
-    "decision": "covered",
-    "summary": "Retrieve organization",
-    "tools": [
-      "rossum_get_organization"
     ]
   },
   "GET /queues": {

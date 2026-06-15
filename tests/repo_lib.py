@@ -81,8 +81,14 @@ def mcp_tool_count() -> int:
 
 
 def server_version() -> str | None:
+    text = SERVER_PY.read_text(encoding="utf-8")
+    # Prefer the module-level _SERVER_VERSION constant (canonical source of truth).
+    m = re.search(r'^_SERVER_VERSION\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if m:
+        return m.group(1)
+    # Fall back to a literal version string in the serverInfo dict.
     m = re.search(
         r'"serverInfo"\s*:\s*\{[^}]*"version"\s*:\s*"([^"]+)"',
-        SERVER_PY.read_text(encoding="utf-8"),
+        text,
     )
     return m.group(1) if m else None

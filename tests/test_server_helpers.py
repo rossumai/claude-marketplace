@@ -7,6 +7,7 @@ HTTP boundary (server._http_request), the same approach the contract tests use.
 """
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -153,3 +154,104 @@ def test_paginate_returns_none_on_error(monkeypatch):
     url = "https://elis.rossum.ai/api/v1/queues?page=1"
     _patch_http(monkeypatch, {url: None})   # _http_request signals error with None
     assert server._paginate(1, url) is None
+
+
+def test_auth_headers_includes_ua_without_marker(monkeypatch):
+    monkeypatch.setattr(server, "_cached_token", "tok")
+    monkeypatch.setattr(server, "_current_tool", None)
+    h = server._auth_headers()
+    assert h["Authorization"] == "Bearer tok"
+    assert h["User-Agent"] == f"rossum-sa-mcp/{server._SERVER_VERSION}"
+    assert "X-Rossum-MCP-Tool" not in h
+
+
+def test_auth_headers_adds_marker_and_extra(monkeypatch):
+    monkeypatch.setattr(server, "_cached_token", "tok")
+    monkeypatch.setattr(server, "_current_tool", "rossum_get")
+    h = server._auth_headers({"Content-Type": "application/json"})
+    assert h["X-Rossum-MCP-Tool"] == "rossum_get"
+    assert h["Content-Type"] == "application/json"
+    assert h["Authorization"] == "Bearer tok"
+    assert h["User-Agent"] == f"rossum-sa-mcp/{server._SERVER_VERSION}"
+
+
+# --- rossum_get (handle_rossum_get) ---
+
+def _connect(monkeypatch):
+    monkeypatch.setattr(server, "_cached_base_url", "https://acme.rossum.app")
+    monkeypatch.setattr(server, "_cached_token", "tok")
+    monkeypatch.setattr(server, "_token_validated", True)
+
+
+def _capture_result(monkeypatch):
+    out = {}
+    monkeypatch.setattr(server, "tool_result",
+                        lambda rid, text, is_error=False: out.update(text=text, is_error=is_error))
+    return out
+
+
+def test_rossum_get_rejects_foreign_host(monkeypatch):
+    _connect(monkeypatch)
+    out = _capture_result(monkeypatch)
+    server.handle_rossum_get("1", {"path": "https://evil.example.com/api/v1/queues"})
+    assert out["is_error"] and "connected org" in out["text"]
+
+
+def test_rossum_get_rejects_non_api_path(monkeypatch):
+    _connect(monkeypatch)
+    out = _capture_result(monkeypatch)
+    server.handle_rossum_get("1", {"path": "/svc/data-storage/api/x"})
+    assert out["is_error"]
+
+
+def test_rossum_get_single_object(monkeypatch):
+    _connect(monkeypatch)
+    out = _capture_result(monkeypatch)
+    monkeypatch.setattr(server, "_http_get_typed",
+                        lambda rid, url: ("application/json", {"id": 5, "name": "q"}))
+    server.handle_rossum_get("1", {"path": "/api/v1/engines/5"})
+    assert json.loads(out["text"]) == {"id": 5, "name": "q"}
+    assert not out.get("is_error")
+
+
+def test_rossum_get_paginates_list(monkeypatch):
+    _connect(monkeypatch)
+    out = _capture_result(monkeypatch)
+    monkeypatch.setattr(server, "_http_get_typed",
+                        lambda rid, url: ("application/json",
+                                          {"pagination": {"total": 2}, "results": [{"id": 1}]}))
+    monkeypatch.setattr(server, "_paginate", lambda rid, url, **kw: ([{"id": 1}, {"id": 2}], 2))
+    server.handle_rossum_get("1", {"path": "/api/v1/engines"})
+    body = json.loads(out["text"])
+    assert body == {"total": 2, "returned": 2, "results": [{"id": 1}, {"id": 2}]}
+
+
+def test_rossum_get_non_json_returns_pointer(monkeypatch):
+    _connect(monkeypatch)
+    out = _capture_result(monkeypatch)
+    monkeypatch.setattr(server, "_http_get_typed", lambda rid, url: ("application/pdf", None))
+    server.handle_rossum_get("1", {"path": "/api/v1/documents/9/content"})
+    body = json.loads(out["text"])
+    assert body["content_type"] == "application/pdf" and body["url"].endswith("/documents/9/content")
+
+
+def test_rossum_get_paginate_error_is_silent(monkeypatch):
+    _connect(monkeypatch)
+    out = _capture_result(monkeypatch)
+    monkeypatch.setattr(server, "_http_get_typed",
+                        lambda rid, url: ("application/json",
+                                          {"pagination": {}, "results": []}))
+    monkeypatch.setattr(server, "_paginate", lambda rid, url, **kw: None)
+    server.handle_rossum_get("1", {"path": "/api/v1/engines"})
+    assert not out  # no duplicate tool_result on pagination error
+
+
+def test_paginate_uses_initial_page_without_refetch(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_http_request",
+                        lambda rid, u, **kw: calls.append(u) or None)
+    first = {"pagination": {"total": 1, "next": None}, "results": [{"id": 1}]}
+    results, total = server._paginate("1", "https://acme.rossum.app/api/v1/engines",
+                                      initial_page=first)
+    assert results == [{"id": 1}] and total == 1
+    assert calls == []  # page 1 came from initial_page, no fetch
