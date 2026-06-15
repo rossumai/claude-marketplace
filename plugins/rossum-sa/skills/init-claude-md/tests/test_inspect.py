@@ -119,6 +119,20 @@ def test_env_facts_default_to_empty_when_missing():
     assert d["api_base"] == "https://elis.rossum.ai/api/v1"
 
 
+def test_env_facts_capture_non_eu1_cluster(tmp_path):
+    # api_base discriminates region/cluster — exercise a non-EU1 host (shared EU2).
+    (tmp_path / "prd_config.yaml").write_text(
+        "directories:\n"
+        "  prod:\n"
+        "    org_id: '7'\n"
+        "    api_base: https://shared-eu2.rossum.app/api/v1\n"
+    )
+    out = run_inspect(tmp_path)
+    d = out["directories"][0]
+    assert d["org_id"] == "7"
+    assert d["api_base"] == "https://shared-eu2.rossum.app/api/v1"
+
+
 def test_multi_org_and_subdir_discovery(tmp_path):
     # org-a declares two subdirectories; org-b declares none (falls back to <org>/).
     (tmp_path / "prd_config.yaml").write_text(
