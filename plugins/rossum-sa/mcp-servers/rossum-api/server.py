@@ -451,7 +451,7 @@ _URL_REF_FIELDS = frozenset({
     "queue", "workspace", "schema", "hooks", "queues", "run_after",
     "token_owner", "organization", "document", "modifier", "inbox",
     "parent", "children", "email_thread", "root_email", "documents",
-    "annotations",
+    "annotations", "engine", "dedicated_engine", "generic_engine",
 })
 
 
