@@ -16,7 +16,7 @@ _HELPER_METHOD = {
     "_rossum_post": "POST", "_rossum_patch": "PATCH", "_rossum_delete": "DELETE",
 }
 # Lower-level HTTP helpers: method is parsed from a method="X" kwarg (default GET).
-_HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_raw", "_http_get_bytes")
+_HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_request_raw", "_http_get_bytes")
 
 
 def normalize_path(path: str) -> str:

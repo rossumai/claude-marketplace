@@ -65,6 +65,19 @@ def test_extract_tool_endpoints_includes_silent_variant():
     assert "rossum_cancel_annotation" in te[("POST", "/annotations/{}/cancel")]
 
 
+def test_extract_tool_endpoints_matches_request_raw():
+    # Regression: the helper list named "_http_raw" (typo) instead of "_http_request_raw",
+    # so upload-style tools calling _http_request_raw were never auto-mapped to an endpoint.
+    src = '''
+@_tool("rossum_upload", "d", {"type": "object"})
+def handle_upload(request_id, arguments):
+    _http_request_raw(request_id, f"{base_url}/api/v1/uploads", method="POST", raw_body=b"")
+'''
+    te = coverage.extract_tool_endpoints(src)
+    assert ("POST", "/uploads") in te
+    assert "rossum_upload" in te[("POST", "/uploads")]
+
+
 def test_seed_coverage_map_is_covered_only():
     inv = build.extract_inventory(SPEC)
     cmap = coverage.seed_coverage_map(inv, coverage.extract_tool_endpoints(SERVER_SRC))
