@@ -1755,7 +1755,7 @@ def handle_create_user(request_id, arguments):
     "rossum_list_audit_logs",
     "List audit log entries. Requires admin or organization group admin role AND the audit log "
     "feature flag enabled on the organization. If this call returns HTTP 403, the feature is "
-    "likely disabled — check rossum_get_organization to verify feature flags. "
+    "likely disabled — check rossum_get with path /api/v1/organizations/{id} to verify feature flags. "
     "Logs are retained for 1 year. Returns up to max_results entries (default 100).",
     {
         "type": "object",
@@ -1790,27 +1790,6 @@ def handle_list_audit_logs(request_id, arguments):
     if "action" in arguments:
         params.append(("action", arguments["action"]))
     _rossum_list(request_id, "/api/v1/audit_logs", params, max_results=max_results)
-
-
-@_tool(
-    "rossum_get_hook_secret_keys",
-    "Retrieves the list of secret key names configured on a hook. "
-    "Only key names are returned — values are encrypted and cannot be retrieved via the API.",
-    {
-        "type": "object",
-        "required": ["hook_id"],
-        "properties": {
-            "hook_id": {
-                "type": "integer",
-                "description": "The hook ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_hook_secret_keys(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}/secrets_keys")
 
 
 @_tool(
@@ -3294,27 +3273,6 @@ def handle_get_workspace(request_id, arguments):
 
 
 @_tool(
-    "rossum_get_organization",
-    "Retrieves details of the organization including name, trial status, and feature flags. "
-    "The organization ID can be found in rossum_whoami output.",
-    {
-        "type": "object",
-        "required": ["organization_id"],
-        "properties": {
-            "organization_id": {
-                "type": "integer",
-                "description": "The organization ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_organization(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/organizations/{arguments['organization_id']}")
-
-
-@_tool(
     "rossum_get_document",
     "Retrieves metadata of a document (original file name, MIME type, creation time, "
     "annotations). Documents are referenced by annotations — extract the document ID "
@@ -4042,27 +4000,6 @@ def handle_refire_annotation(request_id, arguments):
 
 
 @_tool(
-    "rossum_get_inbox",
-    "Retrieves details of a queue's inbox including email address, bounce email, "
-    "and document processing settings. The inbox ID is found in the queue detail response.",
-    {
-        "type": "object",
-        "required": ["inbox_id"],
-        "properties": {
-            "inbox_id": {
-                "type": "integer",
-                "description": "The inbox ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_inbox(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/inboxes/{arguments['inbox_id']}")
-
-
-@_tool(
     "rossum_list_connectors",
     "Lists all connectors (export integrations) in the Rossum organization. "
     "Connectors define where confirmed documents are exported to.",
@@ -4083,28 +4020,6 @@ def handle_list_connectors(request_id, arguments):
     if "queue" in arguments:
         params.append(("queue", arguments["queue"]))
     _rossum_list(request_id, "/api/v1/connectors", params, pick_fields=_CONNECTOR_FIELDS)
-
-
-@_tool(
-    "rossum_get_connector",
-    "Retrieves full details of a single connector (export integration) including "
-    "service URL, authorization, parameters, and queue mapping. "
-    "Use rossum_list_connectors first to find connector IDs.",
-    {
-        "type": "object",
-        "required": ["connector_id"],
-        "properties": {
-            "connector_id": {
-                "type": "integer",
-                "description": "The connector ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_connector(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/connectors/{arguments['connector_id']}")
 
 
 @_tool(
@@ -4195,27 +4110,6 @@ def handle_list_email_threads(request_id, arguments):
         request_id, "/api/v1/email_threads", params,
         max_results=max_results, pick_fields=_EMAIL_THREAD_FIELDS,
     )
-
-
-@_tool(
-    "rossum_get_email_thread",
-    "Retrieves full details of a single email thread including root email, reply status, "
-    "annotation counts, and labels. Use rossum_list_email_threads first to find thread IDs.",
-    {
-        "type": "object",
-        "required": ["thread_id"],
-        "properties": {
-            "thread_id": {
-                "type": "integer",
-                "description": "The email thread ID.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    annotations=_READ_ONLY,
-)
-def handle_get_email_thread(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/email_threads/{arguments['thread_id']}")
 
 
 # --- Main loop ---

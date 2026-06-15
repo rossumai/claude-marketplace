@@ -74,7 +74,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `GET /connectors` | ✅ covered | rossum_list_connectors |
 | `POST /connectors` | ⬜ pending |  |
 | `DELETE /connectors/{connectorID}` | ⬜ pending |  |
-| `GET /connectors/{connectorID}` | ✅ covered | rossum_get_connector |
+| `GET /connectors/{connectorID}` | ✅ covered | rossum_get |
 | `PATCH /connectors/{connectorID}` | ⬜ pending |  |
 | `PUT /connectors/{connectorID}` | ⬜ pending |  |
 
@@ -174,7 +174,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | Operation | Status | Tool(s) |
 |---|---|---|
 | `GET /email_threads` | ✅ covered | rossum_list_email_threads |
-| `GET /email_threads/{emailThreadID}` | ✅ covered | rossum_get_email_thread |
+| `GET /email_threads/{emailThreadID}` | ✅ covered | rossum_get |
 | `PATCH /email_threads/{emailThreadID}` | ⬜ pending |  |
 | `PUT /email_threads/{emailThreadID}` | ⬜ pending |  |
 
@@ -232,7 +232,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `POST /hooks/{hookID}/duplicate` | ⬜ pending |  |
 | `POST /hooks/{hookID}/generate_payload` | ✅ covered | rossum_generate_export_payload, rossum_test_hook |
 | `POST /hooks/{hookID}/invoke` | ⬜ pending |  |
-| `GET /hooks/{hookID}/secrets_keys` | ✅ covered | rossum_get_hook_secret_keys |
+| `GET /hooks/{hookID}/secrets_keys` | ✅ covered | rossum_get |
 | `POST /hooks/{hookID}/test` | ✅ covered | rossum_test_hook |
 
 ## Hook Run
@@ -257,7 +257,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `GET /inboxes` | ⬜ pending |  |
 | `POST /inboxes` | ⬜ pending |  |
 | `DELETE /inboxes/{inboxID}` | ⬜ pending |  |
-| `GET /inboxes/{inboxID}` | ✅ covered | rossum_get_inbox |
+| `GET /inboxes/{inboxID}` | ✅ covered | rossum_get |
 | `PATCH /inboxes/{inboxID}` | ⬜ pending |  |
 | `PUT /inboxes/{inboxID}` | ⬜ pending |  |
 
@@ -291,7 +291,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `POST /auth/membership_token` | ⬜ pending |  |
 | `GET /organizations` | ⬜ pending |  |
 | `POST /organizations/create` | ⬜ pending |  |
-| `GET /organizations/{organizationID}` | ✅ covered | rossum_get_organization |
+| `GET /organizations/{organizationID}` | ✅ covered | rossum_get |
 | `PATCH /organizations/{organizationID}` | ⬜ pending |  |
 | `PUT /organizations/{organizationID}` | ⬜ pending |  |
 | `POST /organizations/{organizationID}/billing` | ⬜ pending |  |
