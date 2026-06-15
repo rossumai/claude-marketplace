@@ -1025,7 +1025,7 @@ How a queue gets its AI extraction. Exactly one of three queue properties is non
 | `dedicated_engine` | Legacy dedicated models (see [Dedicated Engines](#dedicated-engines)) | `rir_field_names` |
 | `engine` | Custom engine (`/v1/engines`) — the newer engine model; pretrained-seeded, learning-enabled | **Name match**: engine field `name` == schema datapoint `id`; `rir_field_names` must be empty |
 
-All facts in this section were verified against a live org on 2026-06-12.
+All facts in this section were verified against a live org (2026-06-12; the `reasoning` ui-type exemption re-confirmed 2026-06-15 — an engine-bound queue carrying a `reasoning` datapoint flips successfully with no engine field for it).
 
 ### Engine entity
 
