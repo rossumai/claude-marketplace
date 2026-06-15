@@ -38,7 +38,7 @@ Best-practices sections (from the source article that motivated this skill):
 If `$ARGUMENTS` is a path, use it. Otherwise use the current working directory. Confirm it looks like a prd2 project:
 
 - Required: `prd_config.yaml` at the root.
-- Strongly suggested: at least one environment subdirectory listed in that file with `workspaces/` underneath.
+- Strongly suggested: at least one environment listed under `directories:` with `workspaces/` underneath. Note an env may declare `subdirectories:` (e.g. `TEST` / `PROD` under one org, `default` under another) — in that case the queues and hooks live at `<env>/<subdir>/...`, not directly under `<env>/`. The inspector resolves these into scan roots automatically.
 
 If `prd_config.yaml` is missing, stop and tell the user: "This does not look like a prd2 project (no `prd_config.yaml` found). Run `prd2 pull` first or pass the project path explicitly."
 
@@ -53,7 +53,7 @@ Capture stdout as JSON. The inspector returns:
 ```
 {
   "project_name": "...",
-  "environments": ["dev-env", "prod-env"],
+  "environments": ["NXP/TEST", "NXP/PROD", "sandbox/default"],  // scan roots: <env> or <env>/<subdir>
   "workspace_count": N,
   "queue_count": M,
   "queues": [{"name": "...", "workspace": "...", "environment": "...", "schema_field_count": K}, ...],

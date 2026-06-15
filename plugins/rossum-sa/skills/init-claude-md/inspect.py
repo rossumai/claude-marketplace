@@ -18,34 +18,71 @@ from pathlib import Path
 def parse_prd_config(project_dir: Path) -> dict:
     """Parse prd_config.yaml without a yaml dependency.
 
-    The file is tightly structured (project_name + directories map). We only
-    need project_name and the top-level keys under directories. A minimal
-    line-based parser is enough and avoids adding PyYAML as a dep.
+    The file is tightly structured (project_name + directories map). We need
+    project_name plus the *scan roots* under directories. An env entry may
+    declare `subdirectories:` (e.g. TEST/PROD under one org, `default` under
+    another); when it does, the queues/hooks live at `<env>/<subdir>/...`, not
+    directly under `<env>/`. We therefore return scan roots as relative paths:
+    `<env>/<subdir>` for each declared subdir, or `<env>` for a flat env. A
+    minimal indentation-based parser is enough and avoids a PyYAML dep.
+
+    The returned "environments" key holds these scan roots, so downstream
+    discovery (`project_dir / env`) works for both flat and nested layouts.
     """
     cfg_path = project_dir / "prd_config.yaml"
     if not cfg_path.is_file():
         return {"project_name": project_dir.name, "environments": []}
 
     project_name = project_dir.name
-    environments: list[str] = []
+    env_order: list[str] = []
+    env_subdirs: dict[str, list[str]] = {}
     in_directories = False
+    current_env: str | None = None
+    in_subdirs = False
     for raw in cfg_path.read_text().splitlines():
         line = raw.rstrip()
         if not line or line.lstrip().startswith("#"):
             continue
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
         if re.match(r"^project_name\s*:", line):
             project_name = line.split(":", 1)[1].strip().strip('"').strip("'")
             continue
         if re.match(r"^directories\s*:\s*$", line):
             in_directories = True
+            current_env = None
+            in_subdirs = False
             continue
-        if in_directories:
-            # Top-level env entry: exactly 2 spaces of indent then `name:`.
-            m = re.match(r"^  ([^\s:]+)\s*:\s*$", line)
-            if m:
-                environments.append(m.group(1))
-            elif not line.startswith(" "):
-                in_directories = False
+        if not in_directories:
+            continue
+        # A non-indented line ends the directories block.
+        if indent == 0:
+            in_directories = False
+            continue
+        key_match = re.match(r"^([^\s:]+)\s*:", stripped)
+        key = key_match.group(1) if key_match else None
+        if indent == 2 and key:
+            # New env entry (e.g. `NXP:` / `sandbox:`).
+            current_env = key
+            env_subdirs.setdefault(current_env, [])
+            if current_env not in env_order:
+                env_order.append(current_env)
+            in_subdirs = False
+        elif indent == 4 and key and current_env is not None:
+            # `subdirectories:` opens the subdir map; any other 4-space key
+            # (org_id, api_base, ...) closes it.
+            in_subdirs = key == "subdirectories"
+        elif indent == 6 and in_subdirs and key and current_env is not None:
+            # Immediate subdir name (e.g. `TEST:` / `PROD:` / `default:`).
+            env_subdirs[current_env].append(key)
+
+    environments: list[str] = []
+    for env in env_order:
+        subs = env_subdirs.get(env) or []
+        if subs:
+            environments.extend(f"{env}/{sub}" for sub in subs)
+        else:
+            environments.append(env)
 
     return {"project_name": project_name, "environments": environments}
 
@@ -73,11 +110,16 @@ def count_schema_fields(schema: dict) -> int:
 
 
 def discover_queues(project_dir: Path, environments: list[str]) -> list[dict]:
-    """Walk environments → workspaces → queues; collect facts per queue."""
+    """Walk scan roots → workspaces → queues; collect facts per queue.
+
+    Workspace and queue directories are named by the object (e.g.
+    `TEST (AMEC)_[565950]` / `CA61_[1476193]`), not a fixed `Workspace_*` /
+    `Queue_*` prefix, so we glob on `*` and let `queue.json` presence gate it.
+    """
     out: list[dict] = []
     for env in environments:
         env_dir = project_dir / env
-        for q_json in sorted(env_dir.glob("workspaces/Workspace_*/queues/Queue_*/queue.json")):
+        for q_json in sorted(env_dir.glob("workspaces/*/queues/*/queue.json")):
             queue = json.loads(q_json.read_text())
             workspace_json = q_json.parent.parent.parent / "workspace.json"
             workspace_name = (
