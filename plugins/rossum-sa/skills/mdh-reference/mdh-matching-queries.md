@@ -159,6 +159,8 @@ This restriction only affects **MDH placeholders** (the `{schema_id}` syntax tha
 
 #### Placeholder value types — check the schema first
 
+> **Before you "fix" an MDH query that looks buggy: STOP.** If a placeholder comparison appears wrong (e.g. a quoted placeholder against a numeric key), do **not** rewrite it on assumption. First (1) read the source field's `type` / `enum_value_type` in the queue `schema.json` to learn the **actual** injected JSON type, and (2) verify any change against a real hook run (or the MDH **Try** button) before deploying. The original query is often correct, and an unverified "fix" — adding `$toString`, re-quoting — typically *introduces* a silent zero-match bug rather than removing one. This is a real failure mode that has shipped to customers.
+
 A `{placeholder}`'s effective **JSON type** in the comparison follows the **source** schema field, and the dataset key you compare it against must be the **same JSON type** (number vs. string). Comparing across types silently returns **zero matches** — no error, the hook log reads `status: completed`.
 
 The injected type depends on the source field's `type`, and for enums on its **`enum_value_type`**:
