@@ -157,6 +157,40 @@ The proxy is `hidden: true` so reviewers don't see it; it exists purely to feed 
 
 This restriction only affects **MDH placeholders** (the `{schema_id}` syntax that interpolates the value into a MongoDB query against an MDH dataset). Querying annotations via Rossum's built-in MongoDB index (e.g. `{"field.date_issue.date": {"$gte": ..., "$lte": ...}}` from a custom hook) reads the date directly and does NOT need a string proxy.
 
+#### Placeholder value types — check the schema first
+
+> **Before you "fix" an MDH query that looks buggy: STOP.** If a placeholder comparison appears wrong (e.g. a quoted placeholder against a numeric key), do **not** rewrite it on assumption. First (1) read the source field's `type` / `enum_value_type` in the queue `schema.json` to learn the **actual** injected JSON type, and (2) verify any change against a real hook run (or the MDH **Try** button) before deploying. The original query is often correct, and an unverified "fix" — adding `$toString`, re-quoting — typically *introduces* a silent zero-match bug rather than removing one. This is a real failure mode that has shipped to customers.
+
+A `{placeholder}`'s effective **JSON type** in the comparison follows the **source** schema field, and the dataset key you compare it against must be the **same JSON type** (number vs. string). Comparing across types silently returns **zero matches** — no error, the hook log reads `status: completed`.
+
+The injected type depends on the source field's `type`, and for enums on its **`enum_value_type`**:
+
+| Source field | Injected type |
+|---|---|
+| `type: "string"` | string |
+| `type: "number"` | number |
+| `type: "enum"`, `enum_value_type: "string"` (the default) | string |
+| `type: "enum"`, `enum_value_type: "number"` | number |
+
+`enum_value_type` is the same hint that controls how an MDH-matched value is *stored* in an enum result field (see "Numeric enum results" in `mdh-api-reference.md`) — and a value stored as a number is injected as a number when that field is used as a placeholder.
+
+**Worked example (a real bug).** Field `sender_match` is `type: "enum"` with `enum_value_type: "number"`; the dataset's `supplier.id` is numeric:
+
+```jsonc
+// ✅ correct — the number enum injects a number, compared to a numeric key
+{"supplier.id": "{sender_match}"}
+
+// ❌ silently matches nothing — coerces the numeric key to a string and
+//    compares it against the (still numeric) injected value
+{"$eq": [{"$toString": "$supplier.id"}, "{sender_match}"]}
+```
+
+Note that in this case the `number` enum was injected as a number **even though the placeholder was written quoted** (`"{sender_match}"`). Do not rely on quoting to control the injected type — verify it (see below) rather than assume.
+
+**Before writing or changing any placeholder comparison:** read the field's definition in the queue `schema.json` (its `type`, and for enums its `enum_value_type`) and confirm it matches the JSON type of the dataset key it is compared against. Never add `$toString` / `$toDouble` or re-quote a placeholder to "fix" a mismatch before you have confirmed the real injected type — the coercion usually *creates* the mismatch rather than removing it.
+
+> **Don't "validate" substitution with a hand-typed literal.** Running `data_storage_aggregate` with a literal you typed yourself (e.g. `"9"` as a string) does **not** replicate MDH's type-aware placeholder injection — it tests your *guess* about the type, not what MDH actually sends. Confirm against the queue schema and a real hook run, or the MDH **Try** button (which substitutes real field values).
+
 ---
 
 ## Query Design Rules
@@ -196,6 +230,8 @@ This restriction only affects **MDH placeholders** (the `{schema_id}` syntax tha
 8. Default result window is 20 for fuzzy/search stages. Runtime guardrail cap is 50 records for interactive previews.
 9. Never dump full datasets in user-facing responses.
 10. Do not rely on key order in multi-key `$sort` stages without checking key lengths. Rossum's JSON serialization sorts object keys by key length (shortest first), which silently reorders `$sort` keys and changes sort priority. Always ensure the primary sort key is shorter than (or equal in length to) secondary keys. Example: `{"__priority": 1, "id.poLineId": 1}` works because `__priority` (12 chars) < `id.poLineId` (12 chars — tied, so original order is preserved). If the primary key is longer, rename it with a shorter alias (prefix with `__`).
+11. Don't assume a placeholder's JSON type. Check the source field's `type` / `enum_value_type` in the queue `schema.json`: a `number` enum (or `number` field) injects a number, a `string` enum/field injects a string. Comparing across types silently returns zero matches. See [Placeholder value types — check the schema first](#placeholder-value-types--check-the-schema-first).
+12. Don't validate MDH substitution by running `data_storage_aggregate` with a hand-typed literal — that bypasses MDH's type-aware injection and only tests your guess about the type. Verify against the schema and/or a real hook run (or the MDH "Try" button).
 
 ---
 
