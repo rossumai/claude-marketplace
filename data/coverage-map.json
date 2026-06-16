@@ -1,4 +1,19 @@
 {
+  "DELETE /dedicated_engine_schemas/{dedicatedEngineSchemaID}": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Delete dedicated engine schema"
+  },
+  "DELETE /dedicated_engines/{dedicatedEngineID}": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Delete dedicated engine"
+  },
+  "DELETE /delete_recommendations/{deleteRecommendationID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Delete delete recommendation"
+  },
   "DELETE /hooks/{hookID}": {
     "decision": "covered",
     "summary": "Delete hook",
@@ -12,6 +27,11 @@
     "tools": [
       "rossum_delete_rule"
     ]
+  },
+  "DELETE /suggested_edits/{suggestedEditID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Delete suggested edit"
   },
   "GET /annotations": {
     "decision": "covered",
@@ -199,12 +219,42 @@
       "rossum_refire_annotation"
     ]
   },
+  "PATCH /annotations/{annotationID}/content": {
+    "decision": "not_planned",
+    "reason": "content/grid edit",
+    "summary": "Update annotation content"
+  },
+  "PATCH /dedicated_engine_schemas/{dedicatedEngineSchemaID}": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Partial update dedicated engine schema"
+  },
+  "PATCH /dedicated_engines/{dedicatedEngineID}": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Partial update dedicated engine"
+  },
+  "PATCH /delete_recommendations/{deleteRecommendationID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Partial update delete recommendation"
+  },
+  "PATCH /email_threads/{emailThreadID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Partial update email thread"
+  },
   "PATCH /hooks/{hookID}": {
     "decision": "covered",
     "summary": "Partial update hook",
     "tools": [
       "rossum_patch_hook"
     ]
+  },
+  "PATCH /organizations/{organizationID}": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Partial update organization"
   },
   "PATCH /rules/{ruleID}": {
     "decision": "covered",
@@ -219,6 +269,36 @@
     "tools": [
       "rossum_patch_schema"
     ]
+  },
+  "PATCH /suggested_edits/{suggestedEditID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Partial update suggested edit"
+  },
+  "POST /annotations": {
+    "decision": "not_planned",
+    "reason": "advanced/pipeline",
+    "summary": "Create annotation"
+  },
+  "POST /annotations/assign": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Assign annotation"
+  },
+  "POST /annotations/export": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Export annotations (cross-queue, POST)"
+  },
+  "POST /annotations/suggested_recipients": {
+    "decision": "not_planned",
+    "reason": "operator/comms",
+    "summary": "Retrieve suggested email recipients"
+  },
+  "POST /annotations/{annotationID}/approve": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Approve annotation"
   },
   "POST /annotations/{annotationID}/cancel": {
     "decision": "covered",
@@ -244,6 +324,96 @@
       "rossum_validate_content"
     ]
   },
+  "POST /annotations/{annotationID}/content/{multivalueID}/grid_operations": {
+    "decision": "not_planned",
+    "reason": "content/grid edit",
+    "summary": "Grid operations"
+  },
+  "POST /annotations/{annotationID}/content/{multivalueID}/grid_parts_operations": {
+    "decision": "not_planned",
+    "reason": "content/grid edit",
+    "summary": "Partial update grid"
+  },
+  "POST /annotations/{annotationID}/content/{nodeID}/add_empty": {
+    "decision": "not_planned",
+    "reason": "content/grid edit",
+    "summary": "Add row to multivalue datapoint"
+  },
+  "POST /annotations/{annotationID}/content/{nodeID}/select": {
+    "decision": "not_planned",
+    "reason": "content/grid edit",
+    "summary": "Replace annotation content by OCR"
+  },
+  "POST /annotations/{annotationID}/content/{nodeID}/transform_grid_to_datapoints": {
+    "decision": "not_planned",
+    "reason": "content/grid edit",
+    "summary": "Convert grid to table data"
+  },
+  "POST /annotations/{annotationID}/copy": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Copy annotation"
+  },
+  "POST /annotations/{annotationID}/create_embedded_url": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Create embedded URL"
+  },
+  "POST /annotations/{annotationID}/delete": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Switch to deleted"
+  },
+  "POST /annotations/{annotationID}/edit": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Edit annotation (legacy split)"
+  },
+  "POST /annotations/{annotationID}/edit_pages": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Edit pages (split and reorganize)"
+  },
+  "POST /annotations/{annotationID}/edit_pages/cancel": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Cancel edit pages session"
+  },
+  "POST /annotations/{annotationID}/edit_pages/in_place": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Edit pages in place"
+  },
+  "POST /annotations/{annotationID}/edit_pages/start": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Start edit pages session"
+  },
+  "POST /annotations/{annotationID}/page_data/translate": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Translate page spatial data"
+  },
+  "POST /annotations/{annotationID}/postpone": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Switch to postponed"
+  },
+  "POST /annotations/{annotationID}/reject": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Reject annotation"
+  },
+  "POST /annotations/{annotationID}/rotate": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Rotate annotation"
+  },
+  "POST /annotations/{annotationID}/split": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Split annotation"
+  },
   "POST /annotations/{annotationID}/start": {
     "decision": "covered",
     "summary": "Start validation",
@@ -252,6 +422,66 @@
       "rossum_start_annotation",
       "rossum_update_annotation_content"
     ]
+  },
+  "POST /annotations/{annotationID}/start_embedded": {
+    "decision": "not_planned",
+    "reason": "operator/validation-UI",
+    "summary": "Start validation for embedded use"
+  },
+  "POST /auth/login": {
+    "decision": "not_planned",
+    "reason": "auth plumbing",
+    "summary": "Login"
+  },
+  "POST /auth/membership_token": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Generate organization token"
+  },
+  "POST /auth/password/change": {
+    "decision": "not_planned",
+    "reason": "auth plumbing",
+    "summary": "Change password"
+  },
+  "POST /auth/password/reset": {
+    "decision": "not_planned",
+    "reason": "auth plumbing",
+    "summary": "Reset password"
+  },
+  "POST /auth/password/score": {
+    "decision": "not_planned",
+    "reason": "auth plumbing",
+    "summary": "Retrieve password score"
+  },
+  "POST /dedicated_engine_schemas": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Create dedicated engine schema"
+  },
+  "POST /dedicated_engine_schemas/predict": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Predict dedicated engine schema"
+  },
+  "POST /dedicated_engine_schemas/validate": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Validate dedicated engine schema"
+  },
+  "POST /dedicated_engines": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Create dedicated engine"
+  },
+  "POST /dedicated_engines/request": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Request dedicated engine"
+  },
+  "POST /delete_recommendations": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Create delete recommendation"
   },
   "POST /hooks": {
     "decision": "covered",
@@ -275,6 +505,56 @@
       "rossum_test_hook"
     ]
   },
+  "POST /organization_groups/{organizationGroupID}/billing_stats": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Retrieve organization billing stats group"
+  },
+  "POST /organization_groups/{organizationGroupID}/billing_stats/export": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Export organization group billing stats"
+  },
+  "POST /organizations/create": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Create organization"
+  },
+  "POST /organizations/{organizationID}/billing": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Retrieve organization billing (deprecated)"
+  },
+  "POST /organizations/{organizationID}/billing_stats": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Retrieve organization billing stats"
+  },
+  "POST /organizations/{organizationID}/billing_stats/export": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Export organization billing stats"
+  },
+  "POST /queues/{id}/next": {
+    "decision": "not_planned",
+    "reason": "operator",
+    "summary": "Start validation"
+  },
+  "POST /queues/{id}/suggested_recipients": {
+    "decision": "not_planned",
+    "reason": "operator/comms",
+    "summary": "Retrieve suggested email recipients"
+  },
+  "POST /queues/{id}/upload": {
+    "decision": "not_planned",
+    "reason": "deprecated ingestion",
+    "summary": "Import document (deprecated)"
+  },
+  "POST /queues/{id}/upload/{filename}": {
+    "decision": "not_planned",
+    "reason": "deprecated ingestion",
+    "summary": "Import document with filename (deprecated)"
+  },
   "POST /rules": {
     "decision": "covered",
     "summary": "Create rule",
@@ -282,11 +562,56 @@
       "rossum_create_rule"
     ]
   },
+  "POST /suggested_edits": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Create suggested edit"
+  },
   "POST /users": {
     "decision": "covered",
     "summary": "Create user",
     "tools": [
       "rossum_create_user"
     ]
+  },
+  "POST /workflow_runs/{workflowRunID}/reset": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Reset workflow run"
+  },
+  "PUT /annotations/{annotationID}": {
+    "decision": "not_planned",
+    "reason": "redundant w/ covered PATCH",
+    "summary": "Update annotation"
+  },
+  "PUT /dedicated_engine_schemas/{dedicatedEngineSchemaID}": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Update dedicated engine schema"
+  },
+  "PUT /dedicated_engines/{dedicatedEngineID}": {
+    "decision": "not_planned",
+    "reason": "dedicated engine",
+    "summary": "Update dedicated engine"
+  },
+  "PUT /delete_recommendations/{deleteRecommendationID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Update delete recommendation"
+  },
+  "PUT /email_threads/{emailThreadID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Update email thread"
+  },
+  "PUT /organizations/{organizationID}": {
+    "decision": "not_planned",
+    "reason": "org/billing/admin",
+    "summary": "Update organization"
+  },
+  "PUT /suggested_edits/{suggestedEditID}": {
+    "decision": "not_planned",
+    "reason": "niche",
+    "summary": "Update suggested edit"
   }
 }
