@@ -217,3 +217,68 @@ def test_committed_coverage_doc_matches_regeneration():
         "render_doc.render_coverage_doc(json.load(open('data/api-inventory.json')), "
         "json.load(open('data/coverage-map.json'))))\""
     )
+
+
+# --- scanner: URL-builder delegation (regression for helper-delegated tools) ---
+
+def test_extract_tool_endpoints_matches_url_builder_delegation():
+    """A handler that builds the URL into a `url` var and delegates the request to a
+    URL-builder helper (_paginate_search) — where the HTTP method lives in the helper,
+    not the handler — must still be attributed to the tool + endpoint. Without this the
+    scanner under-reports coverage (e.g. rossum_search_annotations_advanced)."""
+    src = '''
+@_tool("rossum_search_annotations_advanced", "d", {"type": "object"}, annotations=_READ_ONLY)
+def handle_search_annotations_advanced(request_id, arguments):
+    url = f"{base_url}/api/v1/annotations/search?{urlencode(params)}"
+    result = _paginate_search(request_id, url, body, max_results=max_results)
+'''
+    te = coverage.extract_tool_endpoints(src)
+    assert ("POST", "/annotations/search") in te
+    assert "rossum_search_annotations_advanced" in te[("POST", "/annotations/search")]
+
+
+# --- forever-guards: committed coverage-map must stay in sync with reality ---
+
+_SERVER_PY = ROOT / "plugins/rossum-sa/mcp-servers/rossum-api/server.py"
+
+
+def _committed():
+    inv = json.loads((ROOT / "data/api-inventory.json").read_text(encoding="utf-8"))
+    cmap = json.loads((ROOT / "data/coverage-map.json").read_text(encoding="utf-8"))
+    return inv, cmap
+
+
+def test_committed_covered_matches_server():
+    """The `covered` section of coverage-map.json must EXACTLY equal what the server
+    actually wraps (same endpoints, same tools). This is the root-cause guard: you
+    cannot add, rename, or remove a tool->endpoint without updating the map to match —
+    CI fails otherwise. Relies on extract_tool_endpoints seeing every wrapping pattern
+    (direct helpers, _http_request, and URL-builder delegation)."""
+    inv, cmap = _committed()
+    seeded = coverage.seed_coverage_map(inv, coverage.extract_tool_endpoints(
+        _SERVER_PY.read_text(encoding="utf-8")))
+    committed = {k: v for k, v in cmap.items() if v.get("decision") == "covered"}
+
+    missing = sorted(set(seeded) - set(committed))   # server wraps it, map doesn't say covered
+    extra = sorted(set(committed) - set(seeded))      # map claims covered, scanner can't see it
+    assert not missing and not extra, (
+        "coverage-map.json 'covered' set is out of sync with the server.\n"
+        f"  server wraps but map missing/!=covered: {missing}\n"
+        f"  map claims covered but server scan can't see it: {extra}\n"
+        "Fix: update data/coverage-map.json (and regenerate api-coverage.md). If a new "
+        "tool builds its URL and delegates to a helper, add that helper to "
+        "_URL_BUILDER_HELPERS in scripts/api_inventory/coverage.py so the scanner sees it."
+    )
+    mismatched = {k: {"server": sorted(seeded[k]["tools"]),
+                      "map": sorted(committed[k]["tools"])}
+                  for k in seeded if sorted(seeded[k]["tools"]) != sorted(committed[k]["tools"])}
+    assert not mismatched, f"covered tool lists differ from the server: {mismatched}"
+
+
+def test_no_stale_coverage_entries():
+    """Every key in coverage-map.json must correspond to an endpoint that still exists
+    in the committed API inventory. Catches decisions left behind after an endpoint is
+    removed or renamed."""
+    inv, cmap = _committed()
+    stale = coverage.stale_coverage_entries(inv, cmap)
+    assert not stale, f"coverage-map.json has entries for endpoints not in the inventory: {stale}"

@@ -17,6 +17,11 @@ _HELPER_METHOD = {
 }
 # Lower-level HTTP helpers: method is parsed from a method="X" kwarg (default GET).
 _HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_request_raw", "_http_get_bytes")
+# URL-builder helpers: they receive a pre-built `url` argument, so the path is NOT
+# in the call args — it lives in a `url = f"...{path}..."` assignment in the handler,
+# and the method is fixed by the helper itself (not a method="X" kwarg). For these we
+# read the path from the url-building assignment in the same @_tool block.
+_URL_BUILDER_HELPERS = {"_paginate_search": "POST"}
 
 
 def normalize_path(path: str) -> str:
@@ -58,6 +63,16 @@ def extract_tool_endpoints(server_src: str) -> dict:
             if pm:
                 mm = re.search(r'method\s*=\s*"([A-Z]+)"', hm.group(2))
                 add(mm.group(1) if mm else "GET", pm.group(0))
+
+        # URL-builder helpers (e.g. _paginate_search): the path is built into a
+        # `url = f"...{path}..."` assignment in the block, not passed as a literal
+        # to the call, and the method is fixed by the helper. Attribute the path
+        # from any url-building assignment in this block to the helper's method.
+        builders = "|".join(_URL_BUILDER_HELPERS)
+        for bm in re.finditer(rf"({builders})\(", blk):
+            method = _URL_BUILDER_HELPERS[bm.group(1)]
+            for am in re.finditer(r'=\s*f?["\'][^"\']*?(' + _PATH + r')', blk):
+                add(method, am.group(1))
     return cover
 
 
