@@ -1,6 +1,7 @@
 """Unit tests for the API inventory + coverage tooling (issue #46). Stdlib only, no network."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -196,3 +197,23 @@ def test_render_issue_body_sections_and_digest():
     # ...and deterministic for the same input.
     assert base == render_issue.extract_digest(
         render_issue.render_issue_body(dict(diff_), list(pending), list(stale)))
+
+
+def test_committed_coverage_doc_matches_regeneration():
+    """The autoloaded api-coverage.md must equal a regeneration from the committed
+    snapshot + coverage map. Guards the drift class where coverage-map.json is edited
+    but the generated doc isn't refreshed (the doc is injected into every session)."""
+    data = ROOT / "data"
+    doc = ROOT / "plugins/rossum-sa/skills/rossum-reference/api-coverage.md"
+    inventory = json.loads((data / "api-inventory.json").read_text(encoding="utf-8"))
+    cmap = json.loads((data / "coverage-map.json").read_text(encoding="utf-8"))
+    expected = render_doc.render_coverage_doc(inventory, cmap)
+    assert doc.read_text(encoding="utf-8") == expected, (
+        "api-coverage.md is stale vs data/coverage-map.json. Regenerate it from the "
+        "committed snapshot:\n"
+        "  python -c \"import json,sys; sys.path.insert(0,'scripts'); "
+        "from api_inventory import render_doc; "
+        "open('plugins/rossum-sa/skills/rossum-reference/api-coverage.md','w').write("
+        "render_doc.render_coverage_doc(json.load(open('data/api-inventory.json')), "
+        "json.load(open('data/coverage-map.json'))))\""
+    )
