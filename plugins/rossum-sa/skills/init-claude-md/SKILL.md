@@ -98,13 +98,42 @@ Check whether `<project_dir>/CLAUDE.md` exists:
 
 Never silently overwrite hand-written content.
 
+### Step 5b: Ensure `.gitignore` covers IDE + agent-generated folders
+
+The skill historically wrote CLAUDE.md but left `.gitignore` alone, so projects ended up committing `.idea/` and the `.rossum-cache/` directory. After confirming the project is prd2 (Step 2), bring the project-root `.gitignore` up to date. This step is **additive and idempotent** — re-running never duplicates lines, removes anything, or reorders existing entries.
+
+1. Read `<project_dir>/.gitignore` (create it if missing).
+2. For each pattern below, append it **only if no equivalent line already exists**. Match leniently so existing equivalents aren't duplicated — compare on the token with surrounding whitespace and any leading `/` or trailing `/` stripped, so `.idea`, `.idea/`, and `/.idea/` all count as the same entry.
+3. Append only the *missing* patterns, under these clearly labeled blocks (keep the comment headers):
+
+   ```gitignore
+   # IDE / editor
+   .idea/
+   .vscode/
+   *.iml
+
+   # Claude / agent-generated (safe to ignore; regenerable)
+   .rossum-cache/
+   .claude/
+   ```
+
+   Why these:
+   - `.rossum-cache/` — created by the rossum-api MCP `rossum_get_annotation` tool, which caches full annotation payloads under `.rossum-cache/annotations/<id>.json`. Specific to the rossum-api MCP; always add it for these projects.
+   - `.idea/`, `.vscode/`, `*.iml` — local IDE/editor config (applies to any project).
+   - `.claude/` — local agent/session state.
+
+4. **Preserve everything else verbatim.** Do not remove, reorder, or rewrite existing entries — in particular, do not touch any secrets/credentials ignores a prd2 project already ships (e.g. `credentials.yaml`, `deploy_secrets*`, `hook_sync_configs*`, `non_versioned_object_attributes.json`). This step is purely additive for the IDE + agent-generated folders above.
+5. If every pattern is already present (leniently matched), leave `.gitignore` untouched.
+6. Record which patterns you added vs. which were already present — Step 6 reports this.
+
 ### Step 6: Show the result and recommend next steps
 
 After writing, print:
 
 - Path written
 - One-paragraph summary of what landed in CLAUDE.md (env names, queue count, hook count, detected integration target)
-- Suggested follow-up: "Open `CLAUDE.md` and fill in the Project-Specific Notes section with anything unique to this implementation. Then commit the file."
+- `.gitignore` status (from Step 5b): which patterns were **added** vs. **already present**, or "no change" if it was already complete. If it changed, remind the user to commit it alongside CLAUDE.md.
+- Suggested follow-up: "Open `CLAUDE.md` and fill in the Project-Specific Notes section with anything unique to this implementation. Then commit the file (and the updated `.gitignore`)."
 
 Do **not** auto-commit. The user decides when to commit a memory file.
 
