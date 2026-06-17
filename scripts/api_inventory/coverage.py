@@ -65,13 +65,20 @@ def extract_tool_endpoints(server_src: str) -> dict:
                 add(mm.group(1) if mm else "GET", pm.group(0))
 
         # URL-builder helpers (e.g. _paginate_search): the path is built into a
-        # `url = f"...{path}..."` assignment in the block, not passed as a literal
-        # to the call, and the method is fixed by the helper. Attribute the path
-        # from any url-building assignment in this block to the helper's method.
+        # `<var> = f"...{path}..."` assignment and passed to the helper as the 2nd
+        # positional arg (signature: helper(request_id, url, ...)); the HTTP method
+        # is fixed by the helper itself. Resolve the path from the assignment to THAT
+        # variable only — not any url-building assignment in the block — so an
+        # unrelated URL in the same handler isn't mis-attributed. The trailing `\(`
+        # also stops a prefix helper (_paginate) from matching `_paginate_search(`.
         builders = "|".join(_URL_BUILDER_HELPERS)
-        for bm in re.finditer(rf"({builders})\(", blk):
+        for bm in re.finditer(rf"({builders})\(([^)]*)\)", blk, re.S):
             method = _URL_BUILDER_HELPERS[bm.group(1)]
-            for am in re.finditer(r'=\s*f?["\'][^"\']*?(' + _PATH + r')', blk):
+            call_args = [a.strip() for a in bm.group(2).split(",")]
+            if len(call_args) < 2 or not call_args[1].isidentifier():
+                continue
+            url_var = call_args[1]
+            for am in re.finditer(rf'\b{re.escape(url_var)}\s*=\s*f?["\'][^"\']*?({_PATH})', blk):
                 add(method, am.group(1))
     return cover
 

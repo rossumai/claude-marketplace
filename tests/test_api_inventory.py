@@ -282,3 +282,22 @@ def test_no_stale_coverage_entries():
     inv, cmap = _committed()
     stale = coverage.stale_coverage_entries(inv, cmap)
     assert not stale, f"coverage-map.json has entries for endpoints not in the inventory: {stale}"
+
+
+def test_extract_tool_endpoints_url_builder_scopes_to_passed_var():
+    """Regression (PR #73 review): the URL-builder branch must attribute ONLY the URL
+    variable actually passed to the helper, not every f-string assignment in the block.
+    A handler that delegates to _paginate_search AND builds an unrelated URL must not
+    have that unrelated path mis-attributed (which the strict guard would then demand
+    as a spurious covered entry)."""
+    src = '''
+@_tool("rossum_search_x", "d", {"type": "object"}, annotations=_READ_ONLY)
+def handle_x(request_id, arguments):
+    other_url = f"{base_url}/api/v1/queues/{qid}"
+    url = f"{base_url}/api/v1/annotations/search?{urlencode(params)}"
+    result = _paginate_search(request_id, url, body, max_results=max_results)
+'''
+    te = coverage.extract_tool_endpoints(src)
+    assert ("POST", "/annotations/search") in te
+    assert ("POST", "/queues/{}") not in te          # unrelated URL must NOT be attributed
+    assert ("GET", "/queues/{}") not in te
