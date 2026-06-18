@@ -57,6 +57,16 @@ If the user has not yet stated a **goal** ("the field `po_status_match` should r
 
 The goal becomes the success criterion for each iteration. Write it into the task list so it survives interruptions.
 
+**Turn the goal into explicit assertions.** Before the first re-fire, restate the goal as a concrete, checkable list against the fields the compact response returns — this is what makes the loop *closed* rather than a vibe-check. For example:
+
+| Assertion | Field | Expected |
+|---|---|---|
+| 1 | `po_status_match` | `Approved` |
+| 2 | `supplier_id` | non-empty (matched) |
+| 3 | `blocker.items` | none on `amount_total` |
+
+If the user gave a one-line goal, derive the assertion list yourself and show it to them before iterating ("I'll consider it done when: …"). Each iteration is then a pass/fail against this list, not a judgment call.
+
 ## The four re-fire patterns
 
 Pick the right one based on **which hook event** your deliverable listens for, or which side-effect you need to reproduce. When in doubt, start with **soft re-fire** — it is the lightest and fastest.
@@ -119,6 +129,16 @@ When a hook reacts to one specific datapoint change, you can mutate that datapoi
 
 For most iteration loops you will NOT need this — soft re-fire on the saved annotation already exercises the hook chain.
 
+### Confirm — the export / approval-routing trigger
+
+When the goal is about what happens **at confirmation** (export payload, approval-workflow routing, `annotation_content.confirmed` hooks), re-firing `validate` is not enough — you must actually confirm. Use `rossum_confirm_annotation` (`POST /annotations/{id}/confirm`): it transitions the annotation to `exported`/`exporting` (or `confirmed`, or `in_workflow`) and **fires the downstream export / approval routing** — a real, not-easily-reversible side effect, so it passes through the hard-gate like any write, and **never on prod**. Confirm the *correct* way (this endpoint), not by patching status directly. (Shipped via the `rossum_confirm_annotation` tool; if your server predates it, that tool may be absent — fall back to the UI for the confirm leg rather than patching status.)
+
+### Re-running automation in place — `reautomate` (internal, not available via SA tokens)
+
+Rossum has `POST /api/v1/internal/annotations/reautomate` — a batch endpoint that re-runs the **initialize + automation** pipeline on existing annotations *without re-uploading* (status → `importing`, content preserved, fires `annotation_content.initialize`, then the automation decision → `to_review` or `confirmed`/`exporting`; with `if_modified: try_to_confirm` it simulates open→Confirm for API-modified annotations; non-`to_review` annotations are skipped). It is the natural primitive for *"master data changed — re-run matching/automation on these N documents."*
+
+**It is Rossum-staff-only.** Verified live (NXP sandbox, 2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
+
 ## The iteration loop
 
 Repeat until the goal is met or the user stops you:
@@ -127,7 +147,7 @@ Repeat until the goal is met or the user stops you:
 2. **Push, gated.** Stage only the modified files and run `prd2 push <env> -io`. Confirm the file list with the user before executing.
 3. **Re-fire via `rossum_refire_annotation`** in the right mode. The default `validate` mode is correct for most cases.
 4. **Read the result.** Use the compact response's `fields`, `blocker.items`, and `recent_hooks` sections. If you need raw positions or OCR coordinates, `Read` the cache file at `_meta.full_payload_cache`.
-5. **Diff against the goal.** State explicitly: "Goal was X, observed Y." If they match → goal met, ask the user to confirm and exit. If not → check `recent_hooks` for failures or `rossum_list_hook_logs(annotation=<id>)` for older logs; modify the code; loop.
+5. **Check the assertions — emit a PASS/FAIL table.** Evaluate each assertion from the goal list against the compact response and print a row per assertion: `assertion · field · expected · observed · ✅/❌`. The loop is **green only when every row passes**. If any fail → check `recent_hooks` for failures or `rossum_list_hook_logs(annotation=<id>)` for older logs; modify the code; loop. Do not declare success on a partial pass or a "looks right" — every assertion must be ✅, or you state which are still ❌ and keep going.
 6. **Bound the loop.** Default `--max-iterations=5`. After 5 unsuccessful iterations, stop and present the current state with the root-cause hypothesis — do not silently keep trying. The user decides whether to keep going.
 
 Update tasks at every step. Each iteration is a task ("iteration 3: try X"), marked completed when the re-fire returns.
@@ -157,7 +177,7 @@ Look for:
 
 ## When to stop and hand off
 
-- **Goal met** → confirm with user, end the loop.
+- **All assertions green** → confirm with user, end the loop.
 - **Max iterations reached without success** → stop, present current state + root-cause hypothesis, let user decide.
 - **The deliverable needs cross-environment verification** → hand off to `test-behavioral-equivalence` for a full corpus regression. `iterate` confirms one document; equivalence confirms the population.
 - **Goal turns out to be wrong / ambiguous** → stop and ask the user to clarify before another iteration.
