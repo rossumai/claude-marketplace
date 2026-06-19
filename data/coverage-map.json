@@ -290,6 +290,13 @@
     "reason": "operator/validation-UI",
     "summary": "Export annotations (cross-queue, POST)"
   },
+  "POST /annotations/search": {
+    "decision": "covered",
+    "summary": "Search annotations",
+    "tools": [
+      "rossum_search_annotations_advanced"
+    ]
+  },
   "POST /annotations/suggested_recipients": {
     "decision": "not_planned",
     "reason": "operator/comms",

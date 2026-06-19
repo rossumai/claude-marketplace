@@ -255,3 +255,42 @@ def test_paginate_uses_initial_page_without_refetch(monkeypatch):
                                       initial_page=first)
     assert results == [{"id": 1}] and total == 1
     assert calls == []  # page 1 came from initial_page, no fetch
+
+
+# --- _build_search_query (POST /annotations/search body builder) ---
+
+def test_build_search_query_wraps_query_string():
+    body = server._build_search_query(base="https://x.rossum.ai", query=None,
+                                      query_string="acme", queue=None, queues=None)
+    assert body == {"query_string": {"string": "acme"}}
+
+
+def test_build_search_query_injects_queue_scope_into_and():
+    body = server._build_search_query(base="https://x.rossum.ai", query=None,
+                                      query_string=None, queue=7, queues=None)
+    assert body == {"query": {"$and": [
+        {"queue": {"$in": ["https://x.rossum.ai/api/v1/queues/7"]}}]}}
+
+
+def test_build_search_query_merges_user_and_clause():
+    user_q = {"$and": [{"field.vendor.string": {"$eq": "ACME"}}]}
+    body = server._build_search_query(base="https://x.rossum.ai", query=user_q,
+                                      query_string=None, queue=None, queues=[7, 8])
+    assert body["query"]["$and"] == [
+        {"queue": {"$in": ["https://x.rossum.ai/api/v1/queues/7",
+                           "https://x.rossum.ai/api/v1/queues/8"]}},
+        {"field.vendor.string": {"$eq": "ACME"}},
+    ]
+
+
+def test_build_search_query_wraps_bare_user_query_without_and():
+    # A user query that is not already in $and form is wrapped into the $and list.
+    body = server._build_search_query(base="https://x.rossum.ai",
+                                      query={"status": {"$eq": "to_review"}},
+                                      query_string=None, queue=None, queues=None)
+    assert body["query"]["$and"] == [{"status": {"$eq": "to_review"}}]
+
+
+def test_build_search_query_empty_is_empty_body():
+    assert server._build_search_query(base="https://x.rossum.ai", query=None,
+                                      query_string=None, queue=None, queues=None) == {}

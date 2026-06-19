@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.24.0"
+_SERVER_VERSION = "0.25.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -535,6 +535,72 @@ def _paginate(request_id, url, *, max_results=None, pick_fields=None, initial_pa
             break
         url = next_url
         page = None
+    return (all_results, api_total)
+
+
+def _build_search_query(*, base, query, query_string, queue, queues):
+    """Build the POST /annotations/search request body from tool arguments.
+
+    `query` is a MongoDB-subset object (passed verbatim, wrapped into a $and list
+    if it isn't already). `query_string` is a plain string wrapped into the API's
+    {"string": ...} shape. `queue` (int) / `queues` (list[int]) are a convenience
+    that injects a {"queue": {"$in": [<urls>]}} clause as the FIRST $and term.
+    Returns {} when no criteria are supplied (the API treats that as match-all).
+    """
+    body = {}
+    and_clauses = []
+    scope_ids = []
+    if queue is not None:
+        scope_ids.append(queue)
+    if queues:
+        scope_ids.extend(queues)
+    if scope_ids:
+        and_clauses.append({"queue": {"$in": [
+            f"{base}/api/v1/queues/{qid}" for qid in scope_ids]}})
+    if query:
+        if isinstance(query, dict) and "$and" in query:
+            and_clauses.extend(query["$and"])
+        else:
+            and_clauses.append(query)
+    if and_clauses:
+        body["query"] = {"$and": and_clauses}
+    if query_string:
+        body["query_string"] = {"string": query_string}
+    return body
+
+
+def _paginate_search(request_id, url, body, *, max_results):
+    """Paginate POST /annotations/search. Returns (results, api_total) or None on error.
+
+    The search endpoint is a POST whose response pagination.next is a full URL
+    carrying an opaque signed cursor. We follow it by RE-POSTing the same body
+    (the query is idempotent; the cursor in the URL advances the window). Results
+    are projected to _ANNOTATION_FIELDS and url-ref-compacted like the GET list
+    tools. Caps at max_results; tolerates the eventual-consistency window by
+    simply returning whatever the cursor walk yields.
+    """
+    all_results = []
+    api_total = None
+    while url:
+        page = _http_request(request_id, url, method="POST", body=body)
+        if page is None:
+            return None
+        if api_total is None:
+            api_total = page.get("pagination", {}).get("total")
+        for item in page.get("results", []):
+            if max_results and len(all_results) >= max_results:
+                break
+            row = {k: item[k] for k in _ANNOTATION_FIELDS if k in item}
+            _compact_item(row, _URL_REF_FIELDS)
+            all_results.append(row)
+        if max_results and len(all_results) >= max_results:
+            break
+        next_url = page.get("pagination", {}).get("next")
+        if not next_url:
+            break
+        if _validate_base_url(next_url) != _validate_base_url(url):
+            break
+        url = next_url
     return (all_results, api_total)
 
 
@@ -1971,6 +2037,92 @@ def handle_search_annotations(request_id, arguments):
         request_id, f"{base_url}/api/v1/annotations?{urlencode(params)}",
         max_results=max_results, pick_fields=_ANNOTATION_FIELDS,
     )
+    if result is not None:
+        results, api_total = result
+        tool_result(request_id, json.dumps({
+            "total": api_total,
+            "returned": len(results),
+            "results": results,
+        }, indent=2))
+
+
+# POST endpoint, but a pure read (no mutation) -> annotated _READ_ONLY so it does
+# not trigger a write-permission prompt. The HTTP verb is POST only because the
+# search body (a MongoDB-subset filter) is too rich for a GET query string.
+@_tool(
+    "rossum_search_annotations_advanced",
+    "Content- and field-value search over annotations via POST /annotations/search. "
+    "Far more powerful than rossum_search_annotations (which only filters by "
+    "queue/status/label/date): match on extracted field values, annotation metadata, "
+    "and full text. Read-only despite being a POST. "
+    "Use `query` for a structured MongoDB-subset filter (expressions are ANDed): "
+    "meta fields like {\"status\": {\"$eq\": \"exported\"}} or "
+    "{\"queue\": {\"$in\": [\"<queue url>\"]}}, and content fields keyed "
+    "\"field.<schema_id>.<string|number|date>\", e.g. "
+    "{\"field.vendor_name.string\": {\"$eq\": \"ACME corp\"}}. Operators: "
+    "$eq $ne $gt $lt $gte $lte $in $nin $startsWith $anyTokenStartsWith "
+    "$containsPrefixes $emptyOrMissing. Use `query_string` for full-text prefix "
+    "search across datapoint values (min 2 chars). `queue`/`queues` are a "
+    "convenience that scopes to those queue IDs. NOTE: the search index is "
+    "eventually consistent — a just-changed annotation may take a few seconds to appear.",
+    {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "object",
+                "description": (
+                    "MongoDB-subset filter object. Either a bare clause "
+                    "(e.g. {\"status\": {\"$eq\": \"to_review\"}}) or {\"$and\": [clauses]}. "
+                    "Content fields use the key \"field.<schema_id>.<string|number|date>\"."
+                ),
+            },
+            "query_string": {
+                "type": "string",
+                "description": "Full-text prefix search over datapoint values (min 2 characters).",
+            },
+            "queue": {
+                "type": "integer",
+                "description": "Convenience: scope results to this queue ID.",
+            },
+            "queues": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Convenience: scope results to these queue IDs.",
+            },
+            "ordering": {
+                "type": "string",
+                "description": (
+                    "Sort order. Field name ascending; prefix '-' for descending "
+                    "(e.g. '-created_at'). Content fields: 'field.<schema_id>.<format>'."
+                ),
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum annotations to return (default: 50, max: 500).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_search_annotations_advanced(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    max_results = min(int(arguments.get("max_results", 50)), 500)
+    page_size = min(max_results, 100)
+    body = _build_search_query(
+        base=base_url,
+        query=arguments.get("query"),
+        query_string=arguments.get("query_string"),
+        queue=arguments.get("queue"),
+        queues=arguments.get("queues"),
+    )
+    params = [("page_size", page_size)]
+    if "ordering" in arguments:
+        params.append(("ordering", arguments["ordering"]))
+    url = f"{base_url}/api/v1/annotations/search?{urlencode(params)}"
+    result = _paginate_search(request_id, url, body, max_results=max_results)
     if result is not None:
         results, api_total = result
         tool_result(request_id, json.dumps({
