@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 13 reference packs · 69 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 13 reference packs · 72 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -164,6 +164,8 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_list_hooks` | List hooks/extensions (filter by queue, active) |
 | `rossum_get_hook` | Get full hook details including code and config |
 | `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) |
+| `rossum_create_hook_from_template` | ✏️ Create a hook from a hook template (catalog) — template supplies the base, you supply name/queues/settings |
+| `rossum_duplicate_hook` | ✏️ Clone an existing hook (created inactive; queues/secrets/dependencies copied only on request) |
 | `rossum_delete_hook` | ⚠️ Delete a hook |
 | `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues) |
 | `rossum_extract_export_template` | Pull a Custom Format Templating export template out of a hook's `export_configs` into editable text |
@@ -171,6 +173,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |
 | `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status) |
 | `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override) |
+| `rossum_invoke_hook` | ✏️ Invoke a hook for REAL with a custom payload (live execution — external side effects; not a dry-run like test) |
 | `rossum_list_rules` | List business rules (filter by queue) |
 | `rossum_get_rule` | Get full rule details (trigger_condition, actions, queues) |
 | `rossum_create_rule` | ✏️ Create a new business rule (trigger_condition + actions) |
