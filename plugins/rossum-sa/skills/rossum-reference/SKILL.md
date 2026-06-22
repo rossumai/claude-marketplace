@@ -8,7 +8,7 @@ user-invocable: false
 
 This skill provides comprehensive reference documentation for the Rossum.ai document automation platform. For complete details, see [reference.md](reference.md).
 
-Which Rossum API operations the `rossum-api` MCP server currently wraps — and which are not yet covered — is tracked in [api-coverage.md](api-coverage.md) (auto-generated; ⬜ pending = exists in the API, no MCP tool yet).
+Which Rossum API operations the `rossum-api` MCP server wraps is tracked in [api-coverage.md](api-coverage.md) (auto-generated). Read (GET) operations without a dedicated tool are still reachable through the generic `rossum_get` tool (shown as ✅ via rossum_get); ⬜ pending = an uncovered write with no MCP tool yet.
 
 ## Verification Rule (read first)
 
