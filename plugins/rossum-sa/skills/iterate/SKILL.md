@@ -17,7 +17,7 @@ Pick this up automatically when **any** of the following holds:
 
 - The user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", "make this work on <annotation_id>", or any equivalent.
 - A `goal:` line, a `Goal:` heading, or a `/goal …` prompt appears in the request.
-- You have just delivered a hook/formula/rule/schema change in a `prd2` project and the user has not yet confirmed it works end-to-end on a real annotation. In that case, **offer this skill proactively** (see "UX entry prompt" below).
+- You have just delivered **or updated** a hook/formula/rule/schema change in a `prd2` project and the user has not yet confirmed it works end-to-end on a real annotation. **Whenever you finish a deliverable, proactively offer to verify it — do not wait to be asked** (see "UX entry prompt" below). Always verify against a **sandbox/UAT** annotation, never production.
 
 Do **not** pick this up for cross-environment regression testing — that is `test-behavioral-equivalence`. The split is: `iterate` = tight inner loop on one document during development; `test-behavioral-equivalence` = full regression suite before promoting.
 
@@ -33,6 +33,7 @@ Before ANY MCP tool or CLI command that **creates, modifies, or deletes** resour
 This applies to:
 - `rossum_refire_annotation`, `rossum_start_annotation`, `rossum_cancel_annotation`, `rossum_validate_content`
 - `rossum_patch_annotation` (status changes, including `confirmed`/`exporting`)
+- `rossum_confirm_annotation` (fires real export / approval routing — the least reversible op here)
 - `prd2 push` and `prd2 deploy` commands
 
 Read-only operations are fine without confirmation: `rossum_get_annotation` (compact merged view), `rossum_get_annotation_meta`, `rossum_get_annotation_content`, `rossum_list_hook_logs`, `rossum_get_document`.
@@ -44,18 +45,45 @@ Read-only operations are fine without confirmation: `rossum_get_annotation` (com
 
 When you have just finished a deliverable (hook/formula/rule change pushed via `prd2 push`, or any equivalent), ask the user **once**, in a single message:
 
-> Want to verify this against a real annotation? Paste an annotation ID or URL (or say "skip").
+> Want to verify this against a real annotation? Paste a **sandbox/UAT** annotation ID or URL (or say "skip").
 
 - If they paste an ID/URL → continue with the loop below.
 - If they say "skip" or anything dismissive → end the skill, no further prompts.
 
 If the user already provided an annotation ID in their request, skip this prompt and use that ID directly.
 
+**Always test on a sandbox/UAT document.** If the only annotation on offer belongs to a `prod` queue, decline it and ask for a sandbox/UAT equivalent — the loop re-fires (and may confirm), which you must never do on production. If you cannot tell which environment the ID belongs to, ask before any write (see the hard-gate above).
+
 If the user has not yet stated a **goal** ("the field `po_status_match` should resolve to `Approved`"), ask once:
 
 > What is the goal? One sentence describing what you expect to see in the result.
 
 The goal becomes the success criterion for each iteration. Write it into the task list so it survives interruptions.
+
+**Turn the goal into explicit assertions.** Before the first re-fire, restate the goal as a concrete, checkable list against the fields the compact response returns — this is what makes the loop *closed* rather than a vibe-check. For example:
+
+| Assertion | Field | Expected |
+|---|---|---|
+| 1 | `po_status_match` | `Approved` |
+| 2 | `supplier_id` | non-empty (matched) |
+| 3 | `blocker.items` | none on `amount_total` |
+
+If the user gave a one-line goal, derive the assertion list yourself and show it to them before iterating ("I'll consider it done when: …"). Each iteration is then a pass/fail against this list, not a judgment call.
+
+## Where to test: the original, or a throwaway copy
+
+Re-firing **mutates the annotation you point at** — `validate`/`toggle` recompute and save its datapoints, `confirm` exports it. Sometimes that is fine (the engineer handed you a scratch document and is happy for you to play with it); sometimes the original must stay pristine. **Decide this once, up front — before the first re-fire — not every iteration.**
+
+- **Interactive dev mode** (engineer shares "annotation X is broken, here is my fix") → ask **once**, after you have the annotation + goal:
+  > Test on the original directly, or work on a throwaway copy I delete when we're done?
+  Use the original only when they confirm it's OK to mutate it. Otherwise make a copy.
+- **`/goal` autonomous loop** → you decide the technique. **Prefer the copy** unless the user already said the original is fine.
+
+**How the copy works.** `rossum_refire_annotation mode="reupload"` re-uploads the source PDF and returns a **new annotation ID** (`_refire.target_annotation_id`); the original is never touched. Iterate against that new ID from then on. Caveat: re-upload re-runs OCR + extraction from scratch — the copy is a *fresh run of the same document*, not a content-identical clone, so manual corrections on the original are not carried over. For the usual "does my fix make a fresh run come out right?" test that is exactly what you want; if your assertions depend on specific human-entered values, test the original (with confirmation) instead.
+
+**Cleanup.** When the loop ends, if you created a copy, **offer to delete it** (don't auto-delete): `rossum_patch_annotation` with `status="deleted"` on the copy's ID — a write, so it passes the hard-gate. Record the copy's ID in the task list so it doesn't get orphaned.
+
+Either way: **sandbox/UAT only**, never production.
 
 ## The four re-fire patterns
 
@@ -119,6 +147,16 @@ When a hook reacts to one specific datapoint change, you can mutate that datapoi
 
 For most iteration loops you will NOT need this — soft re-fire on the saved annotation already exercises the hook chain.
 
+### Confirm — the export / approval-routing trigger
+
+When the goal is about what happens **at confirmation** (export payload, approval-workflow routing, `annotation_content.confirmed` hooks), re-firing `validate` is not enough — you must actually confirm. Use `rossum_confirm_annotation` (`POST /annotations/{id}/confirm`): it transitions the annotation to `exported`/`exporting` (or `confirmed`, or `in_workflow`) and **fires the downstream export / approval routing** — a real, not-easily-reversible side effect, so it passes through the hard-gate like any write, and **never on prod**. Confirm the *correct* way (this endpoint), not by patching status directly. **Precondition:** the annotation must be in `reviewing` (i.e. started) first — call `rossum_start_annotation`, then confirm; confirming a `to_review` annotation returns HTTP 409. (Shipped via the `rossum_confirm_annotation` tool; if your server predates it, that tool may be absent — fall back to the UI for the confirm leg rather than patching status.)
+
+### Re-running automation in place — `reautomate` (internal, not available via SA tokens)
+
+Rossum has `POST /api/v1/internal/annotations/reautomate` — a batch endpoint that re-runs the **initialize + automation** pipeline on existing annotations *without re-uploading* (status → `importing`, content preserved, fires `annotation_content.initialize`, then the automation decision → `to_review` or `confirmed`/`exporting`; with `if_modified: try_to_confirm` it simulates open→Confirm for API-modified annotations; non-`to_review` annotations are skipped). It is the natural primitive for *"master data changed — re-run matching/automation on these N documents."*
+
+**It is Rossum-staff-only.** Verified live (NXP sandbox, 2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
+
 ## The iteration loop
 
 Repeat until the goal is met or the user stops you:
@@ -127,7 +165,7 @@ Repeat until the goal is met or the user stops you:
 2. **Push, gated.** Stage only the modified files and run `prd2 push <env> -io`. Confirm the file list with the user before executing.
 3. **Re-fire via `rossum_refire_annotation`** in the right mode. The default `validate` mode is correct for most cases.
 4. **Read the result.** Use the compact response's `fields`, `blocker.items`, and `recent_hooks` sections. If you need raw positions or OCR coordinates, `Read` the cache file at `_meta.full_payload_cache`.
-5. **Diff against the goal.** State explicitly: "Goal was X, observed Y." If they match → goal met, ask the user to confirm and exit. If not → check `recent_hooks` for failures or `rossum_list_hook_logs(annotation=<id>)` for older logs; modify the code; loop.
+5. **Check the assertions — emit a PASS/FAIL table.** Evaluate each assertion from the goal list against the compact response and print a row per assertion: `assertion · field · expected · observed · ✅/❌`. The loop is **green only when every row passes**. If any fail → check `recent_hooks` for failures or `rossum_list_hook_logs(annotation=<id>)` for older logs; modify the code; loop. Do not declare success on a partial pass or a "looks right" — every assertion must be ✅, or you state which are still ❌ and keep going.
 6. **Bound the loop.** Default `--max-iterations=5`. After 5 unsuccessful iterations, stop and present the current state with the root-cause hypothesis — do not silently keep trying. The user decides whether to keep going.
 
 Update tasks at every step. Each iteration is a task ("iteration 3: try X"), marked completed when the re-fire returns.
@@ -157,7 +195,7 @@ Look for:
 
 ## When to stop and hand off
 
-- **Goal met** → confirm with user, end the loop.
+- **All assertions green** → confirm with user, end the loop. If you tested on a throwaway copy, offer to delete it now (`rossum_patch_annotation status="deleted"`, gated) — don't leave it orphaned.
 - **Max iterations reached without success** → stop, present current state + root-cause hypothesis, let user decide.
 - **The deliverable needs cross-environment verification** → hand off to `test-behavioral-equivalence` for a full corpus regression. `iterate` confirms one document; equivalence confirms the population.
 - **Goal turns out to be wrong / ambiguous** → stop and ask the user to clarify before another iteration.
@@ -169,3 +207,4 @@ Look for:
 - `mode="validate"` is the default — start there; reach for toggle/reupload only when you need them.
 - Edit local `.py` files only; let `prd2 push` sync into JSON.
 - Bound the loop. 5 iterations max by default; stop and surface state if not met.
+- If you made a throwaway copy, offer to delete it when the loop ends — on **any** exit path (success, max-iterations, or abandon), not just success. Offer, don't auto-delete.

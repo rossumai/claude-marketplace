@@ -202,6 +202,15 @@ The `.md` file is generated from the `.yaml` and must contain, at minimum:
    - [ ] Any code incompatible with 3.12 rewritten in the hook's `.py` file.
    - [ ] Tested in dev/sandbox before promoting to production.
 
+## Verify the upgrade against an annotation
+
+A migration is not done when the manifest is written — it is done when a replacement formula/hook produces the **same value** the deprecated extension did, on a real document. Whenever you finish migrating an extension or bumping a runtime, **proactively offer to verify it** rather than waiting to be asked:
+
+> Want to verify these replacements against a real annotation? Paste a **sandbox/UAT** annotation ID (or say "skip").
+
+- Single document, tight inner loop ("did formula `F05` resolve to the same value the old hook produced?") → hand off to the `iterate` skill. Always use a **sandbox/UAT** annotation — never production; the loop re-fires (and may confirm) the document.
+- Whole population, before promoting ("did anything regress across the corpus?") → hand off to `test-behavioral-equivalence`, which uses the `# migration-trace:` breadcrumbs to attribute any diffs back to the migration that caused them.
+
 ## Formula Field Rules
 
 When writing replacement formulas, follow these constraints:
