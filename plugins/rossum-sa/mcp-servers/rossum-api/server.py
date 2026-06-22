@@ -3156,6 +3156,40 @@ def handle_test_hook(request_id, arguments):
 
 
 @_tool(
+    "rossum_invoke_hook",
+    "RUNS a hook for real — not a dry-run. Sends an 'invocation' event to the hook with your custom "
+    "payload merged in and returns the hook's actual response. Unlike rossum_test_hook (which generates "
+    "a fake payload and executes in isolation without mutating anything), invoke can have REAL side "
+    "effects: webhook hooks POST to their external endpoint, function hooks call external systems and "
+    "mutate annotations via their token_owner. The hook's config.timeout_s is forced to 30 for this call. "
+    "Use only on a throwaway/sandbox hook unless you intend the side effects. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["hook_id"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "ID of the hook to invoke.",
+            },
+            "payload": {
+                "type": "object",
+                "description": (
+                    "Properties merged into the standard invocation event payload, e.g. "
+                    "{\"SAP_ID\": \"1234\"}. Standard response attributes (request_id, action, …) are not "
+                    "overwritten. Omit for an empty payload."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_invoke_hook(request_id, arguments):
+    hook_id = arguments["hook_id"]
+    _rossum_post(request_id, f"/api/v1/hooks/{hook_id}/invoke", arguments.get("payload", {}))
+
+
+@_tool(
     "rossum_list_rules",
     "Lists Rossum business rules (/v1/rules). A rule evaluates a boolean trigger_condition (a Rossum "
     "formula) at validation time and, when True, emits actions such as automation blockers, messages, "

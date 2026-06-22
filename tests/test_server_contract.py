@@ -331,3 +331,26 @@ def test_duplicate_hook_builds_body(monkeypatch):
     assert call["url"].endswith("/api/v1/hooks/42/duplicate")
     assert call["body"] == {"name": "Clone", "copy_queues": True}
     assert emitted_payload(emitted) == dup
+
+
+def test_invoke_hook_posts_payload(monkeypatch):
+    resp = {"results": [{"id": "req-1", "operations": []}]}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_invoke_hook",
+        {"hook_id": 42, "payload": {"SAP_ID": "1234"}},
+        lambda url, method, body: resp
+        if method == "POST" and url.endswith("/api/v1/hooks/42/invoke") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/hooks/42/invoke")
+    assert call["body"] == {"SAP_ID": "1234"}
+    assert emitted_payload(emitted) == resp
+
+
+def test_invoke_hook_defaults_empty_payload(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_invoke_hook", {"hook_id": 42},
+        lambda url, method, body: {"ok": True},
+    )
+    assert fake.calls[0]["body"] == {}
