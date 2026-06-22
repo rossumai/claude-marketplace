@@ -2652,9 +2652,8 @@ def handle_create_hook_from_template(request_id, arguments):
     body = {
         "hook_template": f"{base_url}/api/v1/hook_templates/{arguments['hook_template']}",
         "name": arguments["name"],
+        "queues": [f"{base_url}/api/v1/queues/{qid}" for qid in arguments.get("queue_ids", [])],
     }
-    if "queue_ids" in arguments:
-        body["queues"] = [f"{base_url}/api/v1/queues/{qid}" for qid in arguments["queue_ids"]]
     if "token_owner" in arguments:
         body["token_owner"] = f"{base_url}/api/v1/users/{arguments['token_owner']}"
     for key in ("events", "active", "settings", "config"):

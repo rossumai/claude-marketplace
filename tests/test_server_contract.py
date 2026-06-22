@@ -357,3 +357,24 @@ def test_invoke_hook_defaults_empty_payload(monkeypatch):
         lambda url, method, body: {"ok": True},
     )
     assert fake.calls[0]["body"] == {}
+
+
+def test_create_hook_from_template_always_sends_queues(monkeypatch):
+    """Regression: POST /api/v1/hooks/create requires 'queues' field even when
+    queue_ids is omitted. Empty list [] means unattached — still accepted by the
+    API. Previously the key was absent, causing HTTP 400 from the real API."""
+    created = {"id": 51, "name": "X", "type": "function"}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_create_hook_from_template",
+        {"hook_template": 998877, "name": "X"},   # NO queue_ids supplied
+        lambda url, method, body: created
+        if method == "POST" and url.endswith("/api/v1/hooks/create") else None,
+    )
+    call = fake.calls[0]
+    assert "queues" in call["body"], (
+        "queues key must always be present in the request body — "
+        "the API returns HTTP 400 if it is missing"
+    )
+    assert call["body"]["queues"] == [], (
+        f"expected empty list for unattached hook, got {call['body']['queues']!r}"
+    )
