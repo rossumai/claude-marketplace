@@ -316,3 +316,18 @@ def test_create_hook_from_template_builds_body(monkeypatch):
     assert call["body"]["queues"] == [f"{BASE}/api/v1/queues/7"]
     assert call["body"]["token_owner"] == f"{BASE}/api/v1/users/3"
     assert emitted_payload(emitted) == created
+
+
+def test_duplicate_hook_builds_body(monkeypatch):
+    dup = {"id": 99, "name": "Clone", "active": False}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_duplicate_hook",
+        {"hook_id": 42, "name": "Clone", "copy_queues": True},
+        lambda url, method, body: dup
+        if method == "POST" and url.endswith("/api/v1/hooks/42/duplicate") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/hooks/42/duplicate")
+    assert call["body"] == {"name": "Clone", "copy_queues": True}
+    assert emitted_payload(emitted) == dup

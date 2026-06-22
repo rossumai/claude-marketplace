@@ -2664,6 +2664,50 @@ def handle_create_hook_from_template(request_id, arguments):
 
 
 @_tool(
+    "rossum_duplicate_hook",
+    "Clones an existing hook (extension). The copy is always created inactive (active=false), and its "
+    "queues are NOT copied unless copy_queues=true — so it is safe to duplicate then tweak before "
+    "attaching. Optionally copies secrets and run_after dependencies. Use rossum_patch_hook afterwards "
+    "to adjust the clone. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["hook_id", "name"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "ID of the hook to duplicate.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Display name for the duplicated hook.",
+            },
+            "copy_secrets": {
+                "type": "boolean",
+                "description": "Copy the source hook's secrets into the clone (default: false).",
+            },
+            "copy_dependencies": {
+                "type": "boolean",
+                "description": "Copy run_after execution-ordering dependencies (default: false).",
+            },
+            "copy_queues": {
+                "type": "boolean",
+                "description": "Attach the clone to the same queues as the source (default: false — clone is unattached).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_duplicate_hook(request_id, arguments):
+    hook_id = arguments["hook_id"]
+    body = {"name": arguments["name"]}
+    for key in ("copy_secrets", "copy_dependencies", "copy_queues"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, f"/api/v1/hooks/{hook_id}/duplicate", body)
+
+
+@_tool(
     "rossum_delete_hook",
     "Deletes a hook (extension) from the Rossum organization. "
     "This is a destructive operation that cannot be undone.",
