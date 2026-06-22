@@ -316,6 +316,9 @@ def test_create_hook_from_template_builds_body(monkeypatch):
     assert call["body"]["queues"] == [f"{BASE}/api/v1/queues/7"]
     assert call["body"]["token_owner"] == f"{BASE}/api/v1/users/3"
     assert emitted_payload(emitted) == created
+    # optional pass-through fields not supplied must be absent
+    for absent in ("events", "active", "settings", "config"):
+        assert absent not in call["body"]
 
 
 def test_duplicate_hook_builds_body(monkeypatch):
