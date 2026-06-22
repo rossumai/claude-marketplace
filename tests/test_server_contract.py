@@ -296,3 +296,23 @@ def test_paginate_search_respects_max_results(monkeypatch):
     out = emitted_payload(emitted)
     assert out["returned"] == 1 and out["total"] == 99
     assert len(fake.calls) == 1   # stopped before following next
+
+
+# --- hook write tools (create-from-template / duplicate / invoke) ---
+
+def test_create_hook_from_template_builds_body(monkeypatch):
+    created = {"id": 50, "name": "From Tmpl", "type": "function"}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_create_hook_from_template",
+        {"hook_template": 998877, "name": "From Tmpl", "queue_ids": [7], "token_owner": 3},
+        lambda url, method, body: created
+        if method == "POST" and url.endswith("/api/v1/hooks/create") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/hooks/create")
+    assert call["body"]["hook_template"] == f"{BASE}/api/v1/hook_templates/998877"
+    assert call["body"]["name"] == "From Tmpl"
+    assert call["body"]["queues"] == [f"{BASE}/api/v1/queues/7"]
+    assert call["body"]["token_owner"] == f"{BASE}/api/v1/users/3"
+    assert emitted_payload(emitted) == created
