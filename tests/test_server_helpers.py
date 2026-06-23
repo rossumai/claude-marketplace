@@ -156,6 +156,23 @@ def test_paginate_returns_none_on_error(monkeypatch):
     assert server._paginate(1, url) is None
 
 
+def test_http_request_empty_body_returns_empty_dict(monkeypatch):
+    # A 2xx with an empty body (e.g. POST /annotations/purge_deleted -> 202 no content)
+    # must not crash json.loads; _http_request returns {} instead.
+    monkeypatch.setattr(server, "_cached_token", "t")
+
+    class _Resp:
+        status = 202
+        def read(self): return b""
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(server.urllib.request, "urlopen", lambda req, **k: _Resp())
+    out = server._http_request(1, "https://x.rossum.ai/api/v1/annotations/purge_deleted",
+                               method="POST", body={"annotations": []})
+    assert out == {}
+
+
 def test_auth_headers_includes_ua_without_marker(monkeypatch):
     monkeypatch.setattr(server, "_cached_token", "tok")
     monkeypatch.setattr(server, "_current_tool", None)

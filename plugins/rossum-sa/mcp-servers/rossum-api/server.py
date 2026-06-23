@@ -267,7 +267,8 @@ def _http_request(request_id, url, *, method="GET", body=None, parse_json=True):
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
             if not parse_json:
                 return resp.status
-            return json.loads(resp.read().decode("utf-8"))
+            data = resp.read()
+            return json.loads(data.decode("utf-8")) if data else {}
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8") if e.fp else str(e)
         if e.code == 401:
