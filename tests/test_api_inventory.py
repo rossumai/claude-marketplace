@@ -284,6 +284,20 @@ def test_no_stale_coverage_entries():
     assert not stale, f"coverage-map.json has entries for endpoints not in the inventory: {stale}"
 
 
+def test_extract_tool_endpoints_matches_fixed_endpoint_helper():
+    """A handler that calls a _FIXED_ENDPOINT_HELPERS entry (e.g. _upload_to_queue)
+    with no direct _http_request_raw / url-building in the block must still be
+    attributed to the fixed endpoint registered for that helper."""
+    src = '''
+@_tool("rossum_upload_document", "d", {"type": "object"})
+def handle_upload_document(request_id, arguments):
+    _upload_to_queue(request_id, queue_id, file_content, filename)
+'''
+    te = coverage.extract_tool_endpoints(src)
+    assert ("POST", "/uploads") in te
+    assert "rossum_upload_document" in te[("POST", "/uploads")]
+
+
 def test_extract_tool_endpoints_url_builder_scopes_to_passed_var():
     """Regression (PR #73 review): the URL-builder branch must attribute ONLY the URL
     variable actually passed to the helper, not every f-string assignment in the block.

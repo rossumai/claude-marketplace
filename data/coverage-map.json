@@ -581,8 +581,18 @@
     "reason": "niche",
     "summary": "Create suggested edit"
   },
-  "POST /uploads": {"decision": "covered", "summary": "Create upload", "tools": ["rossum_upload_document"]},
-  "POST /uploads/{filename}": {"decision": "not_planned", "reason": "redundant; rossum_upload_document uses POST /uploads (query-param form)", "summary": "Create upload with filename"},
+  "POST /uploads": {
+    "decision": "covered",
+    "summary": "Create upload",
+    "tools": [
+      "rossum_upload_document"
+    ]
+  },
+  "POST /uploads/{filename}": {
+    "decision": "not_planned",
+    "reason": "redundant; rossum_upload_document uses POST /uploads (query-param form)",
+    "summary": "Create upload with filename"
+  },
   "POST /users": {
     "decision": "covered",
     "summary": "Create user",
