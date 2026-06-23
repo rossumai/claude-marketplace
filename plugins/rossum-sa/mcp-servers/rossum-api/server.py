@@ -413,6 +413,113 @@ def _http_get_typed(request_id, url):
         return (None, None)
 
 
+_EXT_CONTENT_TYPE = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+
+def _content_type_for(filename):
+    """Best-effort MIME from a filename extension; stdlib-only (no mimetypes import)."""
+    dot = filename.rfind(".")
+    if dot != -1:
+        ext = filename[dot:].lower()
+        if ext in _EXT_CONTENT_TYPE:
+            return _EXT_CONTENT_TYPE[ext]
+    return "application/octet-stream"
+
+
+def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
+                     content_type=None, *, metadata=None, values=None,
+                     reject_identical=None, poll_timeout=180):
+    """Upload bytes to a queue via the modern POST /uploads (HTTP 202 -> task).
+
+    Polls task -> upload object -> first annotation URL and returns it. metadata
+    and values, when given, must already be JSON strings. Returns the annotation
+    URL, or None when an error tool_result was already emitted.
+    """
+    if content_type is None:
+        content_type = _content_type_for(filename)
+    boundary = f"----upload-{int(time.time())}"
+    parts = [
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="content"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode()
+        + file_bytes
+        + b"\r\n"
+    ]
+
+    def _text_part(name, value):
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode()
+
+    if metadata is not None:
+        parts.append(_text_part("metadata", metadata))
+    if values is not None:
+        parts.append(_text_part("values", values))
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    query = f"queue={queue_id}"
+    if reject_identical:
+        query += "&reject_identical=true"
+    resp = _http_request_raw(
+        request_id, f"{base_url}/api/v1/uploads?{query}",
+        method="POST", raw_body=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+    if resp is None:
+        return None
+    task_url = resp.get("url") if isinstance(resp, dict) else None
+    if not task_url:
+        tool_result(request_id, f"Upload response missing task URL: {resp!r}", is_error=True)
+        return None
+
+    deadline = time.time() + poll_timeout
+    upload_url = None
+    while time.time() < deadline:
+        task = _http_request(request_id, task_url)
+        if task is None:
+            return None
+        status = task.get("status")
+        if status == "succeeded":
+            upload_url = (task.get("content") or {}).get("upload") or task.get("result_url")
+            break
+        if status == "failed":
+            tool_result(
+                request_id,
+                f"Upload task failed: {task.get('detail') or task.get('code') or task!r}",
+                is_error=True,
+            )
+            return None
+        time.sleep(3)
+    if not upload_url:
+        tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
+        return None
+
+    while time.time() < deadline:
+        upload_obj = _http_request(request_id, upload_url)
+        if upload_obj is None:
+            return None
+        annotations = upload_obj.get("annotations") or []
+        if annotations:
+            return annotations[0]
+        time.sleep(3)
+    tool_result(request_id, "Upload created no annotation before timeout.", is_error=True)
+    return None
+
+
 def _data_storage_call(request_id, path, body):
     """POST to a Data Storage API endpoint."""
     base_url, _ = _ensure_connection(request_id)
