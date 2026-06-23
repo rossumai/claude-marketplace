@@ -309,10 +309,11 @@ def test_upload_document_happy_path(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_http_request_raw", fake_raw)
     monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    monkeypatch.setattr(server, "_http_get_no_follow",
+        lambda rid, url: {"status": "succeeded",
+                          "content": {"upload": f"{BASE}/api/v1/uploads/77"}})
 
     def responder(url, method, body):
-        if "/tasks/555" in url:
-            return {"status": "succeeded", "content": {"upload": f"{BASE}/api/v1/uploads/77"}}
         if "/uploads/77" in url:
             return {"annotations": [f"{BASE}/api/v1/annotations/900"]}
         if url.endswith("/annotations/900"):
@@ -369,6 +370,9 @@ def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
 
     monkeypatch.setattr(server, "_http_request_raw", fake_raw)
     monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    monkeypatch.setattr(server, "_http_get_no_follow",
+        lambda rid, url: {"status": "succeeded",
+                          "content": {"upload": f"{BASE}/api/v1/uploads/9"}})
     state = {"new_status": "importing"}
 
     def responder(url, method, body):
@@ -378,9 +382,6 @@ def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
         if "/documents/7" in url and "/content" not in url:
             return {"content": f"{BASE}/api/v1/documents/7/content",
                     "original_file_name": "src.pdf"}
-        if "/tasks/42" in url:
-            return {"status": "succeeded",
-                    "content": {"upload": f"{BASE}/api/v1/uploads/9"}}
         if url.endswith("/uploads/9"):
             return {"annotations": [f"{BASE}/api/v1/annotations/200"]}
         if url.endswith("/annotations/200"):

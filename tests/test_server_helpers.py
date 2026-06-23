@@ -325,14 +325,12 @@ def test_upload_to_queue_happy_path_builds_multipart_and_returns_annotation(monk
         captured["ct"] = content_type
         return {"url": "https://x.rossum.ai/api/v1/tasks/1"}
 
-    def responder(request_id, url, **k):
-        if "tasks/1" in url:
-            return {"status": "succeeded",
-                    "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}}
-        return {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
-
     monkeypatch.setattr(server, "_http_request_raw", fake_raw)
-    monkeypatch.setattr(server, "_http_request", responder)
+    monkeypatch.setattr(server, "_http_get_no_follow",
+        lambda rid, url: {"status": "succeeded",
+                          "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}})
+    monkeypatch.setattr(server, "_http_request",
+        lambda rid, url, **k: {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]})
     monkeypatch.setattr(server, "write_message", lambda m: None)
 
     out = server._upload_to_queue(
@@ -354,8 +352,8 @@ def test_upload_to_queue_task_failed_emits_error(monkeypatch):
     _seed_upload(monkeypatch)
     monkeypatch.setattr(server, "_http_request_raw",
                         lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
-    monkeypatch.setattr(server, "_http_request",
-                        lambda rid, url, **k: {"status": "failed", "detail": "boom"})
+    monkeypatch.setattr(server, "_http_get_no_follow",
+                        lambda rid, url: {"status": "failed", "detail": "boom"})
     emitted = []
     monkeypatch.setattr(server, "write_message", lambda m: emitted.append(m))
     out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
@@ -364,25 +362,22 @@ def test_upload_to_queue_task_failed_emits_error(monkeypatch):
     assert "boom" in emitted[-1]["result"]["content"][0]["text"]
 
 
-def test_upload_to_queue_follows_task_303_redirect_to_upload(monkeypatch):
-    # A succeeded task responds 303 -> upload object; urllib follows the redirect,
-    # so the GET on the task URL returns the upload object (no "status" field, a
-    # /uploads/ URL). The helper must treat that as success, not poll to timeout.
+def test_upload_to_queue_polls_task_via_no_follow(monkeypatch):
     _seed_upload(monkeypatch)
     monkeypatch.setattr(server, "_http_request_raw",
                         lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
+    monkeypatch.setattr(server, "_http_get_no_follow",
+        lambda rid, url: {"status": "succeeded",
+                          "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}})
 
-    def responder(rid, url, **k):
-        if "/tasks/1" in url:
-            # what urllib hands back after following the task's 303 redirect
-            return {"id": 9, "url": "https://x.rossum.ai/api/v1/uploads/9",
-                    "annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
+    def _req(rid, url, **k):
+        assert "/tasks/" not in url, "task must be polled via _http_get_no_follow"
         return {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
 
-    monkeypatch.setattr(server, "_http_request", responder)
+    monkeypatch.setattr(server, "_http_request", _req)
     monkeypatch.setattr(server, "write_message", lambda m: None)
-    out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
-    assert out == "https://x.rossum.ai/api/v1/annotations/3"
+    assert server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf") \
+        == "https://x.rossum.ai/api/v1/annotations/3"
 
 
 def test_no_follow_redirect_handler_returns_response_unfollowed():

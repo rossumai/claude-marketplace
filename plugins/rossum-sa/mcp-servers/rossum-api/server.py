@@ -521,7 +521,7 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
     deadline = time.time() + poll_timeout
     upload_url = None
     while time.time() < deadline:
-        task = _http_request(request_id, task_url)
+        task = _http_get_no_follow(request_id, task_url)
         if task is None:
             return None
         status = task.get("status")
@@ -535,14 +535,6 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
                 is_error=True,
             )
             return None
-        if status is None:
-            # A succeeded task responds HTTP 303 redirecting to its result (the upload
-            # object); urllib follows redirects, so we receive the upload object here
-            # instead of the task. Detect it by its /uploads/ URL and use it directly.
-            obj_url = task.get("url")
-            if isinstance(obj_url, str) and "/uploads/" in obj_url:
-                upload_url = obj_url
-                break
         time.sleep(3)
     if not upload_url:
         tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
