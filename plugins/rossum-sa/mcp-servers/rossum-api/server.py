@@ -3903,6 +3903,71 @@ def handle_cancel_annotation(request_id, arguments):
 
 
 @_tool(
+    "rossum_delete_annotation",
+    "Deletes one or more annotations — cleanup for synthetic tests / iteration loops. By "
+    "default a reversible soft-delete (status -> 'deleted'; reverse with "
+    "rossum_patch_annotation status='to_review'). With purge=true it permanently purges them "
+    "after soft-delete (IRREVERSIBLE) and polls until each reaches status 'purged'. "
+    "Destructive operation. NEVER on production annotations.",
+    {
+        "type": "object",
+        "required": ["annotation_ids"],
+        "properties": {
+            "annotation_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1,
+                               "description": "IDs of annotations to delete."},
+            "purge": {"type": "boolean",
+                      "description": "If true, permanently purge after soft-delete (irreversible)."},
+            "poll_timeout": {"type": "integer",
+                             "description": "Seconds to wait for purge confirmation (default 180)."},
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_annotation(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    ids = arguments["annotation_ids"]
+    deleted, errors = [], []
+    for aid in ids:
+        code = _http_request_silent(f"{base_url}/api/v1/annotations/{aid}/delete", method="POST")
+        if code is None:
+            tool_result(request_id, f"Network error soft-deleting annotation {aid}.", is_error=True)
+            return
+        if 200 <= code < 300:
+            deleted.append(aid)
+        elif code == 404:
+            errors.append({"id": aid, "error": "not found (already gone)"})
+        else:
+            errors.append({"id": aid, "error": f"HTTP {code}"})
+    result = {"soft_deleted": deleted, "errors": errors}
+    if not arguments.get("purge"):
+        tool_result(request_id, json.dumps(result, indent=2))
+        return
+    if deleted:
+        body = {"annotations": [f"{base_url}/api/v1/annotations/{aid}" for aid in deleted]}
+        purge = _http_request(
+            request_id, f"{base_url}/api/v1/annotations/purge_deleted", method="POST", body=body)
+        if purge is None:
+            return
+        deadline = time.time() + int(arguments.get("poll_timeout", 180))
+        pending = set(deleted)
+        while pending and time.time() < deadline:
+            for aid in list(pending):
+                ann = _http_request(request_id, f"{base_url}/api/v1/annotations/{aid}")
+                if ann is None:
+                    return
+                if ann.get("status") == "purged":
+                    pending.discard(aid)
+            if pending:
+                time.sleep(3)
+        result["purged"] = [a for a in deleted if a not in pending]
+        result["not_purged_in_time"] = sorted(pending)
+    tool_result(request_id, json.dumps(result, indent=2))
+
+
+@_tool(
     "rossum_confirm_annotation",
     "Confirms an annotation via POST /annotations/{id}/confirm — transitions it to "
     "'exported'/'exporting' (or 'confirmed' if the confirmed-state feature is enabled, "

@@ -46,6 +46,7 @@
     "decision": "covered",
     "summary": "Retrieve annotation",
     "tools": [
+      "rossum_delete_annotation",
       "rossum_get_annotation",
       "rossum_get_annotation_meta",
       "rossum_refire_annotation"
@@ -297,6 +298,13 @@
       "rossum_search_annotations_advanced"
     ]
   },
+  "POST /annotations/purge_deleted": {
+    "decision": "covered",
+    "summary": "Permanently purge soft-deleted annotations",
+    "tools": [
+      "rossum_delete_annotation"
+    ]
+  },
   "POST /annotations/suggested_recipients": {
     "decision": "not_planned",
     "reason": "operator/comms",
@@ -374,9 +382,11 @@
     "summary": "Create embedded URL"
   },
   "POST /annotations/{annotationID}/delete": {
-    "decision": "not_planned",
-    "reason": "operator/validation-UI",
-    "summary": "Switch to deleted"
+    "decision": "covered",
+    "summary": "Soft-delete annotation (switch status to deleted)",
+    "tools": [
+      "rossum_delete_annotation"
+    ]
   },
   "POST /annotations/{annotationID}/edit": {
     "decision": "not_planned",

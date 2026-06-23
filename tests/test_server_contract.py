@@ -415,3 +415,47 @@ def test_get_task_returns_task_object(monkeypatch):
                                 lambda url, method, body: None)
     out = emitted_payload(emitted)
     assert out["id"] == 5 and out["status"] == "succeeded"
+
+
+def test_delete_annotation_soft_delete_batch(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_http_request_silent",
+                        lambda url, method="GET": calls.append((url, method)) or 204)
+    fake, emitted = run_handler(monkeypatch, "rossum_delete_annotation",
+                                {"annotation_ids": [11, 22]},
+                                lambda url, method, body: None)
+    out = emitted_payload(emitted)
+    assert out["soft_deleted"] == [11, 22]
+    assert out["errors"] == []
+    assert all(m == "POST" and u.endswith("/delete") for u, m in calls)
+    assert "purged" not in out  # purge not requested
+
+
+def test_delete_annotation_purge_polls_until_purged(monkeypatch):
+    monkeypatch.setattr(server, "_http_request_silent", lambda url, method="GET": 204)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    state = {11: ["deleted", "purged"]}
+
+    def responder(url, method, body):
+        if url.endswith("/annotations/purge_deleted"):
+            return {}  # 202-ish
+        if url.endswith("/annotations/11"):
+            return {"id": 11, "status": state[11].pop(0) if len(state[11]) > 1 else state[11][0]}
+        return None
+
+    fake, emitted = run_handler(monkeypatch, "rossum_delete_annotation",
+                                {"annotation_ids": [11], "purge": True}, responder)
+    out = emitted_payload(emitted)
+    assert out["purged"] == [11]
+    assert out["not_purged_in_time"] == []
+
+
+def test_delete_annotation_records_per_id_errors(monkeypatch):
+    monkeypatch.setattr(server, "_http_request_silent",
+                        lambda url, method="GET": 404 if "/99/" in url else 204)
+    fake, emitted = run_handler(monkeypatch, "rossum_delete_annotation",
+                                {"annotation_ids": [11, 99]},
+                                lambda url, method, body: None)
+    out = emitted_payload(emitted)
+    assert out["soft_deleted"] == [11]
+    assert out["errors"] and out["errors"][0]["id"] == 99
