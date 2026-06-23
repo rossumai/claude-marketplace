@@ -362,3 +362,24 @@ def test_upload_to_queue_task_failed_emits_error(monkeypatch):
     assert out is None
     assert emitted[-1]["result"].get("isError")
     assert "boom" in emitted[-1]["result"]["content"][0]["text"]
+
+
+def test_upload_to_queue_follows_task_303_redirect_to_upload(monkeypatch):
+    # A succeeded task responds 303 -> upload object; urllib follows the redirect,
+    # so the GET on the task URL returns the upload object (no "status" field, a
+    # /uploads/ URL). The helper must treat that as success, not poll to timeout.
+    _seed_upload(monkeypatch)
+    monkeypatch.setattr(server, "_http_request_raw",
+                        lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
+
+    def responder(rid, url, **k):
+        if "/tasks/1" in url:
+            # what urllib hands back after following the task's 303 redirect
+            return {"id": 9, "url": "https://x.rossum.ai/api/v1/uploads/9",
+                    "annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
+        return {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
+
+    monkeypatch.setattr(server, "_http_request", responder)
+    monkeypatch.setattr(server, "write_message", lambda m: None)
+    out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
+    assert out == "https://x.rossum.ai/api/v1/annotations/3"

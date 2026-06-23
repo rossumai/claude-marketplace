@@ -503,6 +503,14 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
                 is_error=True,
             )
             return None
+        if status is None:
+            # A succeeded task responds HTTP 303 redirecting to its result (the upload
+            # object); urllib follows redirects, so we receive the upload object here
+            # instead of the task. Detect it by its /uploads/ URL and use it directly.
+            obj_url = task.get("url")
+            if isinstance(obj_url, str) and "/uploads/" in obj_url:
+                upload_url = obj_url
+                break
         time.sleep(3)
     if not upload_url:
         tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
