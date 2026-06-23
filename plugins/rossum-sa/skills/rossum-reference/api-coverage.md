@@ -419,7 +419,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 
 | Operation | Status | Tool(s) |
 |---|---|---|
-| `POST /uploads` | ✅ covered | rossum_upload_document |
+| `POST /uploads` | ✅ covered | rossum_refire_annotation, rossum_upload_document |
 | `POST /uploads/{filename}` | 🚫 not_planned |  |
 | `GET /uploads/{uploadID}` | ✅ via rossum_get | rossum_get |
 

@@ -585,6 +585,7 @@
     "decision": "covered",
     "summary": "Create upload",
     "tools": [
+      "rossum_refire_annotation",
       "rossum_upload_document"
     ]
   },

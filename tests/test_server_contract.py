@@ -357,3 +357,51 @@ def test_upload_document_too_large(monkeypatch, tmp_path):
     res = emitted[-1]["result"]
     assert res.get("isError")
     assert "40" in res["content"][0]["text"]
+
+
+def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
+    monkeypatch.setattr(server, "_http_get_bytes", lambda rid, url: b"PDFBYTES")
+    raw = {}
+
+    def fake_raw(request_id, url, *, method="POST", raw_body=b"", content_type=None):
+        raw["url"] = url
+        return {"url": f"{BASE}/api/v1/tasks/42"}
+
+    monkeypatch.setattr(server, "_http_request_raw", fake_raw)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    state = {"new_status": "importing"}
+
+    def responder(url, method, body):
+        if url.endswith("/annotations/100"):
+            return {"document": f"{BASE}/api/v1/documents/7",
+                    "queue": f"{BASE}/api/v1/queues/5"}
+        if "/documents/7" in url and "/content" not in url:
+            return {"content": f"{BASE}/api/v1/documents/7/content",
+                    "original_file_name": "src.pdf"}
+        if "/tasks/42" in url:
+            return {"status": "succeeded",
+                    "content": {"upload": f"{BASE}/api/v1/uploads/9"}}
+        if url.endswith("/uploads/9"):
+            return {"annotations": [f"{BASE}/api/v1/annotations/200"]}
+        if url.endswith("/annotations/200"):
+            s = state["new_status"]
+            state["new_status"] = "to_review"  # next GET reports settled
+            return {"id": 200, "status": s,
+                    "document": f"{BASE}/api/v1/documents/7",
+                    "queue": f"{BASE}/api/v1/queues/5",
+                    "automation_blocker": None}
+        if "/annotations/200/content" in url:
+            return {"results": []}
+        if "/hooks/logs" in url:
+            return {"results": []}
+        return None
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_refire_annotation",
+        {"annotation_id": 100, "mode": "reupload"}, responder,
+    )
+    out = emitted_payload(emitted)
+    # routed through the modern endpoint, NOT /queues/5/upload
+    assert "/api/v1/uploads?queue=5" in raw["url"]
+    assert "/queues/5/upload" not in raw["url"]
+    assert out["_refire"]["target_annotation_id"] == 200

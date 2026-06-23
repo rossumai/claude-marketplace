@@ -4278,45 +4278,14 @@ def handle_refire_annotation(request_id, arguments):
         pdf_bytes = _http_get_bytes(request_id, content_url)
         if pdf_bytes is None:
             return
-        # 4. multipart upload
+        # 4. upload via the modern /uploads API (shared helper handles the
+        #    202 -> task -> upload -> annotation async chain)
         queue_id = queue_url.rstrip("/").rsplit("/", 1)[-1]
-        upload_url = f"{base_url}/api/v1/queues/{queue_id}/upload"
-        boundary = f"----refire-{int(time.time())}"
-        pre = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="content"; filename="{original_name}"\r\n'
-            f"Content-Type: application/pdf\r\n\r\n"
-        ).encode()
-        post = f"\r\n--{boundary}--\r\n".encode()
-        body = pre + pdf_bytes + post
-        upload_resp = _http_request_raw(
-            request_id, upload_url, method="POST", raw_body=body,
-            content_type=f"multipart/form-data; boundary={boundary}",
+        new_url = _upload_to_queue(
+            request_id, base_url, queue_id, pdf_bytes, original_name,
+            poll_timeout=poll_timeout,
         )
-        if upload_resp is None:
-            return
-        # Rossum's upload response shape: {"annotation": "<URL>", "document": "<URL>",
-        # "results": [{"annotation": "<URL>", "document": "<URL>"}]}.
-        # Older shapes may use "annotations" (plural list). Try in priority order.
-        new_url = None
-        if isinstance(upload_resp, dict):
-            top_ann = upload_resp.get("annotation")
-            if isinstance(top_ann, str):
-                new_url = top_ann
-            if not new_url:
-                results = upload_resp.get("results") or upload_resp.get("annotations") or []
-                if results:
-                    first = results[0]
-                    if isinstance(first, str):
-                        new_url = first
-                    elif isinstance(first, dict):
-                        new_url = first.get("annotation") or first.get("url")
-        if not new_url:
-            tool_result(
-                request_id,
-                f"Upload response missing annotation URL: {upload_resp!r}",
-                is_error=True,
-            )
+        if new_url is None:
             return
         target_aid = int(new_url.rstrip("/").rsplit("/", 1)[-1])
         refire_meta["target_annotation_id"] = target_aid
