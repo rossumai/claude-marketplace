@@ -46,7 +46,6 @@
     "decision": "covered",
     "summary": "Retrieve annotation",
     "tools": [
-      "rossum_delete_annotation",
       "rossum_get_annotation",
       "rossum_get_annotation_meta",
       "rossum_refire_annotation"

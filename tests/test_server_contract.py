@@ -451,6 +451,30 @@ def test_delete_annotation_purge_polls_until_purged(monkeypatch):
     assert out["not_purged_in_time"] == []
 
 
+def test_delete_annotation_purge_mid_poll_404_treated_as_purged(monkeypatch):
+    # _http_request_silent: 204 for the soft-delete POST (/delete), 404 for the poll GET
+    def silent(url, method="GET"):
+        if url.endswith("/delete"):
+            return 204  # soft-delete POST succeeds
+        return 404      # poll GET: annotation already gone
+
+    monkeypatch.setattr(server, "_http_request_silent", silent)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+
+    def responder(url, method, body):
+        if url.endswith("/annotations/purge_deleted"):
+            return {}  # 202-ish trigger
+        return None  # poll GET should never reach _http_request
+
+    fake, emitted = run_handler(monkeypatch, "rossum_delete_annotation",
+                                {"annotation_ids": [11], "purge": True}, responder)
+    out = emitted_payload(emitted)
+    assert out["purged"] == [11], "mid-poll 404 must be counted as purged, not an error"
+    assert out["not_purged_in_time"] == []
+    # Confirm no error was surfaced
+    assert not emitted[-1]["result"].get("isError")
+
+
 def test_delete_annotation_records_per_id_errors(monkeypatch):
     monkeypatch.setattr(server, "_http_request_silent",
                         lambda url, method="GET": 404 if "/99/" in url else 204)

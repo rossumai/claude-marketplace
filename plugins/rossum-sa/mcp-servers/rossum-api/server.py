@@ -521,11 +521,13 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
 
     deadline = time.time() + poll_timeout
     upload_url = None
+    last_status = None
     while time.time() < deadline:
         task = _http_get_no_follow(request_id, task_url)
         if task is None:
             return None
         status = task.get("status")
+        last_status = status
         if status == "succeeded":
             upload_url = (task.get("content") or {}).get("upload") or task.get("result_url")
             break
@@ -538,7 +540,14 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
             return None
         time.sleep(3)
     if not upload_url:
-        tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
+        if last_status == "succeeded":
+            tool_result(
+                request_id,
+                f"Upload task succeeded but exposed no upload URL: {task!r}",
+                is_error=True,
+            )
+        else:
+            tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
         return None
 
     while time.time() < deadline:
@@ -3951,11 +3960,17 @@ def handle_delete_annotation(request_id, arguments):
         pending = set(deleted)
         while pending and time.time() < deadline:
             for aid in list(pending):
-                ann = _http_request(request_id, f"{base_url}/api/v1/annotations/{aid}")
-                if ann is None:
-                    return
-                if ann.get("status") == "purged":
-                    pending.discard(aid)
+                url = f"{base_url}/api/v1/annotations/{aid}"
+                code = _http_request_silent(url, method="GET")
+                if code == 404:
+                    pending.discard(aid)  # already gone — treat as purged
+                elif code is not None and 200 <= code < 300:
+                    ann = _http_request(request_id, url)
+                    if ann is None:
+                        return
+                    if ann.get("status") == "purged":
+                        pending.discard(aid)
+                # else: transient error or None — leave pending, deadline handles giving up
             if pending:
                 time.sleep(3)
         result["purged"] = [a for a in deleted if a not in pending]

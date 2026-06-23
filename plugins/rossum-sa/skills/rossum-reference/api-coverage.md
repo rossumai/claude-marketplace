@@ -16,7 +16,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `POST /annotations/purge_deleted` | ✅ covered | rossum_delete_annotation |
 | `POST /annotations/search` | ✅ covered | rossum_search_annotations_advanced |
 | `POST /annotations/suggested_recipients` | 🚫 not_planned |  |
-| `GET /annotations/{annotationID}` | ✅ covered | rossum_delete_annotation, rossum_get_annotation, rossum_get_annotation_meta, rossum_refire_annotation |
+| `GET /annotations/{annotationID}` | ✅ covered | rossum_get_annotation, rossum_get_annotation_meta, rossum_refire_annotation |
 | `PATCH /annotations/{annotationID}` | ✅ covered | rossum_patch_annotation, rossum_refire_annotation |
 | `PUT /annotations/{annotationID}` | 🚫 not_planned |  |
 | `POST /annotations/{annotationID}/approve` | 🚫 not_planned |  |

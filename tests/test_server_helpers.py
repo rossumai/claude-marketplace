@@ -379,6 +379,25 @@ def test_upload_to_queue_task_failed_emits_error(monkeypatch):
     assert "boom" in emitted[-1]["result"]["content"][0]["text"]
 
 
+def test_upload_to_queue_succeeded_no_url_emits_distinct_message(monkeypatch):
+    _seed_upload(monkeypatch)
+    monkeypatch.setattr(server, "_http_request_raw",
+                        lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
+    # succeeded but no upload/result_url in response
+    monkeypatch.setattr(server, "_http_get_no_follow",
+                        lambda rid, url: {"status": "succeeded"})
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda m: emitted.append(m))
+    out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
+    assert out is None
+    assert emitted[-1]["result"].get("isError")
+    msg = emitted[-1]["result"]["content"][0]["text"]
+    assert "succeeded" in msg and "no upload URL" in msg, (
+        f"expected 'succeeded but exposed no upload URL' message, got: {msg!r}"
+    )
+    assert "timeout" not in msg.lower(), "must not say 'timeout' when task actually succeeded"
+
+
 def test_upload_to_queue_polls_task_via_no_follow(monkeypatch):
     _seed_upload(monkeypatch)
     monkeypatch.setattr(server, "_http_request_raw",
