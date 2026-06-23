@@ -16,7 +16,7 @@ _HELPER_METHOD = {
     "_rossum_post": "POST", "_rossum_patch": "PATCH", "_rossum_delete": "DELETE",
 }
 # Lower-level HTTP helpers: method is parsed from a method="X" kwarg (default GET).
-_HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_request_raw", "_http_get_bytes")
+_HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_request_raw", "_http_get_bytes", "_http_get_no_follow")
 # URL-builder helpers: they receive a pre-built `url` argument, so the path is NOT
 # in the call args — it lives in a `url = f"...{path}..."` assignment in the handler,
 # and the method is fixed by the helper itself (not a method="X" kwarg). For these we

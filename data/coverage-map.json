@@ -191,6 +191,13 @@
       "rossum_get_schema"
     ]
   },
+  "GET /tasks/{taskID}": {
+    "decision": "covered",
+    "summary": "Retrieve task",
+    "tools": [
+      "rossum_get_task"
+    ]
+  },
   "GET /users": {
     "decision": "covered",
     "summary": "List users",

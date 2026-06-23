@@ -81,7 +81,7 @@ Re-firing **mutates the annotation you point at** — `validate`/`toggle` recomp
 
 **How the copy works.** `rossum_refire_annotation mode="reupload"` re-uploads the source PDF and returns a **new annotation ID** (`_refire.target_annotation_id`); the original is never touched. Iterate against that new ID from then on. Caveat: re-upload re-runs OCR + extraction from scratch — the copy is a *fresh run of the same document*, not a content-identical clone, so manual corrections on the original are not carried over. For the usual "does my fix make a fresh run come out right?" test that is exactly what you want; if your assertions depend on specific human-entered values, test the original (with confirmation) instead.
 
-**Cleanup.** When the loop ends, if you created a copy, **offer to delete it** (don't auto-delete): `rossum_patch_annotation` with `status="deleted"` on the copy's ID — a write, so it passes the hard-gate. Record the copy's ID in the task list so it doesn't get orphaned.
+**Cleanup.** When the loop ends, if you created a copy, **offer to delete it** (don't auto-delete): use `rossum_delete_annotation` (soft-delete by default; add `purge=true` for a permanent, irreversible purge) — a write, so it passes the hard-gate. For a simple status flip without purging, `rossum_patch_annotation` with `status="deleted"` still works. Record the copy's ID in the task list so it doesn't get orphaned. If the copy came from a `rossum_upload_document` call and you need to track the async upload state, `rossum_get_task` polls the task object directly (no-follow GET, surfaces the status behind the `/tasks` 303 redirect).
 
 Either way: **sandbox/UAT only**, never production.
 
@@ -195,7 +195,7 @@ Look for:
 
 ## When to stop and hand off
 
-- **All assertions green** → confirm with user, end the loop. If you tested on a throwaway copy, offer to delete it now (`rossum_patch_annotation status="deleted"`, gated) — don't leave it orphaned.
+- **All assertions green** → confirm with user, end the loop. If you tested on a throwaway copy, offer to delete it now (`rossum_delete_annotation`, gated; default is soft-delete, add `purge=true` for permanent) — don't leave it orphaned.
 - **Max iterations reached without success** → stop, present current state + root-cause hypothesis, let user decide.
 - **The deliverable needs cross-environment verification** → hand off to `test-behavioral-equivalence` for a full corpus regression. `iterate` confirms one document; equivalence confirms the population.
 - **Goal turns out to be wrong / ambiguous** → stop and ask the user to clarify before another iteration.

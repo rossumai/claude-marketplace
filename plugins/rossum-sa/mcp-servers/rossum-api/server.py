@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.26.0"
+_SERVER_VERSION = "0.27.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -1283,7 +1283,10 @@ _GENERIC_GET_SCHEMA = {
     "(engines, engine_fields, labels, automation_blockers, workflows, triggers, "
     "relations, pages, tasks, ...). GET-only — cannot create, update, or delete. Pass "
     "an '/api/v1/...' path. Full path catalog: the rossum-reference 'API coverage' doc "
-    "(api-coverage.md). Prefer a dedicated tool when one exists.",
+    "(api-coverage.md). Prefer a dedicated tool when one exists. "
+    "Note: this tool follows HTTP redirects, so a GET to a finished task URL returns the "
+    "result object directly rather than the 303 task response — use rossum_get_task for "
+    "polling task status.",
     _GENERIC_GET_SCHEMA,
     annotations=_READ_ONLY,
 )

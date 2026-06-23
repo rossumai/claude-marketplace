@@ -298,6 +298,17 @@ def handle_upload_document(request_id, arguments):
     assert "rossum_upload_document" in te[("POST", "/uploads")]
 
 
+def test_extract_tool_endpoints_includes_no_follow_get():
+    src = '''
+@_tool("rossum_get_task", "d", {"type": "object"})
+def handle_get_task(request_id, arguments):
+    _http_get_no_follow(request_id, f"{base_url}/api/v1/tasks/{tid}")
+'''
+    te = coverage.extract_tool_endpoints(src)
+    assert ("GET", "/tasks/{}") in te
+    assert "rossum_get_task" in te[("GET", "/tasks/{}")]
+
+
 def test_extract_tool_endpoints_url_builder_scopes_to_passed_var():
     """Regression (PR #73 review): the URL-builder branch must attribute ONLY the URL
     variable actually passed to the helper, not every f-string assignment in the block.

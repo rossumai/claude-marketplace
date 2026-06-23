@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 13 reference packs · 70 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 13 reference packs · 72 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -190,6 +190,8 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_validate_content` | ✏️ Fire the hook chain via `content/validate` with specified actions |
 | `rossum_upload_document` | ✏️ Upload a local document (PDF/image/etc.) into a queue via the modern async `/uploads` API; polls task→upload→annotation and returns the new annotation id |
 | `rossum_refire_annotation` | ✏️ Inner-loop re-fire primitive (`mode=validate\|toggle\|reupload`) with try/finally cancel, dedup auto-restore, and merged compact response |
+| `rossum_get_task` | 👁️ Retrieve an async task object (no-follow GET; surfaces status behind the /tasks 303 redirect) |
+| `rossum_delete_annotation` | 🗑️ Delete annotations (reversible soft-delete; optional irreversible purge with poll-to-purged) — cleanup for test/iteration loops |
 | `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); self-managing start→ops→release |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |
