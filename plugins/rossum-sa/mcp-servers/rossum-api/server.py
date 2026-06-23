@@ -413,6 +413,38 @@ def _http_get_typed(request_id, url):
         return (None, None)
 
 
+class _NoFollowRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Return the 3xx response itself instead of following it. GET /tasks/{id} on a
+    succeeded task 303-redirects to its result (the upload); we want the task object
+    (with status/detail), not the redirect target."""
+    def http_error_301(self, req, fp, code, msg, headers):
+        return fp
+    http_error_302 = http_error_303 = http_error_307 = http_error_308 = http_error_301
+
+
+def _http_get_no_follow(request_id, url):
+    """Authenticated GET that does NOT follow redirects. Returns parsed JSON (the body
+    of the response, including a 3xx's own body) or None (error already emitted)."""
+    if not _cached_token:
+        return None
+    opener = urllib.request.build_opener(
+        _NoFollowRedirectHandler,
+        urllib.request.HTTPSHandler(context=_ssl_context),
+    )
+    req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
+    try:
+        with opener.open(req, timeout=130) as resp:
+            data = resp.read()
+            return json.loads(data.decode("utf-8")) if data else {}
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else str(e)
+        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        return None
+    except Exception as e:
+        tool_result(request_id, f"Error: {e}", is_error=True)
+        return None
+
+
 _EXT_CONTENT_TYPE = {
     ".pdf": "application/pdf",
     ".png": "image/png",
@@ -1305,6 +1337,30 @@ def handle_rossum_get(request_id, arguments):
                 {"total": api_total, "returned": len(results), "results": results}, indent=2))
         return
     tool_result(request_id, json.dumps(payload, indent=2))
+
+
+@_tool(
+    "rossum_get_task",
+    "Retrieves a Rossum task object (status, detail, result_url, content) for an async "
+    "operation such as a document upload. Uses a non-redirect-following GET so a succeeded "
+    "task's own status is returned — GET /tasks/{id} 303-redirects to its result object, "
+    "which the generic rossum_get would silently follow. Read-only.",
+    {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {"task_id": {"type": "integer", "description": "The task ID."}},
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_get_task(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    task = _http_get_no_follow(request_id, f"{base_url}/api/v1/tasks/{arguments['task_id']}")
+    if task is None:
+        return
+    tool_result(request_id, json.dumps(task, indent=2))
 
 
 @_tool(

@@ -383,3 +383,26 @@ def test_upload_to_queue_follows_task_303_redirect_to_upload(monkeypatch):
     monkeypatch.setattr(server, "write_message", lambda m: None)
     out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
     assert out == "https://x.rossum.ai/api/v1/annotations/3"
+
+
+def test_no_follow_redirect_handler_returns_response_unfollowed():
+    h = server._NoFollowRedirectHandler()
+    sentinel = object()
+    assert h.http_error_303(None, sentinel, 303, "See Other", {}) is sentinel
+
+
+def test_http_get_no_follow_parses_body(monkeypatch):
+    monkeypatch.setattr(server, "_cached_token", "t")
+
+    class _Resp:
+        def __init__(self, data): self._data = data
+        def read(self): return self._data
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Opener:
+        def open(self, req, timeout=None): return _Resp(b'{"id":1,"status":"succeeded"}')
+
+    monkeypatch.setattr(server.urllib.request, "build_opener", lambda *a: _Opener())
+    out = server._http_get_no_follow(1, "https://x.rossum.ai/api/v1/tasks/1")
+    assert out == {"id": 1, "status": "succeeded"}

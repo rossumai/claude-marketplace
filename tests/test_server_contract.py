@@ -405,3 +405,13 @@ def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
     assert "/api/v1/uploads?queue=5" in raw["url"]
     assert "/queues/5/upload" not in raw["url"]
     assert out["_refire"]["target_annotation_id"] == 200
+
+
+def test_get_task_returns_task_object(monkeypatch):
+    monkeypatch.setattr(server, "_http_get_no_follow",
+                        lambda rid, url: {"id": 5, "status": "succeeded",
+                                          "result_url": f"{BASE}/api/v1/uploads/9"})
+    fake, emitted = run_handler(monkeypatch, "rossum_get_task", {"task_id": 5},
+                                lambda url, method, body: None)
+    out = emitted_payload(emitted)
+    assert out["id"] == 5 and out["status"] == "succeeded"
