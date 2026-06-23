@@ -296,3 +296,64 @@ def test_paginate_search_respects_max_results(monkeypatch):
     out = emitted_payload(emitted)
     assert out["returned"] == 1 and out["total"] == 99
     assert len(fake.calls) == 1   # stopped before following next
+
+
+def test_upload_document_happy_path(monkeypatch, tmp_path):
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"%PDF-1.4 test")
+    raw_calls = []
+
+    def fake_raw(request_id, url, *, method="POST", raw_body=b"", content_type=None):
+        raw_calls.append({"url": url, "body": raw_body, "ct": content_type})
+        return {"url": f"{BASE}/api/v1/tasks/555"}
+
+    monkeypatch.setattr(server, "_http_request_raw", fake_raw)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+
+    def responder(url, method, body):
+        if "/tasks/555" in url:
+            return {"status": "succeeded", "content": {"upload": f"{BASE}/api/v1/uploads/77"}}
+        if "/uploads/77" in url:
+            return {"annotations": [f"{BASE}/api/v1/annotations/900"]}
+        if url.endswith("/annotations/900"):
+            return {"id": 900, "status": "to_review"}
+        return None
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_upload_document",
+        {"file_path": str(f), "queue_id": 8199}, responder,
+    )
+    out = emitted_payload(emitted)
+    assert out["annotation_id"] == 900
+    assert out["status"] == "to_review"
+    assert out["queue_id"] == 8199
+    assert raw_calls and "/api/v1/uploads?queue=8199" in raw_calls[0]["url"]
+    assert raw_calls[0]["ct"].startswith("multipart/form-data; boundary=")
+    assert b'filename="doc.pdf"' in raw_calls[0]["body"]
+    assert b"application/pdf" in raw_calls[0]["body"]
+
+
+def test_upload_document_missing_file(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_upload_document",
+        {"file_path": "/no/such/file.pdf", "queue_id": 1},
+        lambda url, method, body: None,
+    )
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    assert "not found" in res["content"][0]["text"].lower()
+
+
+def test_upload_document_too_large(monkeypatch, tmp_path):
+    import os as _os
+    f = tmp_path / "big.pdf"
+    f.write_bytes(b"x")
+    monkeypatch.setattr(_os.path, "getsize", lambda p: 41 * 1024 * 1024)
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_upload_document",
+        {"file_path": str(f), "queue_id": 1},
+        lambda url, method, body: None,
+    )
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    assert "40" in res["content"][0]["text"]

@@ -4036,6 +4036,99 @@ def handle_update_annotation_content(request_id, arguments):
 
 
 @_tool(
+    "rossum_upload_document",
+    "Uploads a local document file (PDF/image/etc.) into a Rossum queue via the modern "
+    "asynchronous /uploads API, polls until the resulting annotation is created, and returns "
+    "its URL and id. Use to seed a sandbox, test extraction, or reproduce a customer document "
+    "without leaving Claude Code. Write operation. Max payload 40 MB. The returned annotation "
+    "may still be 'importing'; poll it with rossum_get_annotation.",
+    {
+        "type": "object",
+        "required": ["file_path", "queue_id"],
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path (absolute or relative to the server's CWD) to the local file to upload.",
+            },
+            "queue_id": {"type": "integer", "description": "ID of the queue to upload into."},
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata object set on the new annotation (sent as a JSON string).",
+            },
+            "values": {
+                "type": "object",
+                "description": "Optional datapoint init values (sent as a JSON string), "
+                               "e.g. {\"upload:organization_unit\": \"Sales\"}.",
+            },
+            "reject_identical": {
+                "type": "boolean",
+                "description": "If true, reject the upload when an identical document already exists.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_upload_document(request_id, arguments):
+    import os
+
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    file_path = arguments["file_path"]
+    if not os.path.isfile(file_path):
+        tool_result(request_id, f"File not found: {file_path}", is_error=True)
+        return
+    size = os.path.getsize(file_path)
+    if size > 40 * 1024 * 1024:
+        tool_result(
+            request_id,
+            f"File too large: {size} bytes ({size / 1024 / 1024:.1f} MB); limit is 40 MB.",
+            is_error=True,
+        )
+        return
+    with open(file_path, "rb") as fh:
+        file_bytes = fh.read()
+    filename = os.path.basename(file_path)
+    metadata = arguments.get("metadata")
+    values = arguments.get("values")
+    queue_id = arguments["queue_id"]
+
+    annotation_url = _upload_to_queue(
+        request_id, base_url, queue_id, file_bytes, filename,
+        metadata=json.dumps(metadata) if metadata is not None else None,
+        values=json.dumps(values) if values is not None else None,
+        reject_identical=arguments.get("reject_identical"),
+    )
+    if annotation_url is None:
+        return
+    aid = int(annotation_url.rstrip("/").rsplit("/", 1)[-1])
+
+    # brief, non-fatal wait past 'importing' so fast queues report a ready status
+    status = None
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        ann = _http_request(request_id, annotation_url)
+        if ann is None:
+            return
+        status = ann.get("status")
+        if status not in ("importing", "created"):
+            break
+        time.sleep(3)
+
+    out = {
+        "annotation_id": aid,
+        "annotation_url": annotation_url,
+        "queue_id": queue_id,
+        "filename": filename,
+        "status": status,
+    }
+    if status in ("importing", "created"):
+        out["note"] = "Annotation is still importing; poll with rossum_get_annotation."
+    tool_result(request_id, json.dumps(out, indent=2))
+
+
+@_tool(
     "rossum_refire_annotation",
     "Re-fire an annotation through the hook chain — the main inner-loop iteration primitive. "
     "Three modes:\n"
