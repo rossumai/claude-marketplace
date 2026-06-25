@@ -3575,7 +3575,9 @@ def handle_get_workspace(request_id, arguments):
     "rossum_get_document",
     "Retrieves metadata of a document (original file name, MIME type, creation time, "
     "annotations). Documents are referenced by annotations — extract the document ID "
-    "from the annotation's document URL.",
+    "from the annotation's document URL. "
+    "NOTE: the '/document/<id>' segment in a Rossum browser URL is an ANNOTATION id, "
+    "not a document id — for those use rossum_get_annotation, not this tool.",
     {
         "type": "object",
         "required": ["document_id"],
@@ -3634,7 +3636,11 @@ def handle_get_annotation_meta(request_id, arguments):
         "properties": {
             "annotation_id": {
                 "type": "integer",
-                "description": "The annotation ID.",
+                "description": (
+                    "The annotation ID. This is the <ID> in a Rossum browser URL "
+                    "https://<org>.rossum.app/document/<ID> — the 'document' path segment "
+                    "is misleading; <ID> is the annotation id."
+                ),
             },
             "view": {
                 "type": "string",
@@ -4505,6 +4511,12 @@ def main():
                         "and any prd2 push/deploy commands. "
                         "Read-only tools (list, get, find, aggregate, whoami) are fine without confirmation. "
                         "When in doubt, describe what you intend to do and ask first. "
+                        "ANNOTATION URL RULE — IDs from browser links: "
+                        "Rossum browser URLs look like https://<org>.rossum.app/document/<ID> "
+                        "(and …/annotation/<ID>). In BOTH cases <ID> is the ANNOTATION id, despite "
+                        "the 'document' path segment — it is NOT a document id. Pass it to "
+                        "rossum_get_annotation, never to rossum_get_document. A document id only "
+                        "appears inside an annotation's 'document' URL field. "
                         "EDITING RULE — local file workflow: "
                         "When modifying hook code or formula logic in a prd project, only edit the local .py files. "
                         "Never edit the code field in hook JSON or the formula property in schema.json — "

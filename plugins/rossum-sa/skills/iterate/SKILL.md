@@ -142,7 +142,7 @@ Fetches the source PDF, uploads it to the same queue, polls past `importing`, an
 ### Direct PATCH + validate
 
 When a hook reacts to one specific datapoint change, you can mutate that datapoint and then re-fire `user_update` to make the hook see the change. Two-step:
-1. `rossum_patch_annotation` (or, for content datapoints, a direct content PATCH via Bash + curl — not yet wrapped as an MCP tool).
+1. `rossum_patch_annotation` (or, for content datapoints, `rossum_update_annotation_content` — writes datapoint values via the content-operations endpoint).
 2. `rossum_validate_content` with `actions=["user_update"]`.
 
 For most iteration loops you will NOT need this — soft re-fire on the saved annotation already exercises the hook chain.
