@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.27.0"
+_SERVER_VERSION = "0.28.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -4777,6 +4777,215 @@ def handle_list_email_threads(request_id, arguments):
         request_id, "/api/v1/email_threads", params,
         max_results=max_results, pick_fields=_EMAIL_THREAD_FIELDS,
     )
+
+
+# Email template type enum (from the API spec). Only `rejection` and `custom`
+# can be manually created/deleted; the other two are system-managed defaults.
+_EMAIL_TEMPLATE_TYPES = (
+    "rejection", "rejection_default",
+    "email_with_no_processable_attachments", "custom",
+)
+
+
+@_tool(
+    "rossum_create_email_template",
+    "Creates an email template — the subject/body used for Rossum's automated emails "
+    "(rejection replies, no-attachment replies, custom notifications fired by email "
+    "triggers). Scoped to one queue. `type` defaults to 'custom'; note only 'rejection' "
+    "and 'custom' templates can be created/deleted via the API (the other two types are "
+    "system-managed defaults). `message` is an HTML subset; `to`/`cc`/`bcc` are arrays "
+    "of {email, name} objects (template variables are allowed in the email field). "
+    "This is a write operation. Preview the result with rossum_render_email_template.",
+    {
+        "type": "object",
+        "required": ["name", "queue_id"],
+        "properties": {
+            "name": {"type": "string", "description": "Display name for the template."},
+            "queue_id": {"type": "integer", "description": "Queue ID this template belongs to."},
+            "type": {
+                "type": "string",
+                "enum": list(_EMAIL_TEMPLATE_TYPES),
+                "description": (
+                    "Template type (default 'custom'). Only 'rejection' and 'custom' "
+                    "are manually creatable; 'rejection_default' and "
+                    "'email_with_no_processable_attachments' are system-managed."
+                ),
+            },
+            "subject": {"type": "string", "description": "Email subject line."},
+            "message": {"type": "string", "description": "Email body (HTML subset)."},
+            "automate": {
+                "type": "boolean",
+                "description": "Send automatically on the triggering action (default true).",
+            },
+            "to": {
+                "type": "array", "items": {"type": "object"},
+                "description": "Recipients: array of {email, name} objects (email may contain template variables).",
+            },
+            "cc": {
+                "type": "array", "items": {"type": "object"},
+                "description": "CC recipients: array of {email, name} objects.",
+            },
+            "bcc": {
+                "type": "array", "items": {"type": "object"},
+                "description": "BCC recipients: array of {email, name} objects.",
+            },
+            "triggers": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "Trigger IDs to link to this template.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_create_email_template(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {
+        "name": arguments["name"],
+        "queue": f"{base_url}/api/v1/queues/{arguments['queue_id']}",
+    }
+    for key in ("type", "subject", "message", "automate", "to", "cc", "bcc"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "triggers" in arguments:
+        body["triggers"] = [
+            f"{base_url}/api/v1/triggers/{tid}" for tid in arguments["triggers"]
+        ]
+    _rossum_post(request_id, "/api/v1/email_templates", body)
+
+
+@_tool(
+    "rossum_patch_email_template",
+    "Updates an existing email template — the everyday edit path. Only provide the "
+    "fields you want to change; unspecified fields are left untouched. Use to tweak "
+    "subject/message, toggle automate, change recipients, or rescope the queue. "
+    "This is a write operation.",
+    {
+        "type": "object",
+        "required": ["email_template_id"],
+        "properties": {
+            "email_template_id": {"type": "integer", "description": "The email template ID to update."},
+            "name": {"type": "string", "description": "New display name."},
+            "queue_id": {"type": "integer", "description": "Move the template to this queue ID."},
+            "type": {
+                "type": "string",
+                "enum": list(_EMAIL_TEMPLATE_TYPES),
+                "description": "New template type.",
+            },
+            "subject": {"type": "string", "description": "New subject line."},
+            "message": {"type": "string", "description": "New body (HTML subset)."},
+            "automate": {"type": "boolean", "description": "Enable/disable automatic sending."},
+            "to": {"type": "array", "items": {"type": "object"}, "description": "Replace TO recipients."},
+            "cc": {"type": "array", "items": {"type": "object"}, "description": "Replace CC recipients."},
+            "bcc": {"type": "array", "items": {"type": "object"}, "description": "Replace BCC recipients."},
+            "triggers": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "Replace linked trigger IDs (full list).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_email_template(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    template_id = arguments["email_template_id"]
+    body = {}
+    for key in ("name", "type", "subject", "message", "automate", "to", "cc", "bcc"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "queue_id" in arguments:
+        body["queue"] = f"{base_url}/api/v1/queues/{arguments['queue_id']}"
+    if "triggers" in arguments:
+        body["triggers"] = [
+            f"{base_url}/api/v1/triggers/{tid}" for tid in arguments["triggers"]
+        ]
+    _rossum_patch(request_id, f"/api/v1/email_templates/{template_id}", body)
+
+
+@_tool(
+    "rossum_delete_email_template",
+    "Deletes an email template. This is a destructive operation that cannot be undone. "
+    "Only 'rejection' and 'custom' templates can be deleted.",
+    {
+        "type": "object",
+        "required": ["email_template_id"],
+        "properties": {
+            "email_template_id": {"type": "integer", "description": "The email template ID to delete."},
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_email_template(request_id, arguments):
+    _rossum_delete(request_id, f"/api/v1/email_templates/{arguments['email_template_id']}")
+
+
+# POST endpoint, but a pure preview (renders, does not send) -> annotated
+# _READ_ONLY so it does not trigger a write-permission prompt, mirroring
+# rossum_search_annotations_advanced. The spec describes document_list as
+# "simulate sending" — nothing is actually dispatched.
+@_tool(
+    "rossum_render_email_template",
+    "Renders an email template into its final subject + body without sending anything — "
+    "the debugging gem for previewing a template against real data. POST but read-only "
+    "(it simulates, it does not send). Supply `annotation_list` to fill annotation.content "
+    "placeholders, `parent_email` to render reply context, `template_values` for ad-hoc "
+    "variables, and `to`/`cc`/`bcc` to preview rendered recipient addresses. Returns the "
+    "rendered subject, message, and resolved recipients.",
+    {
+        "type": "object",
+        "required": ["email_template_id"],
+        "properties": {
+            "email_template_id": {"type": "integer", "description": "The email template ID to render."},
+            "annotation_list": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "Annotation IDs used to render annotation.content placeholders.",
+            },
+            "document_list": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "Document IDs to simulate sending over email (no email is actually sent).",
+            },
+            "parent_email": {
+                "type": "string",
+                "description": "Parent email URL to render reply context against.",
+            },
+            "template_values": {
+                "type": "object",
+                "description": "Ad-hoc values to fill template variables.",
+            },
+            "to": {"type": "array", "items": {"type": "object"}, "description": "Recipient templates to render."},
+            "cc": {"type": "array", "items": {"type": "object"}, "description": "CC recipient templates to render."},
+            "bcc": {"type": "array", "items": {"type": "object"}, "description": "BCC recipient templates to render."},
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_render_email_template(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    template_id = arguments["email_template_id"]
+    body = {}
+    for key in ("template_values", "to", "cc", "bcc"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "parent_email" in arguments:
+        body["parent_email"] = arguments["parent_email"]
+    if "annotation_list" in arguments:
+        body["annotation_list"] = [
+            f"{base_url}/api/v1/annotations/{aid}" for aid in arguments["annotation_list"]
+        ]
+    if "document_list" in arguments:
+        body["document_list"] = [
+            f"{base_url}/api/v1/documents/{did}" for did in arguments["document_list"]
+        ]
+    _rossum_post(request_id, f"/api/v1/email_templates/{template_id}/render", body)
 
 
 # --- Main loop ---
