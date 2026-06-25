@@ -14,6 +14,13 @@
     "reason": "niche",
     "summary": "Delete delete recommendation"
   },
+  "DELETE /email_templates/{emailTemplateID}": {
+    "decision": "covered",
+    "summary": "Delete email template",
+    "tools": [
+      "rossum_delete_email_template"
+    ]
+  },
   "DELETE /hooks/{hookID}": {
     "decision": "covered",
     "summary": "Delete hook",
@@ -245,6 +252,13 @@
     "decision": "not_planned",
     "reason": "niche",
     "summary": "Partial update delete recommendation"
+  },
+  "PATCH /email_templates/{emailTemplateID}": {
+    "decision": "covered",
+    "summary": "Partial update email template",
+    "tools": [
+      "rossum_patch_email_template"
+    ]
   },
   "PATCH /email_threads/{emailThreadID}": {
     "decision": "not_planned",
@@ -513,6 +527,20 @@
     "reason": "niche",
     "summary": "Create delete recommendation"
   },
+  "POST /email_templates": {
+    "decision": "covered",
+    "summary": "Create email template",
+    "tools": [
+      "rossum_create_email_template"
+    ]
+  },
+  "POST /email_templates/{emailTemplateID}/render": {
+    "decision": "covered",
+    "summary": "Render email template",
+    "tools": [
+      "rossum_render_email_template"
+    ]
+  },
   "POST /hooks": {
     "decision": "covered",
     "summary": "Create hook",
@@ -662,6 +690,11 @@
     "decision": "not_planned",
     "reason": "niche",
     "summary": "Update delete recommendation"
+  },
+  "PUT /email_templates/{emailTemplateID}": {
+    "decision": "not_planned",
+    "reason": "partial update covered by rossum_patch_email_template; full-PUT replace clobbers omitted fields",
+    "summary": "Update email template"
   },
   "PUT /email_threads/{emailThreadID}": {
     "decision": "not_planned",
