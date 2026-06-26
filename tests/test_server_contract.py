@@ -484,3 +484,121 @@ def test_delete_annotation_records_per_id_errors(monkeypatch):
     out = emitted_payload(emitted)
     assert out["soft_deleted"] == [11]
     assert out["errors"] and out["errors"][0]["id"] == 99
+
+
+# --- hook write tools (create-from-template / duplicate / invoke) ---
+
+def test_create_hook_from_template_builds_body(monkeypatch):
+    created = {"id": 50, "name": "From Tmpl", "type": "function"}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_create_hook_from_template",
+        {"hook_template": 998877, "name": "From Tmpl", "queue_ids": [7], "token_owner": 3},
+        lambda url, method, body: created
+        if method == "POST" and url.endswith("/api/v1/hooks/create") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/hooks/create")
+    assert call["body"]["hook_template"] == f"{BASE}/api/v1/hook_templates/998877"
+    assert call["body"]["name"] == "From Tmpl"
+    assert call["body"]["queues"] == [f"{BASE}/api/v1/queues/7"]
+    assert call["body"]["token_owner"] == f"{BASE}/api/v1/users/3"
+    assert emitted_payload(emitted) == created
+    # optional pass-through fields not supplied must be absent
+    for absent in ("events", "active", "settings", "config"):
+        assert absent not in call["body"]
+
+
+def test_duplicate_hook_builds_body(monkeypatch):
+    dup = {"id": 99, "name": "Clone", "active": False}
+    # Exercise all three real copy_* flags reaching the body (the spec accepts
+    # name + copy_secrets + copy_dependencies + copy_queues).
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_duplicate_hook",
+        {"hook_id": 42, "name": "Clone", "copy_secrets": True,
+         "copy_dependencies": True, "copy_queues": True},
+        lambda url, method, body: dup
+        if method == "POST" and url.endswith("/api/v1/hooks/42/duplicate") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/hooks/42/duplicate")
+    assert call["body"] == {
+        "name": "Clone", "copy_secrets": True,
+        "copy_dependencies": True, "copy_queues": True,
+    }
+    assert emitted_payload(emitted) == dup
+
+
+def test_duplicate_hook_omits_unset_flags(monkeypatch):
+    # With only name supplied, the optional copy_* flags must be absent (not
+    # defaulted in our handler) so the API applies its own defaults.
+    fake, _ = run_handler(
+        monkeypatch, "rossum_duplicate_hook", {"hook_id": 42, "name": "Clone"},
+        lambda url, method, body: {"id": 99, "name": "Clone", "active": False},
+    )
+    assert fake.calls[0]["body"] == {"name": "Clone"}
+
+
+def test_invoke_hook_posts_payload(monkeypatch):
+    resp = {"results": [{"id": "req-1", "operations": []}]}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_invoke_hook",
+        {"hook_id": 42, "payload": {"SAP_ID": "1234"}},
+        lambda url, method, body: resp
+        if method == "POST" and url.endswith("/api/v1/hooks/42/invoke") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/hooks/42/invoke")
+    assert call["body"] == {"SAP_ID": "1234"}
+    assert emitted_payload(emitted) == resp
+
+
+def test_invoke_hook_defaults_empty_payload(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_invoke_hook", {"hook_id": 42},
+        lambda url, method, body: {"ok": True},
+    )
+    assert fake.calls[0]["body"] == {}
+
+
+def test_create_hook_from_template_always_sends_queues(monkeypatch):
+    """Regression: POST /api/v1/hooks/create requires 'queues' field even when
+    queue_ids is omitted. Empty list [] means unattached — still accepted by the
+    API. Previously the key was absent, causing HTTP 400 from the real API."""
+    created = {"id": 51, "name": "X", "type": "function"}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_create_hook_from_template",
+        {"hook_template": 998877, "name": "X"},   # NO queue_ids supplied
+        lambda url, method, body: created
+        if method == "POST" and url.endswith("/api/v1/hooks/create") else None,
+    )
+    call = fake.calls[0]
+    assert "queues" in call["body"], (
+        "queues key must always be present in the request body — "
+        "the API returns HTTP 400 if it is missing"
+    )
+    assert call["body"]["queues"] == [], (
+        f"expected empty list for unattached hook, got {call['body']['queues']!r}"
+    )
+
+
+def test_create_hook_from_template_passes_through_optional_fields(monkeypatch):
+    # When events/active/settings/config ARE supplied, they must reach the body
+    # unmodified (objects/booleans untouched, lists not URL-ified like queues).
+    events = ["annotation_content.initialize", "annotation_content.export"]
+    settings = {"threshold": 0.9, "nested": {"a": [1, 2]}}
+    config = {"runtime": "python3.12", "timeout_s": 20}
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook_from_template",
+        {"hook_template": 998877, "name": "X", "events": events,
+         "active": False, "settings": settings, "config": config},
+        lambda url, method, body: {"id": 52, "name": "X"}
+        if method == "POST" and url.endswith("/api/v1/hooks/create") else None,
+    )
+    body = fake.calls[0]["body"]
+    assert body["events"] == events
+    assert body["active"] is False
+    assert body["settings"] == settings
+    assert body["config"] == config

@@ -520,12 +520,33 @@
       "rossum_create_hook"
     ]
   },
+  "POST /hooks/create": {
+    "decision": "covered",
+    "summary": "Create hook from template",
+    "tools": [
+      "rossum_create_hook_from_template"
+    ]
+  },
+  "POST /hooks/{hookID}/duplicate": {
+    "decision": "covered",
+    "summary": "Duplicate hook",
+    "tools": [
+      "rossum_duplicate_hook"
+    ]
+  },
   "POST /hooks/{hookID}/generate_payload": {
     "decision": "covered",
     "summary": "Generate hook payload",
     "tools": [
       "rossum_generate_export_payload",
       "rossum_test_hook"
+    ]
+  },
+  "POST /hooks/{hookID}/invoke": {
+    "decision": "covered",
+    "summary": "Trigger manual hook",
+    "tools": [
+      "rossum_invoke_hook"
     ]
   },
   "POST /hooks/{hookID}/test": {
@@ -647,10 +668,20 @@
     "reason": "niche",
     "summary": "Update email thread"
   },
+  "PUT /hooks/{hookID}": {
+    "decision": "not_planned",
+    "reason": "partial update covered by rossum_patch_hook; full-PUT replace clobbers omitted fields (code, settings, secrets, queues)",
+    "summary": "Update hook"
+  },
   "PUT /organizations/{organizationID}": {
     "decision": "not_planned",
     "reason": "org/billing/admin",
     "summary": "Update organization"
+  },
+  "PUT /rules/{ruleID}": {
+    "decision": "not_planned",
+    "reason": "partial update covered by rossum_patch_rule; full-PUT replace clobbers omitted fields",
+    "summary": "Update rule"
   },
   "PUT /suggested_edits/{suggestedEditID}": {
     "decision": "not_planned",

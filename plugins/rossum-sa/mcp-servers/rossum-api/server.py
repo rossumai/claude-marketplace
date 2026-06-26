@@ -2772,6 +2772,117 @@ def handle_create_hook(request_id, arguments):
 
 
 @_tool(
+    "rossum_create_hook_from_template",
+    "Creates a new hook (extension) from a hook template in the templates catalog (the objects under "
+    "GET /hook_templates). The template supplies the base type, code/config, events, and settings_schema; "
+    "the fields you pass here (name, queues, token_owner, settings, …) are merged on top. Use "
+    "rossum_get with path '/api/v1/hook_templates' to find a template ID. This differs from "
+    "rossum_create_hook, which builds a hook from scratch with no template. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["hook_template", "name"],
+        "properties": {
+            "hook_template": {
+                "type": "integer",
+                "description": "ID of the hook template to use as a base (see GET /api/v1/hook_templates via rossum_get).",
+            },
+            "name": {
+                "type": "string",
+                "description": "Display name for the new hook.",
+            },
+            "queue_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Queue IDs to attach the hook to. Omit to create unattached.",
+            },
+            "token_owner": {
+                "type": "integer",
+                "description": "User ID whose permissions the hook uses for API calls.",
+            },
+            "events": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Override the template's event triggers (replaces the full list).",
+            },
+            "active": {
+                "type": "boolean",
+                "description": "Whether the hook is active (default follows the template).",
+            },
+            "settings": {
+                "type": "object",
+                "description": "Hook settings — fill in the values the template's settings_schema requires.",
+            },
+            "config": {
+                "type": "object",
+                "description": "Override the template's config (e.g. webhook url, runtime).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_create_hook_from_template(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {
+        "hook_template": f"{base_url}/api/v1/hook_templates/{arguments['hook_template']}",
+        "name": arguments["name"],
+        "queues": [f"{base_url}/api/v1/queues/{qid}" for qid in arguments.get("queue_ids", [])],
+    }
+    if "token_owner" in arguments:
+        body["token_owner"] = f"{base_url}/api/v1/users/{arguments['token_owner']}"
+    for key in ("events", "active", "settings", "config"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, "/api/v1/hooks/create", body)
+
+
+@_tool(
+    "rossum_duplicate_hook",
+    "Clones an existing hook (extension). The copy is always created inactive (active=false), and its "
+    "queues are NOT copied unless copy_queues=true — so it is safe to duplicate then tweak before "
+    "attaching. Optionally copies secrets and run_after dependencies. Use rossum_patch_hook afterwards "
+    "to adjust the clone. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["hook_id", "name"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "ID of the hook to duplicate.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Display name for the duplicated hook.",
+            },
+            "copy_secrets": {
+                "type": "boolean",
+                "description": "Copy the source hook's secrets into the clone (default: false).",
+            },
+            "copy_dependencies": {
+                "type": "boolean",
+                "description": "Copy run_after execution-ordering dependencies (default: false).",
+            },
+            "copy_queues": {
+                "type": "boolean",
+                "description": "Attach the clone to the same queues as the source (default: false — clone is unattached).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_duplicate_hook(request_id, arguments):
+    hook_id = arguments["hook_id"]
+    body = {"name": arguments["name"]}
+    for key in ("copy_secrets", "copy_dependencies", "copy_queues"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, f"/api/v1/hooks/{hook_id}/duplicate", body)
+
+
+@_tool(
     "rossum_delete_hook",
     "Deletes a hook (extension) from the Rossum organization. "
     "This is a destructive operation that cannot be undone.",
@@ -3220,6 +3331,43 @@ def handle_test_hook(request_id, arguments):
 
 
 @_tool(
+    "rossum_invoke_hook",
+    "RUNS a hook for real — not a dry-run. Sends an 'invocation' event to the hook with your custom "
+    "payload merged in and returns the hook's actual response. Unlike rossum_test_hook (which generates "
+    "a fake payload and executes in isolation without mutating anything), invoke can have REAL side "
+    "effects: webhook hooks POST to their external endpoint, function hooks call external systems and "
+    "mutate annotations via their token_owner. The hook's config.timeout_s is forced to 30 for this call. "
+    "Use only on a throwaway/sandbox hook unless you intend the side effects. This is a destructive "
+    "operation — its irreversible side effects are why it is marked destructive (unlike the rossum_test_hook "
+    "dry-run). The hook must be active (active=true) — invoking an inactive hook returns HTTP 400 with no "
+    "detail; use rossum_patch_hook to activate it first (note rossum_duplicate_hook creates the clone inactive).",
+    {
+        "type": "object",
+        "required": ["hook_id"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "ID of the hook to invoke.",
+            },
+            "payload": {
+                "type": "object",
+                "description": (
+                    "Properties merged into the standard invocation event payload, e.g. "
+                    "{\"SAP_ID\": \"1234\"}. Standard response attributes (request_id, action, …) are not "
+                    "overwritten. Omit for an empty payload."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_invoke_hook(request_id, arguments):
+    hook_id = arguments["hook_id"]
+    _rossum_post(request_id, f"/api/v1/hooks/{hook_id}/invoke", arguments.get("payload", {}))
+
+
+@_tool(
     "rossum_list_rules",
     "Lists Rossum business rules (/v1/rules). A rule evaluates a boolean trigger_condition (a Rossum "
     "formula) at validation time and, when True, emits actions such as automation blockers, messages, "
@@ -3604,7 +3752,9 @@ def handle_get_workspace(request_id, arguments):
     "rossum_get_document",
     "Retrieves metadata of a document (original file name, MIME type, creation time, "
     "annotations). Documents are referenced by annotations — extract the document ID "
-    "from the annotation's document URL.",
+    "from the annotation's document URL. "
+    "NOTE: the '/document/<id>' segment in a Rossum browser URL is an ANNOTATION id, "
+    "not a document id — for those use rossum_get_annotation, not this tool.",
     {
         "type": "object",
         "required": ["document_id"],
@@ -3663,7 +3813,11 @@ def handle_get_annotation_meta(request_id, arguments):
         "properties": {
             "annotation_id": {
                 "type": "integer",
-                "description": "The annotation ID.",
+                "description": (
+                    "The annotation ID. This is the <ID> in a Rossum browser URL "
+                    "https://<org>.rossum.app/document/<ID> — the 'document' path segment "
+                    "is misleading; <ID> is the annotation id."
+                ),
             },
             "view": {
                 "type": "string",
@@ -4667,6 +4821,12 @@ def main():
                         "and any prd2 push/deploy commands. "
                         "Read-only tools (list, get, find, aggregate, whoami) are fine without confirmation. "
                         "When in doubt, describe what you intend to do and ask first. "
+                        "ANNOTATION URL RULE — IDs from browser links: "
+                        "Rossum browser URLs look like https://<org>.rossum.app/document/<ID> "
+                        "(and …/annotation/<ID>). In BOTH cases <ID> is the ANNOTATION id, despite "
+                        "the 'document' path segment — it is NOT a document id. Pass it to "
+                        "rossum_get_annotation, never to rossum_get_document. A document id only "
+                        "appears inside an annotation's 'document' URL field. "
                         "EDITING RULE — local file workflow: "
                         "When modifying hook code or formula logic in a prd project, only edit the local .py files. "
                         "Never edit the code field in hook JSON or the formula property in schema.json — "
