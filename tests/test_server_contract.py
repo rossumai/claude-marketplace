@@ -601,3 +601,136 @@ def test_create_hook_from_template_passes_through_optional_fields(monkeypatch):
     assert body["active"] is False
     assert body["settings"] == settings
     assert body["config"] == config
+
+
+# --- email template tools: body shaping, render-as-read, delete, annotations ---
+
+def test_create_email_template_shapes_request_body(monkeypatch):
+    created = {"id": 9, "name": "Rejection"}
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_email_template",
+        {"name": "Rejection", "queue_id": 7, "type": "rejection",
+         "subject": "Re: your invoice", "message": "<p>Rejected</p>",
+         "to": [{"email": "a@b.com", "name": "A"}], "automate": False},
+        lambda url, method, body: created if url.endswith("/api/v1/email_templates") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/email_templates")
+    assert call["body"] == {
+        "name": "Rejection",
+        "queue": f"{BASE}/api/v1/queues/7",
+        "type": "rejection",
+        "subject": "Re: your invoice",
+        "message": "<p>Rejected</p>",
+        "to": [{"email": "a@b.com", "name": "A"}],
+        "automate": False,
+    }
+
+
+def test_create_email_template_omits_unset_optionals(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_email_template",
+        {"name": "Minimal", "queue_id": 7},
+        lambda url, method, body: {"id": 1} if url.endswith("/api/v1/email_templates") else None,
+    )
+    body = fake.calls[0]["body"]
+    assert body == {"name": "Minimal", "queue": f"{BASE}/api/v1/queues/7"}
+    for absent in ("type", "subject", "message", "to", "cc", "bcc", "automate", "triggers"):
+        assert absent not in body
+
+
+def test_create_email_template_maps_trigger_ids_to_urls(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_email_template",
+        {"name": "T", "queue_id": 7, "triggers": [5, 6]},
+        lambda url, method, body: {"id": 1},
+    )
+    assert fake.calls[0]["body"]["triggers"] == [
+        f"{BASE}/api/v1/triggers/5", f"{BASE}/api/v1/triggers/6",
+    ]
+
+
+def test_patch_email_template_shapes_request_body(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_email_template",
+        {"email_template_id": 9, "subject": "New subject", "automate": True},
+        lambda url, method, body: {"id": 9} if url.endswith("/api/v1/email_templates/9") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "PATCH"
+    assert call["url"].endswith("/api/v1/email_templates/9")
+    assert call["body"] == {"subject": "New subject", "automate": True}
+
+
+def test_patch_email_template_remaps_queue_id(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_email_template",
+        {"email_template_id": 9, "queue_id": 12},
+        lambda url, method, body: {"id": 9},
+    )
+    assert fake.calls[0]["body"] == {"queue": f"{BASE}/api/v1/queues/12"}
+
+
+def test_patch_email_template_maps_trigger_ids_to_urls(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_email_template",
+        {"email_template_id": 9, "triggers": [5, 6]},
+        lambda url, method, body: {"id": 9},
+    )
+    assert fake.calls[0]["body"] == {
+        "triggers": [f"{BASE}/api/v1/triggers/5", f"{BASE}/api/v1/triggers/6"],
+    }
+
+
+def test_delete_email_template_calls_delete(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_delete_email_template",
+        {"email_template_id": 9},
+        lambda url, method, body: 204 if url.endswith("/api/v1/email_templates/9") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "DELETE"
+    assert call["url"].endswith("/api/v1/email_templates/9")
+
+
+def test_render_email_template_is_post_with_resolved_urls(monkeypatch):
+    rendered = {"subject": "Hi", "message": "<p>body</p>", "to": [{"email": "x@y.com"}]}
+    fake, _ = run_handler(
+        monkeypatch, "rossum_render_email_template",
+        {"email_template_id": 9,
+         "annotation_list": [55],
+         "document_list": [3],
+         "parent_email": f"{BASE}/api/v1/emails/3",
+         "template_values": {"foo": "bar"}},
+        lambda url, method, body: rendered if url.endswith("/api/v1/email_templates/9/render") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/email_templates/9/render")
+    assert call["body"] == {
+        "template_values": {"foo": "bar"},
+        "parent_email": f"{BASE}/api/v1/emails/3",
+        "annotation_list": [f"{BASE}/api/v1/annotations/55"],
+        "document_list": [f"{BASE}/api/v1/documents/3"],
+    }
+
+
+def test_render_email_template_empty_body_when_no_args(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_render_email_template",
+        {"email_template_id": 9},
+        lambda url, method, body: {"subject": "", "message": ""},
+    )
+    assert fake.calls[0]["body"] == {}
+
+
+def test_render_email_template_is_read_only_annotation():
+    assert server.TOOLS["rossum_render_email_template"]["annotations"]["readOnlyHint"] is True
+
+
+def test_email_template_write_destructive_annotations():
+    assert server.TOOLS["rossum_create_email_template"]["annotations"]["readOnlyHint"] is False
+    assert server.TOOLS["rossum_create_email_template"]["annotations"]["destructiveHint"] is False
+    assert server.TOOLS["rossum_patch_email_template"]["annotations"]["readOnlyHint"] is False
+    assert server.TOOLS["rossum_delete_email_template"]["annotations"]["destructiveHint"] is True

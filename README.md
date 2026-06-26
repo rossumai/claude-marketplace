@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 13 reference packs · 75 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 13 reference packs · 79 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -201,6 +201,10 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_list_emails` | List emails (filter by queue, type) |
 | `rossum_get_email` | Get full email details (subject, body, attachments) |
 | `rossum_list_email_threads` | List email threads (filter by queue) |
+| `rossum_create_email_template` | ✏️ Create an email template (rejection/custom notification subject + body, scoped to a queue) |
+| `rossum_patch_email_template` | ✏️ Update an email template (subject, message, automate, recipients, queue) |
+| `rossum_delete_email_template` | ⚠️ Delete an email template |
+| `rossum_render_email_template` | Render a template to its final subject + body for preview (POST but read-only — renders, does not send) |
 | `rossum_list_groups` | List available user roles (groups) and their IDs |
 | `rossum_list_users` | List organization users |
 | `rossum_create_user` | ✏️ Create a new user in the organization |
