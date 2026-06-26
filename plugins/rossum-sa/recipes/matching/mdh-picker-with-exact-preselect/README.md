@@ -16,6 +16,10 @@ Use this recipe when you need to show a full dropdown pick-list to the user but 
 
 ## Adapt
 
-If this config shares a target field with another MDH config (e.g. an auto-match config that runs first), this populator must be ordered last and gated on `target == ''` via the `action_condition`. A later no-match result from the populator will overwrite a successful auto-match result from the earlier config, so sequencing is critical. The `$match` on `Organization_Data.Organization_Active: true` in the source example is collection-specific — replace or remove it based on your data model's active/inactive flag.
+If this config shares a target field with another MDH config (e.g. an auto-match config that runs first), this populator must be ordered last and gated on `target == ''` via the `action_condition`. A later no-match result from the populator will overwrite a successful auto-match result from the earlier config, so sequencing is critical.
+
+The source example included an active-record filter (`$match` on `Organization_Data.Organization_Active: true`) before the final `$project`; this fragment **drops it** because the flag name is collection-specific. Re-add an active/inactive `$match` for your collection so the pick-list does not surface retired records.
+
+The `$project` and `mapping.dataset_key` use the example's literal field names (`Organization_Data.ID` for the key, `Organization_Data.Organization_Name` for the label). These are not parameterized — replace them with your collection's actual key and label fields. The `$project` must always return whatever field `mapping.dataset_key` selects on, plus any field the `label_template` reads, or the match returns no usable result.
 
 See `mdh-reference` (matching queries) for the underlying query grammar and scoring.

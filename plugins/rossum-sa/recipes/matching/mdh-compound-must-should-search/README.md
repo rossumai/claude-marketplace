@@ -19,4 +19,6 @@ Use this recipe when a single Atlas Search query needs to combine a required boo
 
 The `must` clause uses a fuzzy `text` operator with `maxEdits: 1` and a score boost of 2. The `should` clause uses `phrase` with `slop: 1`. If your `must_field` is a structured reference (e.g. a PO number) rather than free text, switch the `must` operator from `text` (fuzzy) to `phrase` (exact word order) or `equals` (exact value). The filter value (`"open"` in the source example) is a hard-coded literal — replace it with the correct filter value for your collection, or convert it to a placeholder if it varies per document.
 
+The `$project` field names (`po_internal_id`, `order_id_normalized`, `supplier_id`) are example-specific literals carried over from the PO source. Replace them with the actual key and display fields of your collection — they are not parameterized and will return nothing if they do not exist in your dataset.
+
 See `mdh-reference` (matching queries) for the underlying query grammar and scoring.

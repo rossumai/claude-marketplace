@@ -65,7 +65,9 @@
           },
           {
             "$project": {
-              "«exact_field»": 1
+              "Organization_Data.ID": 1,
+              "«exact_field»": 1,
+              "Organization_Data.Organization_Name": 1
             }
           }
         ]
