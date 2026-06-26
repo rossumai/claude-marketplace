@@ -75,6 +75,24 @@ def test_id_from_url():
     assert server._id_from_url("") is None
 
 
+# --- _resource_url / _resource_urls (forward counterpart of _url_to_id) ---
+
+def test_resource_url():
+    base = "https://elis.rossum.ai"
+    assert server._resource_url(base, "queues", 7) == "https://elis.rossum.ai/api/v1/queues/7"
+    # round-trips with the reverse helper
+    assert server._url_to_id(server._resource_url(base, "hooks", 12345)) == 12345
+
+
+def test_resource_urls():
+    base = "https://elis.rossum.ai"
+    assert server._resource_urls(base, "queues", [7, 8]) == [
+        "https://elis.rossum.ai/api/v1/queues/7",
+        "https://elis.rossum.ai/api/v1/queues/8",
+    ]
+    assert server._resource_urls(base, "queues", []) == []
+
+
 # --- _compact_item ---
 
 def test_compact_item_single_list_none_and_missing():

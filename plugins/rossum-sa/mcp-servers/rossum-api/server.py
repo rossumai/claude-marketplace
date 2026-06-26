@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.28.0"
+_SERVER_VERSION = "0.28.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -618,6 +618,20 @@ def _url_to_id(value):
         return value
 
 
+def _resource_url(base, resource, id):
+    """Build an absolute Rossum API URL for a resource instance.
+
+    The forward counterpart to _url_to_id:
+    ('https://elis.rossum.ai', 'queues', 7) → 'https://elis.rossum.ai/api/v1/queues/7'
+    """
+    return f"{base}/api/v1/{resource}/{id}"
+
+
+def _resource_urls(base, resource, ids):
+    """Build a list of absolute Rossum API URLs for several resource instances."""
+    return [_resource_url(base, resource, id) for id in ids]
+
+
 def _compact_item(item, url_fields):
     """Convert URL reference fields to bare integer IDs in *item* (in-place).
 
@@ -695,8 +709,7 @@ def _build_search_query(*, base, query, query_string, queue, queues):
     if queues:
         scope_ids.extend(queues)
     if scope_ids:
-        and_clauses.append({"queue": {"$in": [
-            f"{base}/api/v1/queues/{qid}" for qid in scope_ids]}})
+        and_clauses.append({"queue": {"$in": _resource_urls(base, "queues", scope_ids)}})
     if query:
         if isinstance(query, dict) and "$and" in query:
             and_clauses.extend(query["$and"])
@@ -1965,15 +1978,15 @@ def handle_create_user(request_id, arguments):
         "username": arguments["username"],
         "first_name": arguments["first_name"],
         "last_name": arguments["last_name"],
-        "organization": f"{base_url}/api/v1/organizations/{arguments['organization_id']}",
+        "organization": _resource_url(base_url, "organizations", arguments['organization_id']),
     }
     if "password" in arguments:
         body["password"] = arguments["password"]
     if "email" in arguments:
         body["email"] = arguments["email"]
-    body["groups"] = [f"{base_url}/api/v1/groups/{gid}" for gid in arguments["group_ids"]]
+    body["groups"] = _resource_urls(base_url, "groups", arguments["group_ids"])
     if "queue_ids" in arguments:
-        body["queues"] = [f"{base_url}/api/v1/queues/{qid}" for qid in arguments["queue_ids"]]
+        body["queues"] = _resource_urls(base_url, "queues", arguments["queue_ids"])
     if "oidc_id" in arguments:
         body["oidc_id"] = arguments["oidc_id"]
     if "auth_type" in arguments:
@@ -2752,14 +2765,14 @@ def handle_create_hook(request_id, arguments):
         "events": arguments["events"],
         "config": arguments["config"],
         "active": arguments.get("active", True),
-        "queues": [f"{base_url}/api/v1/queues/{qid}" for qid in arguments.get("queue_ids", [])],
+        "queues": _resource_urls(base_url, "queues", arguments.get("queue_ids", [])),
     }
     if "run_after" in arguments:
-        body["run_after"] = [f"{base_url}/api/v1/hooks/{hid}" for hid in arguments["run_after"]]
+        body["run_after"] = _resource_urls(base_url, "hooks", arguments["run_after"])
     if "sideload" in arguments:
         body["sideload"] = arguments["sideload"]
     if "token_owner" in arguments:
-        body["token_owner"] = f"{base_url}/api/v1/users/{arguments['token_owner']}"
+        body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
     _rossum_post(request_id, "/api/v1/hooks", body)
 
 
@@ -2818,12 +2831,12 @@ def handle_create_hook_from_template(request_id, arguments):
     if not base_url:
         return
     body = {
-        "hook_template": f"{base_url}/api/v1/hook_templates/{arguments['hook_template']}",
+        "hook_template": _resource_url(base_url, "hook_templates", arguments['hook_template']),
         "name": arguments["name"],
-        "queues": [f"{base_url}/api/v1/queues/{qid}" for qid in arguments.get("queue_ids", [])],
+        "queues": _resource_urls(base_url, "queues", arguments.get("queue_ids", [])),
     }
     if "token_owner" in arguments:
-        body["token_owner"] = f"{base_url}/api/v1/users/{arguments['token_owner']}"
+        body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
     for key in ("events", "active", "settings", "config"):
         if key in arguments:
             body[key] = arguments[key]
@@ -2966,11 +2979,11 @@ def handle_patch_hook(request_id, arguments):
         if key in arguments:
             body[key] = arguments[key]
     if "queue_ids" in arguments:
-        body["queues"] = [f"{base_url}/api/v1/queues/{qid}" for qid in arguments["queue_ids"]]
+        body["queues"] = _resource_urls(base_url, "queues", arguments["queue_ids"])
     if "run_after" in arguments:
-        body["run_after"] = [f"{base_url}/api/v1/hooks/{hid}" for hid in arguments["run_after"]]
+        body["run_after"] = _resource_urls(base_url, "hooks", arguments["run_after"])
     if "token_owner" in arguments:
-        body["token_owner"] = f"{base_url}/api/v1/users/{arguments['token_owner']}"
+        body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
     _rossum_patch(request_id, f"/api/v1/hooks/{hook_id}", body)
 
 
@@ -3027,7 +3040,7 @@ def handle_extract_export_template(request_id, arguments):
     if not base_url:
         return
     hook_id = arguments["hook_id"]
-    hook = _http_request(request_id, f"{base_url}/api/v1/hooks/{hook_id}")
+    hook = _http_request(request_id, _resource_url(base_url, "hooks", hook_id))
     if hook is None:
         return
     configs = (hook.get("settings") or {}).get("export_configs")
@@ -3185,7 +3198,7 @@ def handle_generate_export_payload(request_id, arguments):
     body = {
         "event": "annotation_content",
         "action": "export",
-        "annotation": f"{base_url}/api/v1/annotations/{annotation_id}",
+        "annotation": _resource_url(base_url, "annotations", annotation_id),
         "previous_status": "confirmed",
         "status": "exporting",
     }
@@ -3201,7 +3214,7 @@ def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
     Returns the annotation URL, "" if the hook has no usable annotation (caller
     should surface a guidance error), or None if a request failed (error already sent).
     """
-    hook = _http_request(request_id, f"{base_url}/api/v1/hooks/{hook_id}")
+    hook = _http_request(request_id, _resource_url(base_url, "hooks", hook_id))
     if hook is None:
         return None
     for queue_url in hook.get("queues") or []:
@@ -3287,7 +3300,7 @@ def handle_test_hook(request_id, arguments):
     if arguments["event"] in _ANNOTATION_HOOK_EVENTS:
         annotation_id = arguments.get("annotation_id")
         if annotation_id is not None:
-            annotation_url = f"{base_url}/api/v1/annotations/{annotation_id}"
+            annotation_url = _resource_url(base_url, "annotations", annotation_id)
         else:
             annotation_url = _resolve_annotation_url_for_hook(request_id, base_url, hook_id)
             if annotation_url is None:
@@ -3463,7 +3476,7 @@ def handle_create_rule(request_id, arguments):
     body = {
         "name": arguments["name"],
         "enabled": arguments.get("enabled", True),
-        "queues": [f"{base_url}/api/v1/queues/{qid}" for qid in arguments.get("queue_ids", [])],
+        "queues": _resource_urls(base_url, "queues", arguments.get("queue_ids", [])),
     }
     for key in ("description", "trigger_condition", "actions"):
         if key in arguments:
@@ -3527,7 +3540,7 @@ def handle_patch_rule(request_id, arguments):
         if key in arguments:
             body[key] = arguments[key]
     if "queue_ids" in arguments:
-        body["queues"] = [f"{base_url}/api/v1/queues/{qid}" for qid in arguments["queue_ids"]]
+        body["queues"] = _resource_urls(base_url, "queues", arguments["queue_ids"])
     _rossum_patch(request_id, f"/api/v1/rules/{rule_id}", body)
 
 
@@ -3852,7 +3865,7 @@ def handle_get_annotation(request_id, arguments):
     hook_logs_n = max(0, min(int(hook_logs_n), 50))
 
     # 1. annotation metadata
-    annotation = _http_request(request_id, f"{base_url}/api/v1/annotations/{annotation_id}")
+    annotation = _http_request(request_id, _resource_url(base_url, "annotations", annotation_id))
     if annotation is None:
         return
 
@@ -4097,7 +4110,7 @@ def handle_delete_annotation(request_id, arguments):
         tool_result(request_id, json.dumps(result, indent=2))
         return
     if deleted:
-        body = {"annotations": [f"{base_url}/api/v1/annotations/{aid}" for aid in deleted]}
+        body = {"annotations": _resource_urls(base_url, "annotations", deleted)}
         purge = _http_request(
             request_id, f"{base_url}/api/v1/annotations/purge_deleted", method="POST", body=body)
         if purge is None:
@@ -4106,7 +4119,7 @@ def handle_delete_annotation(request_id, arguments):
         pending = set(deleted)
         while pending and time.time() < deadline:
             for aid in list(pending):
-                url = f"{base_url}/api/v1/annotations/{aid}"
+                url = _resource_url(base_url, "annotations", aid)
                 code = _http_request_silent(url, method="GET")
                 if code == 404:
                     pending.discard(aid)  # already gone — treat as purged
@@ -4528,7 +4541,7 @@ def handle_refire_annotation(request_id, arguments):
         wait_seconds = int(arguments.get("wait_seconds", 15))
         for next_status in ("postponed", "to_review"):
             patch_resp = _http_request(
-                request_id, f"{base_url}/api/v1/annotations/{annotation_id}",
+                request_id, _resource_url(base_url, "annotations", annotation_id),
                 method="PATCH", body={"status": next_status},
             )
             if patch_resp is None:
@@ -4540,7 +4553,7 @@ def handle_refire_annotation(request_id, arguments):
         poll_timeout = int(arguments.get("poll_timeout", 180))
         # 1. fetch source annotation
         source_ann = _http_request(
-            request_id, f"{base_url}/api/v1/annotations/{annotation_id}",
+            request_id, _resource_url(base_url, "annotations", annotation_id),
         )
         if source_ann is None:
             return
@@ -4577,7 +4590,7 @@ def handle_refire_annotation(request_id, arguments):
         refire_meta["target_annotation_id"] = target_aid
         # 5. poll past 'importing'
         new_ann = _poll_until(
-            lambda: _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}"),
+            lambda: _http_request(request_id, _resource_url(base_url, "annotations", target_aid)),
             lambda a: a.get("status") not in ("importing", "created"),
             timeout=poll_timeout,
         )
@@ -4593,7 +4606,7 @@ def handle_refire_annotation(request_id, arguments):
         if isinstance(new_ann, dict) and new_ann.get("status") == "deleted":
             refire_meta["dedup_restore"] = True
             restore = _http_request(
-                request_id, f"{base_url}/api/v1/annotations/{target_aid}",
+                request_id, _resource_url(base_url, "annotations", target_aid),
                 method="PATCH", body={"status": "to_review"},
             )
             if restore is None:
@@ -4604,7 +4617,7 @@ def handle_refire_annotation(request_id, arguments):
         return
 
     # Build compact response for the final annotation (same shape as rossum_get_annotation)
-    annotation = _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}")
+    annotation = _http_request(request_id, _resource_url(base_url, "annotations", target_aid))
     if annotation is None:
         return
     content_resp = _http_request(
@@ -4844,15 +4857,13 @@ def handle_create_email_template(request_id, arguments):
         return
     body = {
         "name": arguments["name"],
-        "queue": f"{base_url}/api/v1/queues/{arguments['queue_id']}",
+        "queue": _resource_url(base_url, "queues", arguments['queue_id']),
     }
     for key in ("type", "subject", "message", "automate", "to", "cc", "bcc"):
         if key in arguments:
             body[key] = arguments[key]
     if "triggers" in arguments:
-        body["triggers"] = [
-            f"{base_url}/api/v1/triggers/{tid}" for tid in arguments["triggers"]
-        ]
+        body["triggers"] = _resource_urls(base_url, "triggers", arguments["triggers"])
     _rossum_post(request_id, "/api/v1/email_templates", body)
 
 
@@ -4899,11 +4910,9 @@ def handle_patch_email_template(request_id, arguments):
         if key in arguments:
             body[key] = arguments[key]
     if "queue_id" in arguments:
-        body["queue"] = f"{base_url}/api/v1/queues/{arguments['queue_id']}"
+        body["queue"] = _resource_url(base_url, "queues", arguments['queue_id'])
     if "triggers" in arguments:
-        body["triggers"] = [
-            f"{base_url}/api/v1/triggers/{tid}" for tid in arguments["triggers"]
-        ]
+        body["triggers"] = _resource_urls(base_url, "triggers", arguments["triggers"])
     _rossum_patch(request_id, f"/api/v1/email_templates/{template_id}", body)
 
 
@@ -4978,13 +4987,9 @@ def handle_render_email_template(request_id, arguments):
     if "parent_email" in arguments:
         body["parent_email"] = arguments["parent_email"]
     if "annotation_list" in arguments:
-        body["annotation_list"] = [
-            f"{base_url}/api/v1/annotations/{aid}" for aid in arguments["annotation_list"]
-        ]
+        body["annotation_list"] = _resource_urls(base_url, "annotations", arguments["annotation_list"])
     if "document_list" in arguments:
-        body["document_list"] = [
-            f"{base_url}/api/v1/documents/{did}" for did in arguments["document_list"]
-        ]
+        body["document_list"] = _resource_urls(base_url, "documents", arguments["document_list"])
     _rossum_post(request_id, f"/api/v1/email_templates/{template_id}/render", body)
 
 
