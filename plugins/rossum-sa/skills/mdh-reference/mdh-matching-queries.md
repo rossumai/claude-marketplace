@@ -288,6 +288,8 @@ When fuzzy matching by name or address, raw `searchScore` can vary widely. Use l
 - The `__normalized_score` applies a sigmoid-like normalization to bound values between 0 and 1.
 - Threshold `0.8` is typical for name-only matching; use `0.9` when combining name + address.
 
+→ Drop-in recipe: `mdh-fuzzy-score-normalization` (recipes/matching/).
+
 ---
 
 ## Unique-Result Filter Pattern (`$setWindowFields`)
@@ -394,6 +396,8 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 - VAT exact match gives highest precision with lowest false positives.
 - Name fallback is fuzzy and score-filtered, reducing weak matches.
 
+→ Drop-in recipe: `mdh-exact-to-fuzzy-cascade` (recipes/matching/).
+
 ### Example 2: PO Match — Exact Reference + Fuzzy Fallback
 
 **Scenario:** PO reference can be noisy. First try normalized reference, then compound fuzzy on supplier and reference text.
@@ -467,6 +471,8 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 }
 ```
 
+→ Drop-in recipe: `mdh-compound-must-should-search` (recipes/matching/).
+
 ### Example 3: Lookup-Based Delivery Address Resolution
 
 **Scenario:** Resolve supplier by exact ID, then join delivery locations and match delivery code.
@@ -512,6 +518,8 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
   }
 }
 ```
+
+→ Drop-in recipe: `mdh-lookup-join-then-match` (recipes/matching/).
 
 ### Example 4: Advanced Supplier Matching — Multi-Stage with Score Normalization
 
@@ -906,6 +914,8 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 ```
 
 **Key technique:** The double `$setWindowFields` + `$cond` logic removes the "Please select" placeholder only when an exact match exists. Combined with `multiple_matches_found: best_match`, the exact match auto-selects when found; otherwise the empty placeholder is selected, forcing user choice.
+
+→ Drop-in recipe: `mdh-picker-with-exact-preselect` (recipes/matching/).
 
 ---
 
