@@ -190,6 +190,13 @@
       "rossum_get_schema"
     ]
   },
+  "GET /tasks/{taskID}": {
+    "decision": "covered",
+    "summary": "Retrieve task",
+    "tools": [
+      "rossum_get_task"
+    ]
+  },
   "GET /users": {
     "decision": "covered",
     "summary": "List users",
@@ -297,6 +304,13 @@
       "rossum_search_annotations_advanced"
     ]
   },
+  "POST /annotations/purge_deleted": {
+    "decision": "covered",
+    "summary": "Permanently purge soft-deleted annotations",
+    "tools": [
+      "rossum_delete_annotation"
+    ]
+  },
   "POST /annotations/suggested_recipients": {
     "decision": "not_planned",
     "reason": "operator/comms",
@@ -374,9 +388,11 @@
     "summary": "Create embedded URL"
   },
   "POST /annotations/{annotationID}/delete": {
-    "decision": "not_planned",
-    "reason": "operator/validation-UI",
-    "summary": "Switch to deleted"
+    "decision": "covered",
+    "summary": "Soft-delete annotation (switch status to deleted)",
+    "tools": [
+      "rossum_delete_annotation"
+    ]
   },
   "POST /annotations/{annotationID}/edit": {
     "decision": "not_planned",
@@ -601,6 +617,19 @@
     "decision": "not_planned",
     "reason": "niche",
     "summary": "Create suggested edit"
+  },
+  "POST /uploads": {
+    "decision": "covered",
+    "summary": "Create upload",
+    "tools": [
+      "rossum_refire_annotation",
+      "rossum_upload_document"
+    ]
+  },
+  "POST /uploads/{filename}": {
+    "decision": "not_planned",
+    "reason": "redundant; rossum_upload_document uses POST /uploads (query-param form)",
+    "summary": "Create upload with filename"
   },
   "POST /users": {
     "decision": "covered",

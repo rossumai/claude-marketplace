@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.26.0"
+_SERVER_VERSION = "0.27.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -267,7 +267,8 @@ def _http_request(request_id, url, *, method="GET", body=None, parse_json=True):
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
             if not parse_json:
                 return resp.status
-            return json.loads(resp.read().decode("utf-8"))
+            data = resp.read()
+            return json.loads(data.decode("utf-8")) if data else {}
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8") if e.fp else str(e)
         if e.code == 401:
@@ -411,6 +412,145 @@ def _http_get_typed(request_id, url):
     except Exception as e:
         tool_result(request_id, f"Error: {e}", is_error=True)
         return (None, None)
+
+
+def _poll_until(fetch, done, *, timeout=180, interval=3):
+    """Poll a single resource until ready. Calls fetch() repeatedly until done(result)
+    is truthy or *timeout* seconds elapse, sleeping *interval* between attempts.
+
+    Returns the last fetched result. Returns None as soon as fetch() returns None (an
+    error it already surfaced). On timeout, returns the last (non-None) result with
+    done() still false, so the caller distinguishes ready (done True) from timed-out
+    (done False) from errored (None). Owning the deadline here keeps each poll phase on
+    its own budget — callers can't accidentally share one deadline across phases."""
+    deadline = time.time() + timeout
+    result = None
+    while time.time() < deadline:
+        result = fetch()
+        if result is None:
+            return None
+        if done(result):
+            return result
+        time.sleep(interval)
+    return result
+
+
+_EXT_CONTENT_TYPE = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+
+def _content_type_for(filename):
+    """Best-effort MIME from a filename extension; stdlib-only (no mimetypes import)."""
+    dot = filename.rfind(".")
+    if dot != -1:
+        ext = filename[dot:].lower()
+        if ext in _EXT_CONTENT_TYPE:
+            return _EXT_CONTENT_TYPE[ext]
+    return "application/octet-stream"
+
+
+def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
+                     content_type=None, *, metadata=None, values=None,
+                     reject_identical=None, poll_timeout=180):
+    """Upload bytes to a queue via the modern POST /uploads (HTTP 202 -> task).
+
+    Polls task -> upload object -> first annotation URL and returns it. metadata
+    and values, when given, must already be JSON strings. Returns the annotation
+    URL, or None when an error tool_result was already emitted.
+    """
+    if content_type is None:
+        content_type = _content_type_for(filename)
+    boundary = f"----upload-{int(time.time())}"
+    parts = [
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="content"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode()
+        + file_bytes
+        + b"\r\n"
+    ]
+
+    def _text_part(name, value):
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode()
+
+    if metadata is not None:
+        parts.append(_text_part("metadata", metadata))
+    if values is not None:
+        parts.append(_text_part("values", values))
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    query = f"queue={queue_id}"
+    if reject_identical:
+        query += "&reject_identical=true"
+    resp = _http_request_raw(
+        request_id, f"{base_url}/api/v1/uploads?{query}",
+        method="POST", raw_body=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+    if resp is None:
+        return None
+    task_url = resp.get("url") if isinstance(resp, dict) else None
+    if not task_url:
+        tool_result(request_id, f"Upload response missing task URL: {resp!r}", is_error=True)
+        return None
+
+    # Poll the task. ?no_redirect=true makes a succeeded task return 200 with the task
+    # body (status/result), instead of a 303 redirect to its result that urllib would
+    # auto-follow (losing the status). Documented, sturdier than reading the 303 body.
+    task = _poll_until(
+        lambda: _http_request(request_id, f"{task_url}?no_redirect=true"),
+        lambda t: t.get("status") in ("succeeded", "failed"),
+        timeout=poll_timeout,
+    )
+    if task is None:
+        return None
+    status = task.get("status")
+    if status == "failed":
+        tool_result(
+            request_id,
+            f"Upload task failed: {task.get('detail') or task.get('code') or task!r}",
+            is_error=True,
+        )
+        return None
+    if status != "succeeded":
+        tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
+        return None
+    upload_url = (task.get("content") or {}).get("upload") or task.get("result_url")
+    if not upload_url:
+        tool_result(
+            request_id,
+            f"Upload task succeeded but exposed no upload URL: {task!r}",
+            is_error=True,
+        )
+        return None
+
+    # Separate budget: a slow task poll must not starve the wait for the annotation.
+    upload_obj = _poll_until(
+        lambda: _http_request(request_id, upload_url),
+        lambda u: bool(u.get("annotations")),
+        timeout=poll_timeout,
+    )
+    if upload_obj is None:
+        return None
+    annotations = upload_obj.get("annotations") or []
+    if not annotations:
+        tool_result(request_id, "Upload created no annotation before timeout.", is_error=True)
+        return None
+    return annotations[0]
 
 
 def _data_storage_call(request_id, path, body):
@@ -1144,7 +1284,10 @@ _GENERIC_GET_SCHEMA = {
     "(engines, engine_fields, labels, automation_blockers, workflows, triggers, "
     "relations, pages, tasks, ...). GET-only — cannot create, update, or delete. Pass "
     "an '/api/v1/...' path. Full path catalog: the rossum-reference 'API coverage' doc "
-    "(api-coverage.md). Prefer a dedicated tool when one exists.",
+    "(api-coverage.md). Prefer a dedicated tool when one exists. "
+    "Note: this tool follows HTTP redirects, so a GET to a finished task URL returns the "
+    "result object directly rather than the 303 task response — use rossum_get_task for "
+    "polling task status.",
     _GENERIC_GET_SCHEMA,
     annotations=_READ_ONLY,
 )
@@ -1190,6 +1333,31 @@ def handle_rossum_get(request_id, arguments):
                 {"total": api_total, "returned": len(results), "results": results}, indent=2))
         return
     tool_result(request_id, json.dumps(payload, indent=2))
+
+
+@_tool(
+    "rossum_get_task",
+    "Retrieves a Rossum task object (status, detail, result_url, content) for an async "
+    "operation such as a document upload. Appends ?no_redirect=true so a succeeded task "
+    "returns 200 with its own status instead of a 303 redirect to its result (which the "
+    "generic rossum_get would silently follow). Read-only.",
+    {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {"task_id": {"type": "integer", "description": "The task ID."}},
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_get_task(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    task = _http_request(
+        request_id, f"{base_url}/api/v1/tasks/{arguments['task_id']}?no_redirect=true")
+    if task is None:
+        return
+    tool_result(request_id, json.dumps(task, indent=2))
 
 
 @_tool(
@@ -3886,6 +4054,77 @@ def handle_cancel_annotation(request_id, arguments):
 
 
 @_tool(
+    "rossum_delete_annotation",
+    "Deletes one or more annotations — cleanup for synthetic tests / iteration loops. By "
+    "default a reversible soft-delete (status -> 'deleted'; reverse with "
+    "rossum_patch_annotation status='to_review'). With purge=true it permanently purges them "
+    "after soft-delete (IRREVERSIBLE) and polls until each reaches status 'purged'. "
+    "Destructive operation. NEVER on production annotations.",
+    {
+        "type": "object",
+        "required": ["annotation_ids"],
+        "properties": {
+            "annotation_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1,
+                               "description": "IDs of annotations to delete."},
+            "purge": {"type": "boolean",
+                      "description": "If true, permanently purge after soft-delete (irreversible)."},
+            "poll_timeout": {"type": "integer",
+                             "description": "Seconds to wait for purge confirmation (default 180)."},
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_annotation(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    ids = arguments["annotation_ids"]
+    deleted, errors = [], []
+    for aid in ids:
+        code = _http_request_silent(f"{base_url}/api/v1/annotations/{aid}/delete", method="POST")
+        if code is None:
+            tool_result(request_id, f"Network error soft-deleting annotation {aid}.", is_error=True)
+            return
+        if 200 <= code < 300:
+            deleted.append(aid)
+        elif code == 404:
+            errors.append({"id": aid, "error": "not found (already gone)"})
+        else:
+            errors.append({"id": aid, "error": f"HTTP {code}"})
+    result = {"soft_deleted": deleted, "errors": errors}
+    if not arguments.get("purge"):
+        tool_result(request_id, json.dumps(result, indent=2))
+        return
+    if deleted:
+        body = {"annotations": [f"{base_url}/api/v1/annotations/{aid}" for aid in deleted]}
+        purge = _http_request(
+            request_id, f"{base_url}/api/v1/annotations/purge_deleted", method="POST", body=body)
+        if purge is None:
+            return
+        deadline = time.time() + int(arguments.get("poll_timeout", 180))
+        pending = set(deleted)
+        while pending and time.time() < deadline:
+            for aid in list(pending):
+                url = f"{base_url}/api/v1/annotations/{aid}"
+                code = _http_request_silent(url, method="GET")
+                if code == 404:
+                    pending.discard(aid)  # already gone — treat as purged
+                elif code is not None and 200 <= code < 300:
+                    ann = _http_request(request_id, url)
+                    if ann is None:
+                        return
+                    if ann.get("status") == "purged":
+                        pending.discard(aid)
+                # else: transient error or None — leave pending, deadline handles giving up
+            if pending:
+                time.sleep(3)
+        result["purged"] = [a for a in deleted if a not in pending]
+        result["not_purged_in_time"] = sorted(pending)
+    tool_result(request_id, json.dumps(result, indent=2))
+
+
+@_tool(
     "rossum_confirm_annotation",
     "Confirms an annotation via POST /annotations/{id}/confirm — transitions it to "
     "'exported'/'exporting' (or 'confirmed' if the confirmed-state feature is enabled, "
@@ -4083,6 +4322,97 @@ def handle_update_annotation_content(request_id, arguments):
 
 
 @_tool(
+    "rossum_upload_document",
+    "Uploads a local document file (PDF/image/etc.) into a Rossum queue via the modern "
+    "asynchronous /uploads API, polls until the resulting annotation is created, and returns "
+    "its URL and id. Use to seed a sandbox, test extraction, or reproduce a customer document "
+    "without leaving Claude Code. Write operation. Max payload 40 MB. The returned annotation "
+    "may still be 'importing'; poll it with rossum_get_annotation.",
+    {
+        "type": "object",
+        "required": ["file_path", "queue_id"],
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path (absolute or relative to the server's CWD) to the local file to upload.",
+            },
+            "queue_id": {"type": "integer", "description": "ID of the queue to upload into."},
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata object set on the new annotation (sent as a JSON string).",
+            },
+            "values": {
+                "type": "object",
+                "description": "Optional datapoint init values (sent as a JSON string), "
+                               "e.g. {\"upload:organization_unit\": \"Sales\"}.",
+            },
+            "reject_identical": {
+                "type": "boolean",
+                "description": "If true, reject the upload when an identical document already exists.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_upload_document(request_id, arguments):
+    import os
+
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    file_path = arguments["file_path"]
+    if not os.path.isfile(file_path):
+        tool_result(request_id, f"File not found: {file_path}", is_error=True)
+        return
+    size = os.path.getsize(file_path)
+    if size > 40 * 1024 * 1024:
+        tool_result(
+            request_id,
+            f"File too large: {size} bytes ({size / 1024 / 1024:.1f} MB); limit is 40 MB.",
+            is_error=True,
+        )
+        return
+    with open(file_path, "rb") as fh:
+        file_bytes = fh.read()
+    filename = os.path.basename(file_path)
+    metadata = arguments.get("metadata")
+    values = arguments.get("values")
+    queue_id = arguments["queue_id"]
+
+    annotation_url = _upload_to_queue(
+        request_id, base_url, queue_id, file_bytes, filename,
+        metadata=json.dumps(metadata) if metadata is not None else None,
+        values=json.dumps(values) if values is not None else None,
+        reject_identical=arguments.get("reject_identical"),
+    )
+    if annotation_url is None:
+        return
+    aid = _id_from_url(annotation_url)
+
+    # brief, non-fatal wait past 'importing' so fast queues report a ready status
+    ann = _poll_until(
+        lambda: _http_request(request_id, annotation_url),
+        lambda a: a.get("status") not in ("importing", "created"),
+        timeout=60,
+    )
+    if ann is None:
+        return
+    status = ann.get("status")
+
+    out = {
+        "annotation_id": aid,
+        "annotation_url": annotation_url,
+        "queue_id": queue_id,
+        "filename": filename,
+        "status": status,
+    }
+    if status in ("importing", "created"):
+        out["note"] = "Annotation is still importing; poll with rossum_get_annotation."
+    tool_result(request_id, json.dumps(out, indent=2))
+
+
+@_tool(
     "rossum_refire_annotation",
     "Re-fire an annotation through the hook chain — the main inner-loop iteration primitive. "
     "Three modes:\n"
@@ -4232,58 +4562,27 @@ def handle_refire_annotation(request_id, arguments):
         pdf_bytes = _http_get_bytes(request_id, content_url)
         if pdf_bytes is None:
             return
-        # 4. multipart upload
+        # 4. upload via the modern /uploads API (shared helper handles the
+        #    202 -> task -> upload -> annotation async chain)
         queue_id = queue_url.rstrip("/").rsplit("/", 1)[-1]
-        upload_url = f"{base_url}/api/v1/queues/{queue_id}/upload"
-        boundary = f"----refire-{int(time.time())}"
-        pre = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="content"; filename="{original_name}"\r\n'
-            f"Content-Type: application/pdf\r\n\r\n"
-        ).encode()
-        post = f"\r\n--{boundary}--\r\n".encode()
-        body = pre + pdf_bytes + post
-        upload_resp = _http_request_raw(
-            request_id, upload_url, method="POST", raw_body=body,
-            content_type=f"multipart/form-data; boundary={boundary}",
+        # content_type pinned to application/pdf to preserve the pre-migration reupload
+        # behavior (it always sent application/pdf regardless of the source extension).
+        new_url = _upload_to_queue(
+            request_id, base_url, queue_id, pdf_bytes, original_name,
+            content_type="application/pdf", poll_timeout=poll_timeout,
         )
-        if upload_resp is None:
-            return
-        # Rossum's upload response shape: {"annotation": "<URL>", "document": "<URL>",
-        # "results": [{"annotation": "<URL>", "document": "<URL>"}]}.
-        # Older shapes may use "annotations" (plural list). Try in priority order.
-        new_url = None
-        if isinstance(upload_resp, dict):
-            top_ann = upload_resp.get("annotation")
-            if isinstance(top_ann, str):
-                new_url = top_ann
-            if not new_url:
-                results = upload_resp.get("results") or upload_resp.get("annotations") or []
-                if results:
-                    first = results[0]
-                    if isinstance(first, str):
-                        new_url = first
-                    elif isinstance(first, dict):
-                        new_url = first.get("annotation") or first.get("url")
-        if not new_url:
-            tool_result(
-                request_id,
-                f"Upload response missing annotation URL: {upload_resp!r}",
-                is_error=True,
-            )
+        if new_url is None:
             return
         target_aid = int(new_url.rstrip("/").rsplit("/", 1)[-1])
         refire_meta["target_annotation_id"] = target_aid
         # 5. poll past 'importing'
-        deadline = time.time() + poll_timeout
-        new_ann = {}
-        while time.time() < deadline:
-            new_ann = _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}")
-            if new_ann is None:
-                return
-            if new_ann.get("status") not in ("importing", "created"):
-                break
-            time.sleep(3)
+        new_ann = _poll_until(
+            lambda: _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}"),
+            lambda a: a.get("status") not in ("importing", "created"),
+            timeout=poll_timeout,
+        )
+        if new_ann is None:
+            return
         # 6. Dedup auto-restore — defensive for customer-custom hooks that PATCH
         # status:deleted on annotation_content.initialize. The stock Duplicate
         # Handling extension does not transition status (its valid actions are

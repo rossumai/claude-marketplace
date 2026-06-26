@@ -156,6 +156,23 @@ def test_paginate_returns_none_on_error(monkeypatch):
     assert server._paginate(1, url) is None
 
 
+def test_http_request_empty_body_returns_empty_dict(monkeypatch):
+    # A 2xx with an empty body (e.g. POST /annotations/purge_deleted -> 202 no content)
+    # must not crash json.loads; _http_request returns {} instead.
+    monkeypatch.setattr(server, "_cached_token", "t")
+
+    class _Resp:
+        status = 202
+        def read(self): return b""
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(server.urllib.request, "urlopen", lambda req, **k: _Resp())
+    out = server._http_request(1, "https://x.rossum.ai/api/v1/annotations/purge_deleted",
+                               method="POST", body={"annotations": []})
+    assert out == {}
+
+
 def test_auth_headers_includes_ua_without_marker(monkeypatch):
     monkeypatch.setattr(server, "_cached_token", "tok")
     monkeypatch.setattr(server, "_current_tool", None)
@@ -294,3 +311,113 @@ def test_build_search_query_wraps_bare_user_query_without_and():
 def test_build_search_query_empty_is_empty_body():
     assert server._build_search_query(base="https://x.rossum.ai", query=None,
                                       query_string=None, queue=None, queues=None) == {}
+
+
+# --- _content_type_for ---
+
+def test_content_type_for_known_and_unknown():
+    assert server._content_type_for("invoice.pdf") == "application/pdf"
+    assert server._content_type_for("scan.PNG") == "image/png"
+    assert server._content_type_for("a.jpeg") == "image/jpeg"
+    assert server._content_type_for("a.tif") == "image/tiff"
+    assert server._content_type_for("noextension") == "application/octet-stream"
+    assert server._content_type_for("weird.xyz") == "application/octet-stream"
+
+
+# --- _upload_to_queue ---
+
+def _seed_upload(monkeypatch):
+    monkeypatch.setattr(server, "_cached_token", "t")
+    monkeypatch.setattr(server, "_cached_base_url", "https://x.rossum.ai")
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+
+
+def test_upload_to_queue_happy_path_builds_multipart_and_returns_annotation(monkeypatch):
+    _seed_upload(monkeypatch)
+    captured = {}
+
+    def fake_raw(request_id, url, *, method="POST", raw_body=b"", content_type=None):
+        captured["url"] = url
+        captured["body"] = raw_body
+        captured["ct"] = content_type
+        return {"url": "https://x.rossum.ai/api/v1/tasks/1"}
+
+    monkeypatch.setattr(server, "_http_request_raw", fake_raw)
+
+    def _req(rid, url, **k):
+        if "/tasks/" in url:
+            return {"status": "succeeded",
+                    "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}}
+        return {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
+
+    monkeypatch.setattr(server, "_http_request", _req)
+    monkeypatch.setattr(server, "write_message", lambda m: None)
+
+    out = server._upload_to_queue(
+        1, "https://x.rossum.ai", 5, b"PDFDATA", "f.pdf",
+        metadata='{"k":1}', reject_identical=True,
+    )
+    assert out == "https://x.rossum.ai/api/v1/annotations/3"
+    assert "queue=5" in captured["url"]
+    assert "reject_identical=true" in captured["url"]
+    assert captured["ct"].startswith("multipart/form-data; boundary=")
+    assert b'name="content"; filename="f.pdf"' in captured["body"]
+    assert b"application/pdf" in captured["body"]
+    assert b"PDFDATA" in captured["body"]
+    assert b'name="metadata"' in captured["body"]
+    assert b'{"k":1}' in captured["body"]
+
+
+def test_upload_to_queue_task_failed_emits_error(monkeypatch):
+    _seed_upload(monkeypatch)
+    monkeypatch.setattr(server, "_http_request_raw",
+                        lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
+    monkeypatch.setattr(server, "_http_request",
+                        lambda rid, url, **k: {"status": "failed", "detail": "boom"})
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda m: emitted.append(m))
+    out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
+    assert out is None
+    assert emitted[-1]["result"].get("isError")
+    assert "boom" in emitted[-1]["result"]["content"][0]["text"]
+
+
+def test_upload_to_queue_succeeded_no_url_emits_distinct_message(monkeypatch):
+    _seed_upload(monkeypatch)
+    monkeypatch.setattr(server, "_http_request_raw",
+                        lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
+    # succeeded but no upload/result_url in response
+    monkeypatch.setattr(server, "_http_request",
+                        lambda rid, url, **k: {"status": "succeeded"})
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda m: emitted.append(m))
+    out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
+    assert out is None
+    assert emitted[-1]["result"].get("isError")
+    msg = emitted[-1]["result"]["content"][0]["text"]
+    assert "succeeded" in msg and "no upload URL" in msg, (
+        f"expected 'succeeded but exposed no upload URL' message, got: {msg!r}"
+    )
+    assert "timeout" not in msg.lower(), "must not say 'timeout' when task actually succeeded"
+
+
+def test_upload_to_queue_polls_task_with_no_redirect(monkeypatch):
+    # The task GET must carry ?no_redirect=true so a succeeded task returns 200 with its
+    # status (rather than a 303 to its result that urllib would auto-follow).
+    _seed_upload(monkeypatch)
+    monkeypatch.setattr(server, "_http_request_raw",
+                        lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
+    seen = {}
+
+    def _req(rid, url, **k):
+        if "/tasks/" in url:
+            seen["task_url"] = url
+            return {"status": "succeeded",
+                    "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}}
+        return {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
+
+    monkeypatch.setattr(server, "_http_request", _req)
+    monkeypatch.setattr(server, "write_message", lambda m: None)
+    out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
+    assert out == "https://x.rossum.ai/api/v1/annotations/3"
+    assert seen["task_url"].endswith("/tasks/1?no_redirect=true")

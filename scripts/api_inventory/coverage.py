@@ -22,6 +22,11 @@ _HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_request_raw", "
 # and the method is fixed by the helper itself (not a method="X" kwarg). For these we
 # read the path from the url-building assignment in the same @_tool block.
 _URL_BUILDER_HELPERS = {"_paginate_search": "POST"}
+# Fixed-endpoint helpers: internal helpers that always call a known endpoint and don't
+# expose the URL as a call arg. Map helper_name -> (method, /api/v1/... path).
+_FIXED_ENDPOINT_HELPERS: dict[str, tuple[str, str]] = {
+    "_upload_to_queue": ("POST", "/api/v1/uploads"),
+}
 
 
 def normalize_path(path: str) -> str:
@@ -80,6 +85,13 @@ def extract_tool_endpoints(server_src: str) -> dict:
             url_var = call_args[1]
             for am in re.finditer(rf'\b{re.escape(url_var)}\s*=\s*f?["\'][^"\']*?({_PATH})', blk):
                 add(method, am.group(1))
+
+        # Fixed-endpoint helpers: internal helpers whose endpoint is always known, so
+        # a single call in the @_tool block is enough to register the endpoint.
+        fixed = "|".join(re.escape(h) for h in _FIXED_ENDPOINT_HELPERS)
+        for fm in re.finditer(rf"\b({fixed})\s*\(", blk):
+            method, path = _FIXED_ENDPOINT_HELPERS[fm.group(1)]
+            add(method, path)
     return cover
 
 
