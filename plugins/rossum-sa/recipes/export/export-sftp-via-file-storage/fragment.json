@@ -1,0 +1,57 @@
+{
+  "settings": {
+    "stages": [
+      {
+        "call_api": [
+          {
+            "name": "push_to_sftp",
+            "request": {
+              "url": "{payload.base_url}/svc/file-storage-export/api/v1/direct_export",
+              "method": "POST",
+              "headers": {
+                "Authorization": "Bearer {payload.rossum_authorization_token}"
+              },
+              "content": {
+                "request_id": "{payload.request_id}",
+                "timestamp": "{payload.timestamp}",
+                "hook": "{payload.hook}",
+                "action": "manual",
+                "event": "invocation",
+                "base_url": "{payload.base_url}",
+                "settings": {
+                  "credentials": {
+                    "host": "«host»",
+                    "port": "«port»",
+                    "username": "«username»",
+                    "type": "sftp",
+                    "sftp_version": 3
+                  },
+                  "export_rule": {
+                    "path_to_directory": "«directory»",
+                    "filename_collision": {
+                      "replace": true
+                    }
+                  }
+                },
+                "secrets": {
+                  "password": "{payload.secrets.«auth_secret»}",
+                  "type": "sftp"
+                },
+                "payload": "{base64(payload)}",
+                "filename": "«filename_template»"
+              },
+              "content_type": "json"
+            },
+            "response_handlers": [
+              {
+                "value": {"response": {"$jmespath": "status_code"}},
+                "target_key": "sftp_status_code",
+                "target_type": "schema_id"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

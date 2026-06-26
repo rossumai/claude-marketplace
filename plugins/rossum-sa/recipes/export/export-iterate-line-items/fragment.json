@@ -1,0 +1,18 @@
+{
+  "call_api": [
+    {
+      "name": "process_line_items",
+      "request": {
+        "url": "«target_url»",
+        "method": "POST",
+        "content_type": "json",
+        "iterate_over": "field.«line_field»",
+        "iteration_item_name": "line_item",
+        "content": {
+          "«item_fields»": "{line_item.«item_fields».value}",
+          "index": "{sequence}"
+        }
+      }
+    }
+  ]
+}

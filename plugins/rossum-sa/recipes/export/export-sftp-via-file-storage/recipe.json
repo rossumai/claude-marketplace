@@ -1,0 +1,19 @@
+{
+  "name": "export-sftp-via-file-storage",
+  "axis": "export",
+  "summary": "Delegate SFTP export to the file-storage-export service (managed credentials, no direct SFTP).",
+  "maturity": "standard",
+  "params": {
+    "host":              {"required": true, "description": "SFTP host"},
+    "port":              {"default": 22, "description": "SFTP port"},
+    "username":          {"required": true, "description": "SFTP username"},
+    "auth_secret":       {"required": true, "description": "password/ssh-key secret name"},
+    "directory":         {"required": true, "description": "remote target directory"},
+    "filename_template": {"required": true, "description": "output filename pattern"}
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "export-pipeline-reference / reference.md (SFTP Export Pattern)",
+  "reference": "export-pipeline-reference#sftp-export",
+  "notes": "Use file-storage-export rather than a direct SFTP call when egress/credential rotation is a concern."
+}

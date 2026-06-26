@@ -1,0 +1,109 @@
+{
+  "settings": {
+    "stages": [
+      {
+        "call_api": [
+          {
+            "name": "create_draft",
+            "auth": {
+              "url": "«auth_ref»",
+              "method": "POST",
+              "content_type": "form",
+              "content": {
+                "grant_type": "client_credentials"
+              },
+              "credential_key": "access_token"
+            },
+            "request": {
+              "url": "«create_url»",
+              "method": "POST",
+              "content_type": "json",
+              "headers": {
+                "Authorization": "Bearer {token}",
+                "Accept": "application/json"
+              }
+            },
+            "response_handlers": [
+              {
+                "target_type": "schema_id",
+                "target_key": "api_status_code",
+                "value": {"response": {"$jmespath": "status_code"}}
+              },
+              {
+                "target_type": "schema_id",
+                "target_key": "created_id",
+                "value": {"response.body": {"$jmespath": "«id_response_key»"}}
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "evaluate": [
+          {
+            "name": "created_ok",
+            "condition": {
+              "field.api_status_code": {"$in": ["200", "201"]}
+            }
+          }
+        ],
+        "call_api": [
+          {
+            "name": "upload_scan",
+            "auth": {
+              "url": "«auth_ref»",
+              "method": "POST",
+              "content_type": "form",
+              "content": {
+                "grant_type": "client_credentials"
+              },
+              "credential_key": "access_token"
+            },
+            "request": {
+              "url": "«upload_url»",
+              "method": "PUT",
+              "content_type": "files",
+              "content": {
+                "file": ["{payload.document.original_file_name}", "{payload.document.content.@}"]
+              },
+              "headers": {
+                "Authorization": "Bearer {token}"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "evaluate": [
+          {
+            "name": "created_ok",
+            "condition": {
+              "field.api_status_code": {"$in": ["200", "201"]}
+            }
+          }
+        ],
+        "call_api": [
+          {
+            "name": "submit",
+            "auth": {
+              "url": "«auth_ref»",
+              "method": "POST",
+              "content_type": "form",
+              "content": {
+                "grant_type": "client_credentials"
+              },
+              "credential_key": "access_token"
+            },
+            "request": {
+              "url": "«submit_url»",
+              "method": "PUT",
+              "headers": {
+                "Authorization": "Bearer {token}"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

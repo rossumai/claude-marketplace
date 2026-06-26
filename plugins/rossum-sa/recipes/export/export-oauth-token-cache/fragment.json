@@ -1,0 +1,26 @@
+{
+  "call_api": [
+    {
+      "name": "call_with_oauth",
+      "auth": {
+        "url": "«oauth_url»",
+        "method": "POST",
+        "content_type": "form",
+        "content": {
+          "grant_type": "client_credentials",
+          "client_id": "«client_id»",
+          "client_secret": "{payload.secrets.«client_secret»}",
+          "scope": "«scope»"
+        },
+        "credential_key": "«token_path»"
+      },
+      "request": {
+        "url": "{field.api_endpoint.value}",
+        "method": "POST",
+        "headers": {
+          "Authorization": "Bearer {token}"
+        }
+      }
+    }
+  ]
+}

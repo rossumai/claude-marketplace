@@ -1,0 +1,15 @@
+{
+  "name": "export-evaluate-guard",
+  "axis": "export",
+  "summary": "Pre-call guard: only fire a downstream stage when required fields exist and the prior stage succeeded.",
+  "maturity": "standard",
+  "params": {
+    "required_fields": {"required": true, "description": "comma-separated field ids that must be present"},
+    "prior_stage":     {"default": "", "description": "name of a prior stage whose success is required"}
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "export-pipeline-reference / reference.md (Evaluate Phase)",
+  "reference": "export-pipeline-reference#evaluate",
+  "notes": "Prevents API calls with incomplete data and cascading failures. Compose at the front of any call stage."
+}
