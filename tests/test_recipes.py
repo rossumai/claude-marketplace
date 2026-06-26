@@ -64,7 +64,7 @@ def validate_recipe(d: Path) -> list[str]:
     if not fragments:
         errs.append(f"{d.name}: no fragment.* file")
     else:
-        text = fragments[0].read_text("utf-8")
+        text = "".join(f.read_text("utf-8") for f in fragments)
         used = set(_PLACEHOLDER.findall(text))
         declared = set(meta.get("params", {}))
         for missing in declared - used:

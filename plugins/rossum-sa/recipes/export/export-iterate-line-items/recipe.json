@@ -6,11 +6,11 @@
   "params": {
     "line_field":  {"required": true, "description": "multivalue (table) field to iterate"},
     "item_fields": {"required": true, "description": "comma-separated per-line fields to send"},
-    "target_url":  {"required": true, "description": "endpoint (templated with «sequence»)"}
+    "target_url":  {"required": true, "description": "endpoint (may include the engine token {sequence})"}
   },
   "produces": [],
   "consumes": [],
   "provenance": "export-pipeline-reference / reference.md (Iteration Over Lists)",
   "reference": "export-pipeline-reference#iteration",
-  "notes": "The «sequence» token is supplied per-iteration by the engine; it is a declared param so it must appear in the fragment."
+  "notes": "The {sequence} token is supplied per-iteration by the engine; it is NOT a declared param — do not add it to params."
 }

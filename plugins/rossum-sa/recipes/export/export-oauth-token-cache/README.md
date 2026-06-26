@@ -19,4 +19,6 @@ Use this recipe when an external API requires an OAuth 2.0 client_credentials be
 
 The `auth` block is reusable across multiple `call_api` entries. Copy the same `auth` object into each stage that needs the token — the engine will serve the cached token to all of them without re-fetching. To add a scope, set `scope` to the exact string the provider expects (e.g. `"openid api"`) — it is passed as the `scope` form field. If the provider returns the token under a nested key (e.g. `"result.access_token"`), set `token_path` to that dotted path.
 
+The fragment's `request.url` is set to `{field.api_endpoint.value}` as a placeholder — replace it with your real target endpoint URL, or drop the `request` block entirely and copy only the `auth` block into your actual call stage.
+
 See `export-pipeline-reference` for the Request Processor stage model.

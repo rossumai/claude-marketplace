@@ -19,7 +19,7 @@ schema. See `recipes/README.md` for the full contract.
 
 | recipe | summary | produces |
 |--------|---------|----------|
-| `mdh-exact-to-fuzzy-cascade` | exact-ID → IBAN → fuzzy-name, score-gated, all-records fallback | matched_id, matched_name |
+| `mdh-exact-to-fuzzy-cascade` | exact-ID → fuzzy-name, score-gated | matched_id, matched_name |
 | `mdh-compound-must-should-search` | boosted must + optional should + filter Atlas Search | matched_id |
 | `mdh-fuzzy-score-normalization` | fuzzy name search with length-ratio normalization | matched_id, match_score |
 | `mdh-picker-with-exact-preselect` | auto-select exact; else placeholder + pick-list | selected_key, selected_label |
