@@ -1,0 +1,19 @@
+{
+  "name": "mdh-lookup-join-then-match",
+  "axis": "matching",
+  "summary": "Match a parent entity, $lookup-join to a sub-collection, then match the child record by code.",
+  "maturity": "standard",
+  "params": {
+    "parent_dataset":  {"required": true, "description": "parent collection"},
+    "parent_field":    {"required": true, "description": "parent exact-match key"},
+    "join_collection": {"required": true, "description": "sub-collection to $lookup"},
+    "local_key":       {"required": true, "description": "join key on parent"},
+    "foreign_key":     {"required": true, "description": "join key on child"},
+    "child_field":     {"required": true, "description": "child match key (e.g. address code)"}
+  },
+  "produces": ["matched_child_id"],
+  "consumes": [],
+  "provenance": "mdh-reference / mdh-matching-queries.md ex.3 (Delivery Address)",
+  "reference": "mdh-reference#matching-queries",
+  "notes": "Two-level hierarchical lookup; the $lookup runs after the parent match narrows the set."
+}

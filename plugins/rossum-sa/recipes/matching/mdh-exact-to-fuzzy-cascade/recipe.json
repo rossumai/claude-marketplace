@@ -1,0 +1,17 @@
+{
+  "name": "mdh-exact-to-fuzzy-cascade",
+  "axis": "matching",
+  "summary": "Match an entity exact-ID → IBAN → fuzzy-name, score-gated, with all-records fallback.",
+  "maturity": "standard",
+  "params": {
+    "dataset":    {"required": true, "description": "MDH collection to match against"},
+    "id_field":   {"required": true, "description": "exact-match key on the document (e.g. tax id)"},
+    "name_field": {"required": true, "description": "fuzzy-match key on the document"},
+    "threshold":  {"default": 0.8, "description": "fuzzy score floor"}
+  },
+  "produces": ["matched_id", "matched_name"],
+  "consumes": ["«id_field»", "«name_field»"],
+  "provenance": "mdh-reference / mdh-matching-queries.md ex.1 (Supplier Match)",
+  "reference": "mdh-reference#matching-queries",
+  "notes": "Cascade order matters: exact before fuzzy. Fallback returns all records when no confident match."
+}

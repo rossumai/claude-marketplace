@@ -1,0 +1,39 @@
+{
+  "source": {
+    "dataset": "«parent_dataset»",
+    "queries": [
+      {
+        "aggregate": [
+          {
+            "$match": {
+              "«parent_field»": "{supplier_id}",
+              "status": "active"
+            }
+          },
+          {
+            "$lookup": {
+              "from": "«join_collection»",
+              "localField": "«local_key»",
+              "foreignField": "«foreign_key»",
+              "as": "delivery_locations"
+            }
+          },
+          { "$unwind": "$delivery_locations" },
+          {
+            "$match": {
+              "delivery_locations.«child_field»": "{delivery_address_code}"
+            }
+          },
+          {
+            "$project": {
+              "_id": 0, "«parent_field»": 1, "supplier_name": 1,
+              "delivery_code": "$delivery_locations.«child_field»",
+              "delivery_name": "$delivery_locations.address_name",
+              "delivery_city": "$delivery_locations.city"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

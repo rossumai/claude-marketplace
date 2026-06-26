@@ -1,0 +1,18 @@
+{
+  "name": "mdh-compound-must-should-search",
+  "axis": "matching",
+  "summary": "Multi-field Atlas Search: boosted must clauses, optional should clauses, filter constraint.",
+  "maturity": "standard",
+  "params": {
+    "dataset":      {"required": true, "description": "MDH collection"},
+    "must_field":   {"required": true, "description": "primary boosted match field"},
+    "should_field": {"required": true, "description": "secondary optional match field"},
+    "filter_field": {"required": true, "description": "hard filter constraint field"},
+    "threshold":    {"default": 0.8, "description": "score floor"}
+  },
+  "produces": ["matched_id"],
+  "consumes": [],
+  "provenance": "mdh-reference / mdh-matching-queries.md ex.2 (PO Match)",
+  "reference": "mdh-reference#matching-queries",
+  "notes": "must = required boosted; should = optional ranking lift; filter = non-scoring constraint."
+}

@@ -1,0 +1,21 @@
+# mdh-picker-with-exact-preselect
+
+Use this recipe when you need to show a full dropdown pick-list to the user but also want to auto-select the best match when one is found. A typical use case is GL coding: cost centers, spend categories, or department codes where all valid options should be visible but the system should pre-populate the most likely value. The recipe works by performing an exact match first, then using two `$setWindowFields` + `$cond` stages to decide whether to retain a synthetic "please select" placeholder. If an exact match exists, the placeholder is removed and the matched record sits at the top; if no match is found, the placeholder is retained, forcing the user to make a choice. The full collection is always appended below via a second `$unionWith`.
+
+## Params
+
+- `dataset` — the MDH collection backing the dropdown (e.g. `workday_cost_center`). Referenced twice: as `source.dataset` and as the `coll` in the second `$unionWith`.
+- `exact_field` — the document field to match exactly (e.g. `Organization_Data.Organization_Code`). The same field holds the placeholder value when no match is found.
+- `label_template` — the display string shown per option in the Rossum UI (e.g. `{Organization_Data.Organization_Code} {Organization_Data.Organization_Name}`). Uses MDH label template syntax with curly-brace field references.
+- `placeholder` — the text shown when no exact match is found; default `"Please select"`. This string is injected directly into the synthetic `$documents` record.
+
+## Produces / Consumes
+
+- Produces: `selected_key`, `selected_label` — the chosen record's key and its formatted label, written to `mapping.target_schema_id` and displayed via `mapping.label_template`.
+- Consumes: the field value extracted from the document, injected as an MDH placeholder into the `$match` and `$unionWith` exclusion filter.
+
+## Adapt
+
+If this config shares a target field with another MDH config (e.g. an auto-match config that runs first), this populator must be ordered last and gated on `target == ''` via the `action_condition`. A later no-match result from the populator will overwrite a successful auto-match result from the earlier config, so sequencing is critical. The `$match` on `Organization_Data.Organization_Active: true` in the source example is collection-specific — replace or remove it based on your data model's active/inactive flag.
+
+See `mdh-reference` (matching queries) for the underlying query grammar and scoring.

@@ -1,0 +1,54 @@
+{
+  "source": {
+    "dataset": "«dataset»",
+    "queries": [
+      {
+        "aggregate": [
+          {
+            "$match": {
+              "«id_field»": "{sender_vat}",
+              "status": "active"
+            }
+          },
+          {
+            "$project": {
+              "_id": 0, "internal_id": 1, "«name_field»": 1, "city": 1, "«id_field»": 1
+            }
+          }
+        ]
+      },
+      {
+        "aggregate": [
+          {
+            "$search": {
+              "index": "vendor_name_idx",
+              "compound": {
+                "must": [
+                  {
+                    "phrase": {
+                      "path": "«name_field»",
+                      "query": "{sender_name}",
+                      "slop": 1,
+                      "score": { "boost": { "value": 3 } }
+                    }
+                  }
+                ],
+                "filter": [
+                  { "equals": { "path": "status", "value": "active" } }
+                ]
+              }
+            }
+          },
+          { "$addFields": { "__score": { "$meta": "searchScore" } } },
+          { "$match": { "__score": { "$gte": "«threshold»" } } },
+          { "$limit": 20 },
+          {
+            "$project": {
+              "_id": 0, "internal_id": 1, "«name_field»": 1, "city": 1, "«id_field»": 1, "__score": 1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "mdh-fuzzy-score-normalization",
+  "axis": "matching",
+  "summary": "Fuzzy name search with length-ratio score normalization to penalize length mismatch.",
+  "maturity": "standard",
+  "params": {
+    "dataset":      {"required": true, "description": "MDH collection"},
+    "search_field": {"required": true, "description": "fuzzy text field"},
+    "threshold":    {"default": 0.85, "description": "normalized score floor"}
+  },
+  "produces": ["matched_id", "match_score"],
+  "consumes": [],
+  "provenance": "mdh-reference / mdh-matching-queries.md (Score Normalization Pattern)",
+  "reference": "mdh-reference#matching-queries",
+  "notes": "Normalization divides raw score by candidate-length ratio; raise threshold vs. raw search."
+}
