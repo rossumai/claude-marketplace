@@ -323,17 +323,33 @@ def test_create_hook_from_template_builds_body(monkeypatch):
 
 def test_duplicate_hook_builds_body(monkeypatch):
     dup = {"id": 99, "name": "Clone", "active": False}
+    # Exercise all three real copy_* flags reaching the body (the spec accepts
+    # name + copy_secrets + copy_dependencies + copy_queues).
     fake, emitted = run_handler(
         monkeypatch, "rossum_duplicate_hook",
-        {"hook_id": 42, "name": "Clone", "copy_queues": True},
+        {"hook_id": 42, "name": "Clone", "copy_secrets": True,
+         "copy_dependencies": True, "copy_queues": True},
         lambda url, method, body: dup
         if method == "POST" and url.endswith("/api/v1/hooks/42/duplicate") else None,
     )
     call = fake.calls[0]
     assert call["method"] == "POST"
     assert call["url"].endswith("/api/v1/hooks/42/duplicate")
-    assert call["body"] == {"name": "Clone", "copy_queues": True}
+    assert call["body"] == {
+        "name": "Clone", "copy_secrets": True,
+        "copy_dependencies": True, "copy_queues": True,
+    }
     assert emitted_payload(emitted) == dup
+
+
+def test_duplicate_hook_omits_unset_flags(monkeypatch):
+    # With only name supplied, the optional copy_* flags must be absent (not
+    # defaulted in our handler) so the API applies its own defaults.
+    fake, _ = run_handler(
+        monkeypatch, "rossum_duplicate_hook", {"hook_id": 42, "name": "Clone"},
+        lambda url, method, body: {"id": 99, "name": "Clone", "active": False},
+    )
+    assert fake.calls[0]["body"] == {"name": "Clone"}
 
 
 def test_invoke_hook_posts_payload(monkeypatch):
@@ -378,3 +394,23 @@ def test_create_hook_from_template_always_sends_queues(monkeypatch):
     assert call["body"]["queues"] == [], (
         f"expected empty list for unattached hook, got {call['body']['queues']!r}"
     )
+
+
+def test_create_hook_from_template_passes_through_optional_fields(monkeypatch):
+    # When events/active/settings/config ARE supplied, they must reach the body
+    # unmodified (objects/booleans untouched, lists not URL-ified like queues).
+    events = ["annotation_content.initialize", "annotation_content.export"]
+    settings = {"threshold": 0.9, "nested": {"a": [1, 2]}}
+    config = {"runtime": "python3.12", "timeout_s": 20}
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook_from_template",
+        {"hook_template": 998877, "name": "X", "events": events,
+         "active": False, "settings": settings, "config": config},
+        lambda url, method, body: {"id": 52, "name": "X"}
+        if method == "POST" and url.endswith("/api/v1/hooks/create") else None,
+    )
+    body = fake.calls[0]["body"]
+    assert body["events"] == events
+    assert body["active"] is False
+    assert body["settings"] == settings
+    assert body["config"] == config

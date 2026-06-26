@@ -173,7 +173,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |
 | `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status) |
 | `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override) |
-| `rossum_invoke_hook` | ✏️ Invoke a hook for REAL with a custom payload (live execution — external side effects; not a dry-run like test) |
+| `rossum_invoke_hook` | ⚠️ Invoke a hook for REAL with a custom payload (live execution — irreversible external side effects; not a dry-run like test) |
 | `rossum_list_rules` | List business rules (filter by queue) |
 | `rossum_get_rule` | Get full rule details (trigger_condition, actions, queues) |
 | `rossum_create_rule` | ✏️ Create a new business rule (trigger_condition + actions) |

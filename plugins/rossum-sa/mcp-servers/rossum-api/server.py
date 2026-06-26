@@ -3161,9 +3161,10 @@ def handle_test_hook(request_id, arguments):
     "a fake payload and executes in isolation without mutating anything), invoke can have REAL side "
     "effects: webhook hooks POST to their external endpoint, function hooks call external systems and "
     "mutate annotations via their token_owner. The hook's config.timeout_s is forced to 30 for this call. "
-    "Use only on a throwaway/sandbox hook unless you intend the side effects. This is a write operation. "
-    "The hook must be active (active=true) — invoking an inactive hook returns HTTP 400 with no detail; "
-    "use rossum_patch_hook to activate it first (note rossum_duplicate_hook creates the clone inactive).",
+    "Use only on a throwaway/sandbox hook unless you intend the side effects. This is a destructive "
+    "operation — its irreversible side effects are why it is marked destructive (unlike the rossum_test_hook "
+    "dry-run). The hook must be active (active=true) — invoking an inactive hook returns HTTP 400 with no "
+    "detail; use rossum_patch_hook to activate it first (note rossum_duplicate_hook creates the clone inactive).",
     {
         "type": "object",
         "required": ["hook_id"],
@@ -3183,7 +3184,7 @@ def handle_test_hook(request_id, arguments):
         },
         "additionalProperties": False,
     },
-    annotations=_WRITE,
+    annotations=_DESTRUCTIVE,
 )
 def handle_invoke_hook(request_id, arguments):
     hook_id = arguments["hook_id"]
