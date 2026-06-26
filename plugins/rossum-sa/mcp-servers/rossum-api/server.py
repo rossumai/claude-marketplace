@@ -618,18 +618,18 @@ def _url_to_id(value):
         return value
 
 
-def _resource_url(base, resource, id):
+def _resource_url(base, resource, resource_id):
     """Build an absolute Rossum API URL for a resource instance.
 
     The forward counterpart to _url_to_id:
     ('https://elis.rossum.ai', 'queues', 7) → 'https://elis.rossum.ai/api/v1/queues/7'
     """
-    return f"{base}/api/v1/{resource}/{id}"
+    return f"{base}/api/v1/{resource}/{resource_id}"
 
 
 def _resource_urls(base, resource, ids):
     """Build a list of absolute Rossum API URLs for several resource instances."""
-    return [_resource_url(base, resource, id) for id in ids]
+    return [_resource_url(base, resource, rid) for rid in ids]
 
 
 def _compact_item(item, url_fields):

@@ -311,6 +311,27 @@ def handle_get_task(request_id, arguments):
     assert "rossum_get_task" in te[("GET", "/tasks/{}")]
 
 
+def test_extract_tool_endpoints_matches_resource_url_builder():
+    """A handler that wraps its URL arg in the forward builder _resource_url(...) instead
+    of an inline f-string must still be attributed to the tool + endpoint. The method
+    defaults to GET, and a method="X" kwarg living *past* the builder's nested closing
+    paren must still be read (balanced-arg capture, not non-greedy)."""
+    src = '''
+@_tool("rossum_get_thing", "d", {"type": "object"})
+def handle_get_thing(request_id, arguments):
+    thing = _http_request(request_id, _resource_url(base_url, "hooks", hid))
+    patched = _http_request(
+        request_id, _resource_url(base_url, "annotations", aid),
+        method="PATCH", body={"status": "to_review"},
+    )
+'''
+    te = coverage.extract_tool_endpoints(src)
+    assert ("GET", "/hooks/{}") in te
+    assert "rossum_get_thing" in te[("GET", "/hooks/{}")]
+    assert ("PATCH", "/annotations/{}") in te
+    assert "rossum_get_thing" in te[("PATCH", "/annotations/{}")]
+
+
 def test_extract_tool_endpoints_url_builder_scopes_to_passed_var():
     """Regression (PR #73 review): the URL-builder branch must attribute ONLY the URL
     variable actually passed to the helper, not every f-string assignment in the block.

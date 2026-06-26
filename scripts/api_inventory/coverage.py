@@ -22,6 +22,9 @@ _HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_request_raw", "
 # URL from a resource string literal instead of an inline f-string. When such a call is
 # the URL argument of an HTTP helper, the path lives in the resource literal, not as a
 # literal /api/v1/... segment — so the scanner reads the resource name out of the call.
+# Contract for the scanner to resolve a call: the `resource` arg must be a string
+# literal, and the `base` arg must be a simple (comma-free) expression — the `[^,]+`
+# stops at the first comma. Both hold for every call site today (base is `base_url`/`base`).
 _RESOURCE_URL_BUILDER = re.compile(r'_resource_urls?\(\s*[^,]+,\s*["\']([a-zA-Z_]+)["\']')
 # URL-builder helpers: they receive a pre-built `url` argument, so the path is NOT
 # in the call args — it lives in a `url = f"...{path}..."` assignment in the handler,
