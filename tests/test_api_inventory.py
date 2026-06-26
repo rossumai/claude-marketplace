@@ -298,11 +298,13 @@ def handle_upload_document(request_id, arguments):
     assert "rossum_upload_document" in te[("POST", "/uploads")]
 
 
-def test_extract_tool_endpoints_includes_no_follow_get():
+def test_extract_tool_endpoints_handles_trailing_query_string():
+    # rossum_get_task GETs /tasks/{id}?no_redirect=true via the plain _http_request helper;
+    # the trailing query string must not defeat path extraction.
     src = '''
 @_tool("rossum_get_task", "d", {"type": "object"})
 def handle_get_task(request_id, arguments):
-    _http_get_no_follow(request_id, f"{base_url}/api/v1/tasks/{tid}")
+    _http_request(request_id, f"{base_url}/api/v1/tasks/{tid}?no_redirect=true")
 '''
     te = coverage.extract_tool_endpoints(src)
     assert ("GET", "/tasks/{}") in te

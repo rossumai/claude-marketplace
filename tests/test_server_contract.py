@@ -309,11 +309,10 @@ def test_upload_document_happy_path(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_http_request_raw", fake_raw)
     monkeypatch.setattr(server.time, "sleep", lambda s: None)
-    monkeypatch.setattr(server, "_http_get_no_follow",
-        lambda rid, url: {"status": "succeeded",
-                          "content": {"upload": f"{BASE}/api/v1/uploads/77"}})
 
     def responder(url, method, body):
+        if "/tasks/555" in url:
+            return {"status": "succeeded", "content": {"upload": f"{BASE}/api/v1/uploads/77"}}
         if "/uploads/77" in url:
             return {"annotations": [f"{BASE}/api/v1/annotations/900"]}
         if url.endswith("/annotations/900"):
@@ -370,12 +369,11 @@ def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
 
     monkeypatch.setattr(server, "_http_request_raw", fake_raw)
     monkeypatch.setattr(server.time, "sleep", lambda s: None)
-    monkeypatch.setattr(server, "_http_get_no_follow",
-        lambda rid, url: {"status": "succeeded",
-                          "content": {"upload": f"{BASE}/api/v1/uploads/9"}})
     state = {"new_status": "importing"}
 
     def responder(url, method, body):
+        if "/tasks/42" in url:
+            return {"status": "succeeded", "content": {"upload": f"{BASE}/api/v1/uploads/9"}}
         if url.endswith("/annotations/100"):
             return {"document": f"{BASE}/api/v1/documents/7",
                     "queue": f"{BASE}/api/v1/queues/5"}
@@ -409,13 +407,14 @@ def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
 
 
 def test_get_task_returns_task_object(monkeypatch):
-    monkeypatch.setattr(server, "_http_get_no_follow",
-                        lambda rid, url: {"id": 5, "status": "succeeded",
-                                          "result_url": f"{BASE}/api/v1/uploads/9"})
-    fake, emitted = run_handler(monkeypatch, "rossum_get_task", {"task_id": 5},
-                                lambda url, method, body: None)
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_get_task", {"task_id": 5},
+        lambda url, method, body: {"id": 5, "status": "succeeded",
+                                   "result_url": f"{BASE}/api/v1/uploads/9"})
     out = emitted_payload(emitted)
     assert out["id"] == 5 and out["status"] == "succeeded"
+    # must use the documented ?no_redirect=true so the task's own status is returned
+    assert fake.calls[0]["url"].endswith("/tasks/5?no_redirect=true")
 
 
 def test_delete_annotation_soft_delete_batch(monkeypatch):

@@ -414,36 +414,25 @@ def _http_get_typed(request_id, url):
         return (None, None)
 
 
-class _NoFollowRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Return the 3xx response itself instead of following it. GET /tasks/{id} on a
-    succeeded task 303-redirects to its result (the upload); we want the task object
-    (with status/detail), not the redirect target."""
-    def http_error_301(self, req, fp, code, msg, headers):
-        return fp
-    http_error_302 = http_error_303 = http_error_307 = http_error_308 = http_error_301
+def _poll_until(fetch, done, *, timeout=180, interval=3):
+    """Poll a single resource until ready. Calls fetch() repeatedly until done(result)
+    is truthy or *timeout* seconds elapse, sleeping *interval* between attempts.
 
-
-def _http_get_no_follow(request_id, url):
-    """Authenticated GET that does NOT follow redirects. Returns parsed JSON (the body
-    of the response, including a 3xx's own body) or None (error already emitted)."""
-    if not _cached_token:
-        return None
-    opener = urllib.request.build_opener(
-        _NoFollowRedirectHandler,
-        urllib.request.HTTPSHandler(context=_ssl_context),
-    )
-    req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
-    try:
-        with opener.open(req, timeout=130) as resp:
-            data = resp.read()
-            return json.loads(data.decode("utf-8")) if data else {}
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else str(e)
-        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
-        return None
-    except Exception as e:
-        tool_result(request_id, f"Error: {e}", is_error=True)
-        return None
+    Returns the last fetched result. Returns None as soon as fetch() returns None (an
+    error it already surfaced). On timeout, returns the last (non-None) result with
+    done() still false, so the caller distinguishes ready (done True) from timed-out
+    (done False) from errored (None). Owning the deadline here keeps each poll phase on
+    its own budget — callers can't accidentally share one deadline across phases."""
+    deadline = time.time() + timeout
+    result = None
+    while time.time() < deadline:
+        result = fetch()
+        if result is None:
+            return None
+        if done(result):
+            return result
+        time.sleep(interval)
+    return result
 
 
 _EXT_CONTENT_TYPE = {
@@ -519,47 +508,49 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
         tool_result(request_id, f"Upload response missing task URL: {resp!r}", is_error=True)
         return None
 
-    deadline = time.time() + poll_timeout
-    upload_url = None
-    last_status = None
-    while time.time() < deadline:
-        task = _http_get_no_follow(request_id, task_url)
-        if task is None:
-            return None
-        status = task.get("status")
-        last_status = status
-        if status == "succeeded":
-            upload_url = (task.get("content") or {}).get("upload") or task.get("result_url")
-            break
-        if status == "failed":
-            tool_result(
-                request_id,
-                f"Upload task failed: {task.get('detail') or task.get('code') or task!r}",
-                is_error=True,
-            )
-            return None
-        time.sleep(3)
+    # Poll the task. ?no_redirect=true makes a succeeded task return 200 with the task
+    # body (status/result), instead of a 303 redirect to its result that urllib would
+    # auto-follow (losing the status). Documented, sturdier than reading the 303 body.
+    task = _poll_until(
+        lambda: _http_request(request_id, f"{task_url}?no_redirect=true"),
+        lambda t: t.get("status") in ("succeeded", "failed"),
+        timeout=poll_timeout,
+    )
+    if task is None:
+        return None
+    status = task.get("status")
+    if status == "failed":
+        tool_result(
+            request_id,
+            f"Upload task failed: {task.get('detail') or task.get('code') or task!r}",
+            is_error=True,
+        )
+        return None
+    if status != "succeeded":
+        tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
+        return None
+    upload_url = (task.get("content") or {}).get("upload") or task.get("result_url")
     if not upload_url:
-        if last_status == "succeeded":
-            tool_result(
-                request_id,
-                f"Upload task succeeded but exposed no upload URL: {task!r}",
-                is_error=True,
-            )
-        else:
-            tool_result(request_id, "Upload task did not complete before timeout.", is_error=True)
+        tool_result(
+            request_id,
+            f"Upload task succeeded but exposed no upload URL: {task!r}",
+            is_error=True,
+        )
         return None
 
-    while time.time() < deadline:
-        upload_obj = _http_request(request_id, upload_url)
-        if upload_obj is None:
-            return None
-        annotations = upload_obj.get("annotations") or []
-        if annotations:
-            return annotations[0]
-        time.sleep(3)
-    tool_result(request_id, "Upload created no annotation before timeout.", is_error=True)
-    return None
+    # Separate budget: a slow task poll must not starve the wait for the annotation.
+    upload_obj = _poll_until(
+        lambda: _http_request(request_id, upload_url),
+        lambda u: bool(u.get("annotations")),
+        timeout=poll_timeout,
+    )
+    if upload_obj is None:
+        return None
+    annotations = upload_obj.get("annotations") or []
+    if not annotations:
+        tool_result(request_id, "Upload created no annotation before timeout.", is_error=True)
+        return None
+    return annotations[0]
 
 
 def _data_storage_call(request_id, path, body):
@@ -1347,9 +1338,9 @@ def handle_rossum_get(request_id, arguments):
 @_tool(
     "rossum_get_task",
     "Retrieves a Rossum task object (status, detail, result_url, content) for an async "
-    "operation such as a document upload. Uses a non-redirect-following GET so a succeeded "
-    "task's own status is returned — GET /tasks/{id} 303-redirects to its result object, "
-    "which the generic rossum_get would silently follow. Read-only.",
+    "operation such as a document upload. Appends ?no_redirect=true so a succeeded task "
+    "returns 200 with its own status instead of a 303 redirect to its result (which the "
+    "generic rossum_get would silently follow). Read-only.",
     {
         "type": "object",
         "required": ["task_id"],
@@ -1362,7 +1353,8 @@ def handle_get_task(request_id, arguments):
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
-    task = _http_get_no_follow(request_id, f"{base_url}/api/v1/tasks/{arguments['task_id']}")
+    task = _http_request(
+        request_id, f"{base_url}/api/v1/tasks/{arguments['task_id']}?no_redirect=true")
     if task is None:
         return
     tool_result(request_id, json.dumps(task, indent=2))
@@ -4396,19 +4388,17 @@ def handle_upload_document(request_id, arguments):
     )
     if annotation_url is None:
         return
-    aid = int(annotation_url.rstrip("/").rsplit("/", 1)[-1])
+    aid = _id_from_url(annotation_url)
 
     # brief, non-fatal wait past 'importing' so fast queues report a ready status
-    status = None
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        ann = _http_request(request_id, annotation_url)
-        if ann is None:
-            return
-        status = ann.get("status")
-        if status not in ("importing", "created"):
-            break
-        time.sleep(3)
+    ann = _poll_until(
+        lambda: _http_request(request_id, annotation_url),
+        lambda a: a.get("status") not in ("importing", "created"),
+        timeout=60,
+    )
+    if ann is None:
+        return
+    status = ann.get("status")
 
     out = {
         "annotation_id": aid,
@@ -4575,24 +4565,24 @@ def handle_refire_annotation(request_id, arguments):
         # 4. upload via the modern /uploads API (shared helper handles the
         #    202 -> task -> upload -> annotation async chain)
         queue_id = queue_url.rstrip("/").rsplit("/", 1)[-1]
+        # content_type pinned to application/pdf to preserve the pre-migration reupload
+        # behavior (it always sent application/pdf regardless of the source extension).
         new_url = _upload_to_queue(
             request_id, base_url, queue_id, pdf_bytes, original_name,
-            poll_timeout=poll_timeout,
+            content_type="application/pdf", poll_timeout=poll_timeout,
         )
         if new_url is None:
             return
         target_aid = int(new_url.rstrip("/").rsplit("/", 1)[-1])
         refire_meta["target_annotation_id"] = target_aid
         # 5. poll past 'importing'
-        deadline = time.time() + poll_timeout
-        new_ann = {}
-        while time.time() < deadline:
-            new_ann = _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}")
-            if new_ann is None:
-                return
-            if new_ann.get("status") not in ("importing", "created"):
-                break
-            time.sleep(3)
+        new_ann = _poll_until(
+            lambda: _http_request(request_id, f"{base_url}/api/v1/annotations/{target_aid}"),
+            lambda a: a.get("status") not in ("importing", "created"),
+            timeout=poll_timeout,
+        )
+        if new_ann is None:
+            return
         # 6. Dedup auto-restore — defensive for customer-custom hooks that PATCH
         # status:deleted on annotation_content.initialize. The stock Duplicate
         # Handling extension does not transition status (its valid actions are

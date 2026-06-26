@@ -343,11 +343,14 @@ def test_upload_to_queue_happy_path_builds_multipart_and_returns_annotation(monk
         return {"url": "https://x.rossum.ai/api/v1/tasks/1"}
 
     monkeypatch.setattr(server, "_http_request_raw", fake_raw)
-    monkeypatch.setattr(server, "_http_get_no_follow",
-        lambda rid, url: {"status": "succeeded",
-                          "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}})
-    monkeypatch.setattr(server, "_http_request",
-        lambda rid, url, **k: {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]})
+
+    def _req(rid, url, **k):
+        if "/tasks/" in url:
+            return {"status": "succeeded",
+                    "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}}
+        return {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
+
+    monkeypatch.setattr(server, "_http_request", _req)
     monkeypatch.setattr(server, "write_message", lambda m: None)
 
     out = server._upload_to_queue(
@@ -369,8 +372,8 @@ def test_upload_to_queue_task_failed_emits_error(monkeypatch):
     _seed_upload(monkeypatch)
     monkeypatch.setattr(server, "_http_request_raw",
                         lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
-    monkeypatch.setattr(server, "_http_get_no_follow",
-                        lambda rid, url: {"status": "failed", "detail": "boom"})
+    monkeypatch.setattr(server, "_http_request",
+                        lambda rid, url, **k: {"status": "failed", "detail": "boom"})
     emitted = []
     monkeypatch.setattr(server, "write_message", lambda m: emitted.append(m))
     out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
@@ -384,8 +387,8 @@ def test_upload_to_queue_succeeded_no_url_emits_distinct_message(monkeypatch):
     monkeypatch.setattr(server, "_http_request_raw",
                         lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
     # succeeded but no upload/result_url in response
-    monkeypatch.setattr(server, "_http_get_no_follow",
-                        lambda rid, url: {"status": "succeeded"})
+    monkeypatch.setattr(server, "_http_request",
+                        lambda rid, url, **k: {"status": "succeeded"})
     emitted = []
     monkeypatch.setattr(server, "write_message", lambda m: emitted.append(m))
     out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
@@ -398,42 +401,23 @@ def test_upload_to_queue_succeeded_no_url_emits_distinct_message(monkeypatch):
     assert "timeout" not in msg.lower(), "must not say 'timeout' when task actually succeeded"
 
 
-def test_upload_to_queue_polls_task_via_no_follow(monkeypatch):
+def test_upload_to_queue_polls_task_with_no_redirect(monkeypatch):
+    # The task GET must carry ?no_redirect=true so a succeeded task returns 200 with its
+    # status (rather than a 303 to its result that urllib would auto-follow).
     _seed_upload(monkeypatch)
     monkeypatch.setattr(server, "_http_request_raw",
                         lambda *a, **k: {"url": "https://x.rossum.ai/api/v1/tasks/1"})
-    monkeypatch.setattr(server, "_http_get_no_follow",
-        lambda rid, url: {"status": "succeeded",
-                          "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}})
+    seen = {}
 
     def _req(rid, url, **k):
-        assert "/tasks/" not in url, "task must be polled via _http_get_no_follow"
+        if "/tasks/" in url:
+            seen["task_url"] = url
+            return {"status": "succeeded",
+                    "content": {"upload": "https://x.rossum.ai/api/v1/uploads/9"}}
         return {"annotations": ["https://x.rossum.ai/api/v1/annotations/3"]}
 
     monkeypatch.setattr(server, "_http_request", _req)
     monkeypatch.setattr(server, "write_message", lambda m: None)
-    assert server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf") \
-        == "https://x.rossum.ai/api/v1/annotations/3"
-
-
-def test_no_follow_redirect_handler_returns_response_unfollowed():
-    h = server._NoFollowRedirectHandler()
-    sentinel = object()
-    assert h.http_error_303(None, sentinel, 303, "See Other", {}) is sentinel
-
-
-def test_http_get_no_follow_parses_body(monkeypatch):
-    monkeypatch.setattr(server, "_cached_token", "t")
-
-    class _Resp:
-        def __init__(self, data): self._data = data
-        def read(self): return self._data
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    class _Opener:
-        def open(self, req, timeout=None): return _Resp(b'{"id":1,"status":"succeeded"}')
-
-    monkeypatch.setattr(server.urllib.request, "build_opener", lambda *a: _Opener())
-    out = server._http_get_no_follow(1, "https://x.rossum.ai/api/v1/tasks/1")
-    assert out == {"id": 1, "status": "succeeded"}
+    out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
+    assert out == "https://x.rossum.ai/api/v1/annotations/3"
+    assert seen["task_url"].endswith("/tasks/1?no_redirect=true")
