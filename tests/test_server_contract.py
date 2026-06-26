@@ -672,6 +672,17 @@ def test_patch_email_template_remaps_queue_id(monkeypatch):
     assert fake.calls[0]["body"] == {"queue": f"{BASE}/api/v1/queues/12"}
 
 
+def test_patch_email_template_maps_trigger_ids_to_urls(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_email_template",
+        {"email_template_id": 9, "triggers": [5, 6]},
+        lambda url, method, body: {"id": 9},
+    )
+    assert fake.calls[0]["body"] == {
+        "triggers": [f"{BASE}/api/v1/triggers/5", f"{BASE}/api/v1/triggers/6"],
+    }
+
+
 def test_delete_email_template_calls_delete(monkeypatch):
     fake, _ = run_handler(
         monkeypatch, "rossum_delete_email_template",
