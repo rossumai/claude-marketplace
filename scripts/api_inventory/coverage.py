@@ -17,6 +17,15 @@ _HELPER_METHOD = {
 }
 # Lower-level HTTP helpers: method is parsed from a method="X" kwarg (default GET).
 _HTTP_HELPERS = ("_http_request", "_http_request_silent", "_http_request_raw", "_http_get_bytes")
+# Forward URL builders: `_resource_url(base, "resource", id)` /
+# `_resource_urls(base, "resource", ids)` construct an absolute /api/v1/<resource>/{id}
+# URL from a resource string literal instead of an inline f-string. When such a call is
+# the URL argument of an HTTP helper, the path lives in the resource literal, not as a
+# literal /api/v1/... segment — so the scanner reads the resource name out of the call.
+# Contract for the scanner to resolve a call: the `resource` arg must be a string
+# literal, and the `base` arg must be a simple (comma-free) expression — the `[^,]+`
+# stops at the first comma. Both hold for every call site today (base is `base_url`/`base`).
+_RESOURCE_URL_BUILDER = re.compile(r'_resource_urls?\(\s*[^,]+,\s*["\']([a-zA-Z_]+)["\']')
 # URL-builder helpers: they receive a pre-built `url` argument, so the path is NOT
 # in the call args — it lives in a `url = f"...{path}..."` assignment in the handler,
 # and the method is fixed by the helper itself (not a method="X" kwarg). For these we
@@ -27,6 +36,22 @@ _URL_BUILDER_HELPERS = {"_paginate_search": "POST"}
 _FIXED_ENDPOINT_HELPERS: dict[str, tuple[str, str]] = {
     "_upload_to_queue": ("POST", "/api/v1/uploads"),
 }
+
+
+def _balanced_args(src: str, start: int) -> str:
+    """Return the paren-balanced argument text of a call, starting just after its '('.
+
+    Unlike a non-greedy `\\(.*?\\)`, this spans nested parens — so a wrapped
+    `_resource_url(...)` argument and a trailing `method="X"` kwarg are both captured.
+    """
+    depth, i = 1, start
+    while i < len(src) and depth:
+        if src[i] == "(":
+            depth += 1
+        elif src[i] == ")":
+            depth -= 1
+        i += 1
+    return src[start:i - 1]
 
 
 def normalize_path(path: str) -> str:
@@ -63,11 +88,17 @@ def extract_tool_endpoints(server_src: str) -> dict:
                 add(_HELPER_METHOD[hm.group(1)], pm.group(0))
 
         http = "|".join(_HTTP_HELPERS)
-        for hm in re.finditer(rf"({http})\((.*?)\)", blk, re.S):
-            pm = re.search(_PATH, hm.group(2))
+        for hm in re.finditer(rf"\b({http})\(", blk):
+            args = _balanced_args(blk, hm.end())
+            mm = re.search(r'method\s*=\s*"([A-Z]+)"', args)
+            method = mm.group(1) if mm else "GET"
+            pm = re.search(_PATH, args)
             if pm:
-                mm = re.search(r'method\s*=\s*"([A-Z]+)"', hm.group(2))
-                add(mm.group(1) if mm else "GET", pm.group(0))
+                add(method, pm.group(0))
+            else:
+                rm = _RESOURCE_URL_BUILDER.search(args)
+                if rm:
+                    add(method, f"/api/v1/{rm.group(1)}/{{}}")
 
         # URL-builder helpers (e.g. _paginate_search): the path is built into a
         # `<var> = f"...{path}..."` assignment and passed to the helper as the 2nd
