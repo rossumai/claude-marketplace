@@ -6,8 +6,7 @@
         "aggregate": [
           {
             "$match": {
-              "«id_field»": "{sender_vat}",
-              "status": "active"
+              "«id_field»": "{sender_vat}"
             }
           },
           {
@@ -32,9 +31,6 @@
                       "score": { "boost": { "value": 3 } }
                     }
                   }
-                ],
-                "filter": [
-                  { "equals": { "path": "status", "value": "active" } }
                 ]
               }
             }

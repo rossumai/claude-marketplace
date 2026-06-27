@@ -16,6 +16,12 @@ Use this recipe when you need to match an entity (typically a vendor or supplier
 
 ## Adapt
 
-Cascade order is fixed and significant: the exact query must come first. If the first query returns results, MDH stops and never runs the fuzzy fallback. If you add a third stage (e.g. IBAN), insert it between the exact and fuzzy queries, not after. The score threshold (`threshold`) in the fuzzy stage is a raw `searchScore`, not a normalised value — typical useful ranges are 5–15 depending on field length; run the Atlas Search pre-flight described in `mdh-reference` to calibrate.
+**Prerequisite — Atlas Search index.** The fuzzy query runs against an Atlas Search index named `vendor_name_idx` mapping your name field. If that index does not exist the fuzzy stage *errors* — it does not fall back silently. Create it (or rename it in the fragment to match an existing index) before shipping; see the Atlas Search pre-flight in `mdh-reference`.
+
+**Record-status filter is not assumed.** This generic fragment does **not** filter by record status. If your collection has an active/inactive flag, add it (e.g. `"<status_field>": "active"`) to the exact `$match` *and* as an `equals` clause under the `$search` `compound.filter` — otherwise inactive records can match. Do not hardcode a `status: "active"` filter blindly: against a collection that has no such field the exact query returns nothing, silently (verified against a real collection).
+
+**Threshold is collection-specific.** `threshold` gates a raw `searchScore`, which depends heavily on the index, analyzer, and field length — there is no universal range. Calibrate it against your own collection via the `mdh-reference` pre-flight. For scale: a clean name-phrase match on a short name field can score ~2–3, so a floor of 5 would reject perfect matches; the default `0.8` is a deliberately permissive starting floor.
+
+**Cascade order is fixed.** The exact query must come first — if it returns results, MDH stops and never runs the fuzzy fallback. Insert any extra stage (e.g. IBAN) *between* the exact and fuzzy queries, not after.
 
 See `mdh-reference` (matching queries) for the underlying query grammar and scoring.
