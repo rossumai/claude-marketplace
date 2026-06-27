@@ -6,11 +6,11 @@
   "params": {
     "dataset":      {"required": true, "description": "MDH collection"},
     "search_field": {"required": true, "description": "fuzzy text field"},
-    "threshold":    {"default": 0.85, "description": "normalized score floor"}
+    "threshold":    {"default": 0.4, "description": "normalized score floor (0-1); bounded ~0.5 at raw~1, so default is permissive — calibrate, see README"}
   },
   "produces": ["matched_id", "match_score"],
   "consumes": [],
   "provenance": "mdh-reference / mdh-matching-queries.md (Score Normalization Pattern)",
   "reference": "mdh-reference#matching-queries",
-  "notes": "Normalization divides raw score by candidate-length ratio; raise threshold vs. raw search."
+  "notes": "Normalized score is bounded by x/(1+x) (~0.5 at raw~1); the default floor is permissive — calibrate per collection."
 }

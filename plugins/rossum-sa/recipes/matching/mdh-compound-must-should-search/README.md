@@ -21,4 +21,8 @@ The `must` clause uses a fuzzy `text` operator with `maxEdits: 1` and a score bo
 
 The `$project` field names (`po_internal_id`, `order_id_normalized`, `supplier_id`) are example-specific literals carried over from the PO source. Replace them with the actual key and display fields of your collection — they are not parameterized and will return nothing if they do not exist in your dataset.
 
+**Atlas Search index is a prerequisite.** The `$search` runs against an index named `po_search_idx` (rename it in the fragment to match your collection's index). If the index does not exist the query *errors* — create it before shipping; see the Atlas Search pre-flight in `mdh-reference`.
+
+**`filter: equals` only matches `token`-mapped fields.** The `filter` clause uses `equals`, which works only on fields indexed as `token` (booleans, numbers, dates, objectIds, or strings *explicitly* mapped as `token`). On a **dynamic** index, `equals` on a string field returns **nothing** — verified live: the `must`+`should` ranking worked, but adding an `equals` filter on a string field silently emptied the result. Map the filter field as `token` in the index, or use a `phrase`/`text` clause inside `filter` instead of `equals`.
+
 See `mdh-reference` (matching queries) for the underlying query grammar and scoring.
