@@ -37,3 +37,11 @@ schema. See `blueprints/README.md` for the full contract.
 
 Export blueprints are mechanism-level: a target system (Coupa, SAP, Workday) is a
 *composition* of these plus filled params — never a single per-ERP blueprint.
+
+## Candidates (`candidate` maturity — NOT for auto-composition)
+
+These are believed-good but **unproven** — offer them to a human for review, never wire them in automatically. Promote to `standard` only after live validation.
+
+| blueprint | axis | summary |
+|--------|------|---------|
+| `mdh-fanout-matches-to-selectable-table` | matching | fan all MDH match options into a multivalue table with a per-row select flag (hash-guarded); maintain a filtered export list — the multi-select counterpart to `mdh-picker-with-exact-preselect`. Composes with `export-iterate-line-items`. |

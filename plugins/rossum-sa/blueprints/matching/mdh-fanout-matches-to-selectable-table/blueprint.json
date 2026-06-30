@@ -1,0 +1,21 @@
+{
+  "name": "mdh-fanout-matches-to-selectable-table",
+  "axis": "matching",
+  "summary": "Fan all MDH match options into a multivalue table with a per-row select flag, hash-guarded; maintain a filtered export list of the selected keys.",
+  "maturity": "candidate",
+  "params": {
+    "source_match_field":  {"required": true, "description": "MDH match enum field holding ALL matched options (value + label)"},
+    "hash_source_field":   {"required": true, "description": "captured field whose value gates recompute (the match input); extend the hash string if matching on several keys"},
+    "hash_field":          {"required": true, "description": "hidden field storing the recalculate hash — preserves operator selections across recomputes"},
+    "target_table":        {"required": true, "description": "multivalue table to populate, one row per match"},
+    "row_key_field":       {"required": true, "description": "hidden per-row column = option.value (the export/PATCH key)"},
+    "row_reference_field": {"required": true, "description": "operator-facing display column = option.label"},
+    "row_select_field":    {"required": true, "description": "per-row yes/no enum the operator ticks; default no for >1 matches, yes for a lone match"},
+    "export_list_field":   {"required": true, "description": "hidden list of row_key values where select==yes; hand to an export iterate_over"}
+  },
+  "produces": ["«target_table»", "«export_list_field»"],
+  "consumes": ["«source_match_field»", "«hash_source_field»"],
+  "provenance": "DESIGN-STAGE, unproven: handbook solutionarchitecthandbook.mrtnzlml.com/cookbook/multiple-data-matching-results (fan-out + hash guard) + Winning Group spec 2026-06-30-callup-multi-order-update (subset-select flag + filtered export). Not yet live-validated.",
+  "reference": "txscript-reference#serverless-hooks",
+  "notes": "Composes with export-iterate-line-items (point its iterate_over at export_list_field). Keep-ALL-with-flag, never prune rows — selections stay auditable and non-destructive. iterate_over has no inline filter, so it must be handed the pre-filtered export_list_field. Block >1 matches with a separate add_automation_blocker rule. CANDIDATE: verify the TxScript option .value/.label attributes and multivalue write shape against txscript-reference and a live soft re-fire before promoting to standard."
+}
