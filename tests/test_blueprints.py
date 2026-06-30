@@ -1,4 +1,4 @@
-"""Guard: every recipe under plugins/rossum-sa/recipes/ is well-formed.
+"""Guard: every blueprint under plugins/rossum-sa/blueprints/ is well-formed.
 
 Stdlib-only (json + pathlib + re), consistent with the other repo guards.
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-RECIPES = ROOT / "plugins" / "rossum-sa" / "recipes"
+BLUEPRINTS = ROOT / "plugins" / "rossum-sa" / "blueprints"
 SKILLS = ROOT / "plugins" / "rossum-sa" / "skills"
 AXES = {"capture", "matching", "validation", "export", "formula"}
 MATURITIES = {"candidate", "reviewed", "standard"}
@@ -21,13 +21,13 @@ OPTIONAL = {"notes"}
 _PLACEHOLDER = re.compile(r"«([^»]+)»")
 
 
-def recipe_dirs() -> list[Path]:
-    return sorted(p.parent for p in RECIPES.glob("*/*/recipe.json"))
+def blueprint_dirs() -> list[Path]:
+    return sorted(p.parent for p in BLUEPRINTS.glob("*/*/blueprint.json"))
 
 
-def validate_recipe(d: Path) -> list[str]:
+def validate_blueprint(d: Path) -> list[str]:
     errs: list[str] = []
-    meta_path = d / "recipe.json"
+    meta_path = d / "blueprint.json"
     try:
         meta = json.loads(meta_path.read_text("utf-8"))
     except json.JSONDecodeError as e:
@@ -74,13 +74,13 @@ def validate_recipe(d: Path) -> list[str]:
     return errs
 
 
-@pytest.mark.parametrize("d", recipe_dirs(), ids=lambda p: p.name)
-def test_recipe_is_wellformed(d):
-    errs = validate_recipe(d)
+@pytest.mark.parametrize("d", blueprint_dirs(), ids=lambda p: p.name)
+def test_blueprint_is_wellformed(d):
+    errs = validate_blueprint(d)
     assert not errs, "\n".join(errs)
 
 
-def test_recipe_names_unique():
-    names = [p.name for p in recipe_dirs()]
+def test_blueprint_names_unique():
+    names = [p.name for p in blueprint_dirs()]
     dupes = {n for n in names if names.count(n) > 1}
-    assert not dupes, f"duplicate recipe names: {dupes}"
+    assert not dupes, f"duplicate blueprint names: {dupes}"

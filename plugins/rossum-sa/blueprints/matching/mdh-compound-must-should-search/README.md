@@ -1,6 +1,6 @@
 # mdh-compound-must-should-search
 
-Use this recipe when a single Atlas Search query needs to combine a required boosted field (the `must` clause) with an optional ranking field (the `should` clause) and a hard non-scoring constraint (the `filter` clause). A typical use case is PO matching: the supplier name must be a fuzzy hit, a matching order reference lifts the score, and only open records are considered. The compound query runs as a single `$search` stage, making it efficient for collections that already have an Atlas Search index covering the relevant fields.
+Use this blueprint when a single Atlas Search query needs to combine a required boosted field (the `must` clause) with an optional ranking field (the `should` clause) and a hard non-scoring constraint (the `filter` clause). A typical use case is PO matching: the supplier name must be a fuzzy hit, a matching order reference lifts the score, and only open records are considered. The compound query runs as a single `$search` stage, making it efficient for collections that already have an Atlas Search index covering the relevant fields.
 
 ## Params
 

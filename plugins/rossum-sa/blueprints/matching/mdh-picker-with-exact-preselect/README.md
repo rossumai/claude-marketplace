@@ -1,6 +1,6 @@
 # mdh-picker-with-exact-preselect
 
-Use this recipe when you need to show a full dropdown pick-list to the user but also want to auto-select the best match when one is found. A typical use case is GL coding: cost centers, spend categories, or department codes where all valid options should be visible but the system should pre-populate the most likely value. The recipe works by performing an exact match first, then using two `$setWindowFields` + `$cond` stages to decide whether to retain a synthetic "please select" placeholder. If an exact match exists, the placeholder is removed and the matched record sits at the top; if no match is found, the placeholder is retained, forcing the user to make a choice. The full collection is always appended below via a second `$unionWith`.
+Use this blueprint when you need to show a full dropdown pick-list to the user but also want to auto-select the best match when one is found. A typical use case is GL coding: cost centers, spend categories, or department codes where all valid options should be visible but the system should pre-populate the most likely value. The blueprint works by performing an exact match first, then using two `$setWindowFields` + `$cond` stages to decide whether to retain a synthetic "please select" placeholder. If an exact match exists, the placeholder is removed and the matched record sits at the top; if no match is found, the placeholder is retained, forcing the user to make a choice. The full collection is always appended below via a second `$unionWith`.
 
 ## Params
 

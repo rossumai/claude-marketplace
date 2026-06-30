@@ -1,6 +1,6 @@
 # mdh-fuzzy-score-normalization
 
-Use this recipe when raw Atlas Search scores produce unreliable rankings because candidate records vary widely in text length. A short query against a long candidate name gets a high raw score simply due to term frequency, not quality of match. This recipe adds a length-ratio normalisation step after the initial fuzzy search: the raw score is divided by the length deviation factor, then passed through a sigmoid-like bounding transform, yielding a `__normalized_score` between 0 and 1 that penalises length mismatch. Apply it to name fields, address strings, or any free-text field where candidate length varies.
+Use this blueprint when raw Atlas Search scores produce unreliable rankings because candidate records vary widely in text length. A short query against a long candidate name gets a high raw score simply due to term frequency, not quality of match. This blueprint adds a length-ratio normalisation step after the initial fuzzy search: the raw score is divided by the length deviation factor, then passed through a sigmoid-like bounding transform, yielding a `__normalized_score` between 0 and 1 that penalises length mismatch. Apply it to name fields, address strings, or any free-text field where candidate length varies.
 
 ## Params
 

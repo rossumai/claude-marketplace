@@ -1,6 +1,6 @@
 # export-iterate-line-items
 
-Use this recipe when an external API expects line items to be sent one at a time rather than as a batch. The Request Processor's `iterate_over` mechanism loops over each entry in a multivalue (table) field and fires a separate POST request per item, passing the item's field values and a zero-based sequence index in the request body.
+Use this blueprint when an external API expects line items to be sent one at a time rather than as a batch. The Request Processor's `iterate_over` mechanism loops over each entry in a multivalue (table) field and fires a separate POST request per item, passing the item's field values and a zero-based sequence index in the request body.
 
 ## Params
 

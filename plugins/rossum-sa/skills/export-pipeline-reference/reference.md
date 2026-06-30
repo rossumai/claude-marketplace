@@ -222,7 +222,7 @@ Check conditions before running a stage. If any condition fails, the entire stag
 ]
 ```
 
-→ Drop-in recipe: `export-evaluate-guard` (recipes/export/).
+→ Drop-in blueprint: `export-evaluate-guard` (blueprints/export/).
 
 ---
 
@@ -503,7 +503,7 @@ In multipart: list/tuple values are sent as files, string/other values as form f
 - Available as `{token}` in request templates
 - You **must** explicitly set the Authorization header: `"Authorization": "Bearer {token}"`
 
-→ Drop-in recipe: `export-oauth-token-cache` (recipes/export/).
+→ Drop-in blueprint: `export-oauth-token-cache` (blueprints/export/).
 
 ---
 
@@ -693,7 +693,7 @@ Execute the same API call for each item in a list.
 
 **Multiple values to single field:** If a response handler targets the same field during iteration, the processor auto-collects values into a list (e.g., `["ID1", "ID2", "ID3"]`).
 
-→ Drop-in recipe: `export-iterate-line-items` (recipes/export/).
+→ Drop-in blueprint: `export-iterate-line-items` (blueprints/export/).
 
 ### Iteration Over Document Relations
 
@@ -812,7 +812,7 @@ Access later:
 }
 ```
 
-→ Drop-in recipe: `export-create-upload-submit` (recipes/export/).
+→ Drop-in blueprint: `export-create-upload-submit` (blueprints/export/).
 
 ### Pattern: Fetch Related Data and Validate
 
@@ -1003,7 +1003,7 @@ Export files to SFTP using Rossum's `file-storage-export` service:
 - **Export rule**: `path_to_directory` sets the target path, `filename_collision.replace` controls overwrite behavior
 - **Filename**: custom filename template (without extension — extension comes from the document)
 
-→ Drop-in recipe: `export-sftp-via-file-storage` (recipes/export/).
+→ Drop-in blueprint: `export-sftp-via-file-storage` (blueprints/export/).
 
 ---
 
