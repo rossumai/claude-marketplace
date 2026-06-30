@@ -36,6 +36,12 @@ Every `param` appears in the fragment as `«param»` (guillemets). An unfilled
 seam is therefore greppable, and the CI guard asserts params and placeholders
 match exactly. Use `«param»` — never `{{ }}`, `${ }`, or `<...>`.
 
+Because the guillemets are deliberately invalid in every target language, a
+`fragment.py` is **not** runnable Python as-shipped. `blueprints/**` is therefore
+excluded from `ruff` (see `pyproject.toml`) — the `test_blueprints.py` guard reads
+fragments as text, not code. Don't expect a `.py` fragment to import or compile
+until its seams are filled.
+
 ## Maturity & promotion
 
 v1 blueprints are `standard` by provenance (lifted from expert-written packs).
