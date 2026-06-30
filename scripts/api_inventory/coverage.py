@@ -35,6 +35,7 @@ _URL_BUILDER_HELPERS = {"_paginate_search": "POST"}
 # expose the URL as a call arg. Map helper_name -> (method, /api/v1/... path).
 _FIXED_ENDPOINT_HELPERS: dict[str, tuple[str, str]] = {
     "_upload_to_queue": ("POST", "/api/v1/uploads"),
+    "_import_email": ("POST", "/api/v1/emails/import"),
 }
 
 

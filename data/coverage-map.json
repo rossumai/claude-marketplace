@@ -541,6 +541,13 @@
       "rossum_render_email_template"
     ]
   },
+  "POST /emails/import": {
+    "decision": "covered",
+    "summary": "Import email",
+    "tools": [
+      "rossum_import_email"
+    ]
+  },
   "POST /hooks": {
     "decision": "covered",
     "summary": "Create hook",

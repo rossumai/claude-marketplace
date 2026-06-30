@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.28.1"
+_SERVER_VERSION = "0.29.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -551,6 +551,128 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
         tool_result(request_id, "Upload created no annotation before timeout.", is_error=True)
         return None
     return annotations[0]
+
+
+def _build_raw_email(*, from_addr, to_addr, subject, body_text, body_html,
+                     attachment_paths):
+    """Assemble a raw RFC822/MIME message (bytes) from parts, stdlib-only.
+
+    Used when the caller describes an email (subject/from/body/attachments) instead
+    of supplying a ready .eml file. text + html become a multipart/alternative body so
+    both email_body:text_plain and email_body:text_html selectors have content. The
+    SMTP policy + explicit Date header satisfy /emails/import, which rejects messages
+    with bare-LF line endings or no Date as HTTP 400 "Invalid e-mail format". Returns
+    (raw_bytes, error_string) — error_string is non-None only on a bad attachment path.
+    """
+    import os
+    from email.message import EmailMessage
+    from email.policy import SMTP
+    from email.utils import formatdate, make_msgid
+
+    msg = EmailMessage(policy=SMTP)
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg["Subject"] = subject or ""
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain="rossum-import.invalid")
+
+    text = body_text if body_text is not None else ("" if body_html else "")
+    msg.set_content(text)
+    if body_html is not None:
+        msg.add_alternative(body_html, subtype="html")
+
+    for path in attachment_paths or []:
+        if not os.path.isfile(path):
+            return (None, f"Attachment not found: {path}")
+        with open(path, "rb") as fh:
+            data = fh.read()
+        ctype = _content_type_for(os.path.basename(path))
+        maintype, _, subtype = ctype.partition("/")
+        msg.add_attachment(
+            data, maintype=maintype or "application",
+            subtype=subtype or "octet-stream", filename=os.path.basename(path),
+        )
+    return (msg.as_bytes(), None)
+
+
+def _import_email(request_id, base_url, recipient, raw_bytes, *, from_addr=None,
+                  metadata=None, values=None, poll_timeout=120):
+    """Import a raw email via POST /emails/import (HTTP 202) and resolve the new email.
+
+    Simulates an inbound email landing in `recipient`'s inbox: the async import creates
+    an email object and runs the email.received pipeline (documents + annotations +
+    hooks). The 202 returns a task URL, but the import task is NOT retrievable
+    (GET /tasks/{id} 404s for this task type — confirmed live), so we identify the
+    created email by snapshotting the inbox's recent incoming emails, POSTing, then
+    polling the emails list for the one that appeared. metadata/values, when given,
+    must already be JSON strings. from_addr (when known) narrows the search. Returns
+    the created email's URL, or None when an error tool_result was already emitted.
+    """
+    def _list_recent():
+        params = {"to": recipient, "type": "incoming",
+                  "ordering": "-created_at", "page_size": "20"}
+        if from_addr:
+            params["from__email"] = from_addr
+        return _http_request(request_id, f"{base_url}/api/v1/emails?{urlencode(params)}")
+
+    before = _list_recent()
+    if before is None:
+        return None
+    before_ids = {e["id"] for e in before.get("results", [])}
+
+    boundary = f"----import-email-{int(time.time())}"
+    parts = [
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="raw_message"; filename="message.eml"\r\n'
+            f"Content-Type: message/rfc822\r\n\r\n"
+        ).encode()
+        + raw_bytes
+        + b"\r\n"
+    ]
+
+    def _text_part(name, value):
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode()
+
+    parts.append(_text_part("recipient", recipient))
+    if metadata is not None:
+        parts.append(_text_part("metadata", metadata))
+    if values is not None:
+        parts.append(_text_part("values", values))
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    resp = _http_request_raw(
+        request_id, f"{base_url}/api/v1/emails/import",
+        method="POST", raw_body=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+    if resp is None:
+        return None
+    task_url = resp.get("url") if isinstance(resp, dict) else None
+
+    # Poll the emails list for the newly-created email (id not in the pre-POST snapshot).
+    deadline = time.time() + poll_timeout
+    while time.time() < deadline:
+        data = _list_recent()
+        if data is None:
+            return None
+        fresh = [e for e in data.get("results", []) if e["id"] not in before_ids]
+        if fresh:
+            return f"{base_url}/api/v1/emails/{fresh[0]['id']}"
+        time.sleep(3)
+
+    tool_result(
+        request_id,
+        f"Import was accepted (task {task_url}) but no matching email surfaced for "
+        f"{recipient} within {poll_timeout}s. Check rossum_list_emails.",
+        is_error=True,
+    )
+    return None
 
 
 def _data_storage_call(request_id, path, body):
@@ -4422,6 +4544,176 @@ def handle_upload_document(request_id, arguments):
     }
     if status in ("importing", "created"):
         out["note"] = "Annotation is still importing; poll with rossum_get_annotation."
+    tool_result(request_id, json.dumps(out, indent=2))
+
+
+@_tool(
+    "rossum_import_email",
+    "Simulate an INBOUND email via the async POST /emails/import API — the primitive for "
+    "testing email-driven extensions (Email Body Converter, email_header:*/email_body:* schema "
+    "fields, no-attachment bounce handling, inbox routing). Imports a raw email into an inbox "
+    "and runs the full email.received pipeline (creates the email object + documents + "
+    "annotations and fires hooks), then returns the created email with its annotation/document "
+    "ids. Supply the message one of two ways: (a) raw_message_path — a ready .eml/RFC822 file "
+    "sent as-is; or (b) describe it with subject/from_address/body_text/body_html/attachments "
+    "and the tool assembles a valid MIME message (use body_html to exercise the Email Body "
+    "Converter; omit attachments to exercise no-attachment bounce handling). Write operation; "
+    "admin/organization_group_admin only. Empty 'annotations' is normal for bounce/no-attachment "
+    "scenarios or while the pipeline is still importing — re-check with rossum_get_email. Clean "
+    "up test runs with rossum_delete_annotation.",
+    {
+        "type": "object",
+        "required": ["recipient"],
+        "properties": {
+            "recipient": {
+                "type": "string",
+                "description": "Email address of the destination inbox (must be an inbox within "
+                               "the organization), e.g. the address shown on a queue's inbox.",
+            },
+            "raw_message_path": {
+                "type": "string",
+                "description": "Path (absolute or relative to the server's CWD) to a local "
+                               ".eml/RFC822 file, sent verbatim as raw_message. Mutually "
+                               "exclusive with the subject/body/attachments fields below.",
+            },
+            "subject": {"type": "string", "description": "Subject header (constructed-message mode)."},
+            "from_address": {
+                "type": "string",
+                "description": "From header (constructed-message mode). Default a synthetic "
+                               "sender. The sender receives any automated notifications.",
+            },
+            "to_address": {
+                "type": "string",
+                "description": "To header (constructed-message mode). Default: the recipient.",
+            },
+            "body_text": {
+                "type": "string",
+                "description": "Plain-text body (constructed-message mode).",
+            },
+            "body_html": {
+                "type": "string",
+                "description": "HTML body (constructed-message mode) — use to test the Email "
+                               "Body Converter and email_body:text_html.",
+            },
+            "attachments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Local file paths to attach (constructed-message mode). Omit for "
+                               "a no-attachment email (tests bounce handling).",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata object set on created annotations "
+                               "(sent as a JSON string).",
+            },
+            "values": {
+                "type": "object",
+                "description": "Optional init values set on created annotations (sent as a JSON "
+                               "string). All keys MUST start with 'emails_import:', "
+                               "e.g. {\"emails_import:customer_id\": \"CUST-001\"}.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_import_email(request_id, arguments):
+    import os
+
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    recipient = arguments["recipient"]
+    raw_path = arguments.get("raw_message_path")
+    construct_keys = ("subject", "from_address", "to_address", "body_text",
+                      "body_html", "attachments")
+    has_construct = any(arguments.get(k) is not None for k in construct_keys)
+
+    if raw_path and has_construct:
+        tool_result(
+            request_id,
+            "Provide either raw_message_path OR the subject/body/attachment fields, not both.",
+            is_error=True,
+        )
+        return
+
+    if raw_path:
+        if not os.path.isfile(raw_path):
+            tool_result(request_id, f"File not found: {raw_path}", is_error=True)
+            return
+        with open(raw_path, "rb") as fh:
+            raw_bytes = fh.read()
+        from_addr = None  # unknown for a hand-supplied .eml; don't narrow the email search
+    else:
+        if not has_construct:
+            tool_result(
+                request_id,
+                "Provide raw_message_path, or describe the email with at least one of "
+                "subject/body_text/body_html/attachments.",
+                is_error=True,
+            )
+            return
+        from_addr = arguments.get("from_address") or "claude-import@rossum-import.invalid"
+        raw_bytes, err = _build_raw_email(
+            from_addr=from_addr,
+            to_addr=arguments.get("to_address") or recipient,
+            subject=arguments.get("subject"),
+            body_text=arguments.get("body_text"),
+            body_html=arguments.get("body_html"),
+            attachment_paths=arguments.get("attachments"),
+        )
+        if err:
+            tool_result(request_id, err, is_error=True)
+            return
+
+    size = len(raw_bytes)
+    if size > 40 * 1024 * 1024:
+        tool_result(
+            request_id,
+            f"Message too large: {size} bytes ({size / 1024 / 1024:.1f} MB); limit is 40 MB.",
+            is_error=True,
+        )
+        return
+
+    metadata = arguments.get("metadata")
+    values = arguments.get("values")
+    email_url = _import_email(
+        request_id, base_url, recipient, raw_bytes, from_addr=from_addr,
+        metadata=json.dumps(metadata) if metadata is not None else None,
+        values=json.dumps(values) if values is not None else None,
+    )
+    if email_url is None:
+        return
+
+    # The email's annotations populate asynchronously as documents process. Poll briefly;
+    # an empty list is expected (and not an error) for bounce/no-attachment scenarios.
+    email = _poll_until(
+        lambda: _http_request(request_id, email_url),
+        lambda e: bool(e.get("annotations")),
+        timeout=60,
+    )
+    if email is None:
+        return
+
+    annotation_urls = email.get("annotations") or []
+    document_urls = email.get("documents") or []
+    out = {
+        "email_id": _id_from_url(email_url),
+        "email_url": email_url,
+        "recipient": recipient,
+        "subject": email.get("subject"),
+        "type": email.get("type"),
+        "queue": email.get("queue"),
+        "documents": document_urls,
+        "annotations": annotation_urls,
+        "annotation_ids": [_id_from_url(u) for u in annotation_urls],
+        "annotation_counts": email.get("annotation_counts"),
+    }
+    if not annotation_urls:
+        out["note"] = (
+            "No annotations on the email yet — expected for a no-attachment/bounce email, or "
+            "the pipeline may still be importing. Re-check with rossum_get_email."
+        )
     tool_result(request_id, json.dumps(out, indent=2))
 
 

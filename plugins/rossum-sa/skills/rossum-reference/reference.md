@@ -898,7 +898,7 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 | GET | `/v1/emails/{id}` | Retrieve email |
 | PUT | `/v1/emails/{id}` | Update email |
 | PATCH | `/v1/emails/{id}` | Partial update |
-| POST | `/v1/emails/{id}/import` | Import email |
+| POST | `/v1/emails/import` | Import (simulate an inbound) email — async, fires the `email.received` pipeline; wrapped by the `rossum_import_email` MCP tool |
 | POST | `/v1/emails/{id}/send` | Send email |
 | GET | `/v1/emails/counts` | Get counts |
 
