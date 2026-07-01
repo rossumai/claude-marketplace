@@ -621,10 +621,13 @@ def _import_email(request_id, base_url, recipient, raw_bytes, *, from_addr=None,
 
     Simulates an inbound email landing in `recipient`'s inbox: the async import creates
     an email object and runs the email.received pipeline (documents + annotations +
-    hooks). The 202 returns a task URL, but the import task is NOT retrievable
-    (GET /tasks/{id} 404s for this task type — confirmed live), so we identify the
-    created email by snapshotting the inbox's recent incoming emails, POSTing, then
-    polling the emails list for the one that appeared.
+    hooks). The 202 returns a task URL, but that task (type `email_imported`) 404s on
+    GET /tasks/{id} for a support-user token — a confirmed Rossum bug: the task is
+    created in the support user's default org, not the target org, so it's invisible
+    when querying the target org (a normal org user reads it fine). Rather than depend
+    on task visibility, we identify the created email by snapshotting the inbox's recent
+    incoming emails, POSTing, then polling the emails list for the one that appeared —
+    which works regardless of token type.
 
     metadata/values, when given, must already be JSON strings. from_addr/subject (when
     known) narrow the search and disambiguate concurrent arrivals — from_addr is matched
