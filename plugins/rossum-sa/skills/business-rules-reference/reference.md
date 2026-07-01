@@ -52,6 +52,11 @@ A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition` 
 
 `action.id` is a non-empty string identifying the action within the rule. The API does not constrain the format — any string unique within the rule works. Use whichever convention is consistent within your project (semantic slugs, indexed pairs, UUIDs all work). Keep ids stable across rule versions if you care about diff readability.
 
+### Field constraints & create/link gotchas
+
+- **`name` and `description` are capped at 255 characters.** A `POST`/`PATCH /v1/rules` with a longer `description` returns **HTTP 400 `description: Ensure this field has no more than 255 characters.`** (`name` follows the same platform charfield limit). This bites repeatedly because rule descriptions naturally grow into paragraphs. Keep both short; put any long rationale in the action `payload.content` (the operator-facing message, which is not capped the same way) or in project docs — not in `description`. Sanity-check before pushing a locally-authored rule: `python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['name']), len(d.get('description','')))" rule.json`.
+- **A newly created rule is not always attached to its queue.** Depending on the creation path (some tooling, and prd2 `_[]`-placeholder pushes), a rule can be created with `queues: []` even when the source JSON lists queues — it then never evaluates on any document. After creating a rule, verify `GET /v1/rules/{id}` shows the intended `queues`; if empty, set them (`PATCH /v1/rules/{id}` with the `queues` list, or via the MCP `rossum_patch_rule` `queue_ids`). In a prd2 tree the queue→rule link is driven by the queue's own `rules` array — add the new rule URL to `queue.json`'s `rules` list and push the queue.
+
 ### Polarity: `trigger_condition` is the FIRE predicate
 
 `trigger_condition` is the **fire** predicate — the rule fires (emits actions) when the expression evaluates to `True`. Read the rule's `message` text to confirm intent: the message describes the **problem state**, and `trigger_condition` should be `True` in that state.
