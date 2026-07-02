@@ -1188,3 +1188,99 @@ def test_engine_field_bundle_annotations():
     assert server.TOOLS["rossum_create_engine_field"]["annotations"]["destructiveHint"] is False
     assert server.TOOLS["rossum_patch_engine_field"]["annotations"]["destructiveHint"] is False
     assert server.TOOLS["rossum_delete_engine_field"]["annotations"]["destructiveHint"] is True
+
+
+# --- operational outliers: bulk label apply + user patch ---
+
+def test_apply_labels_builds_bulk_body(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_apply_labels",
+        {"annotation_ids": [10, 11], "add_label_ids": [42], "remove_label_ids": [43]},
+        lambda url, method, body: 204,  # live API: 204 No Content
+    )
+    call = fake.calls[0]
+    assert call["url"] == f"{BASE}/api/v1/labels/apply"
+    assert call["method"] == "POST"
+    assert call["parse_json"] is False            # 204 has no body to parse
+    assert call["body"] == {
+        "operations": {
+            "add": [f"{BASE}/api/v1/labels/42"],
+            "remove": [f"{BASE}/api/v1/labels/43"],
+        },
+        "objects": {
+            "annotations": [
+                f"{BASE}/api/v1/annotations/10",
+                f"{BASE}/api/v1/annotations/11",
+            ],
+        },
+    }
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "2 annotation" in text
+
+
+def test_apply_labels_add_only_omits_remove(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_apply_labels",
+        {"annotation_ids": [10], "add_label_ids": [42]},
+        lambda url, method, body: 204,
+    )
+    assert fake.calls[0]["body"]["operations"] == {"add": [f"{BASE}/api/v1/labels/42"]}
+
+
+def test_apply_labels_requires_add_or_remove(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_apply_labels",
+        {"annotation_ids": [10]},
+        lambda url, method, body: 204,
+    )
+    assert not fake.calls                          # no request without an operation
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    assert "add_label_ids" in res["content"][0]["text"]
+
+
+def test_patch_user_maps_ids_to_urls(monkeypatch):
+    user = {"id": 5, "url": f"{BASE}/api/v1/users/5", "is_active": False}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_user",
+        {"user_id": 5, "queue_ids": [1, 2], "group_ids": [3],
+         "is_active": False, "first_name": "Ann"},
+        lambda url, method, body: user,
+    )
+    call = fake.calls[0]
+    assert call["url"] == f"{BASE}/api/v1/users/5"
+    assert call["method"] == "PATCH"
+    assert call["body"] == {
+        "queues": [f"{BASE}/api/v1/queues/1", f"{BASE}/api/v1/queues/2"],
+        "groups": [f"{BASE}/api/v1/groups/3"],
+        "is_active": False,
+        "first_name": "Ann",
+    }
+    assert emitted_payload(emitted) == user
+
+
+def test_patch_user_partial_body(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_user",
+        {"user_id": 5, "is_active": True},
+        lambda url, method, body: {"id": 5},
+    )
+    assert fake.calls[0]["body"] == {"is_active": True}
+
+
+def test_patch_user_requires_a_field(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_user",
+        {"user_id": 5},
+        lambda url, method, body: {"id": 5},
+    )
+    assert not fake.calls                          # nothing to change -> no request
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+
+
+def test_operational_outlier_annotations():
+    assert server.TOOLS["rossum_apply_labels"]["annotations"]["readOnlyHint"] is False
+    assert server.TOOLS["rossum_apply_labels"]["annotations"]["destructiveHint"] is False
+    assert server.TOOLS["rossum_patch_user"]["annotations"]["readOnlyHint"] is False
+    assert server.TOOLS["rossum_patch_user"]["annotations"]["destructiveHint"] is False

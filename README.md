@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 13 reference packs · 88 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 13 reference packs · 90 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -204,6 +204,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_task` | 👁️ Retrieve an async task object (uses `?no_redirect=true` to read status instead of following the /tasks 303 to its result) |
 | `rossum_delete_annotation` | ⚠️ Delete annotations (reversible soft-delete; optional irreversible purge with poll-to-purged) — cleanup for test/iteration loops |
 | `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); self-managing start→ops→release |
+| `rossum_apply_labels` | ✏️ Bulk add/remove labels across annotations in one call (label definitions themselves are created in the Rossum UI; list them via `rossum_get` path `/api/v1/labels`) |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |
 | `rossum_list_emails` | List emails (filter by queue, type) |
@@ -217,6 +218,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_list_groups` | List available user roles (groups) and their IDs |
 | `rossum_list_users` | List organization users |
 | `rossum_create_user` | ✏️ Create a new user in the organization |
+| `rossum_patch_user` | ✏️ Update a user — assign queues, change role (groups), rename, or deactivate (`is_active=false`); queue/group lists replace, not add |
 | `rossum_list_audit_logs` | Query audit logs (admin only) |
 
 #### Data Storage
