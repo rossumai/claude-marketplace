@@ -28,6 +28,13 @@
       "rossum_delete_hook"
     ]
   },
+  "DELETE /queues/{id}": {
+    "decision": "covered",
+    "summary": "Delete queue",
+    "tools": [
+      "rossum_delete_queue"
+    ]
+  },
   "DELETE /rules/{ruleID}": {
     "decision": "covered",
     "summary": "Delete rule",
@@ -276,6 +283,13 @@
     "decision": "not_planned",
     "reason": "org/billing/admin",
     "summary": "Partial update organization"
+  },
+  "PATCH /queues/{id}": {
+    "decision": "covered",
+    "summary": "Partial update queue",
+    "tools": [
+      "rossum_patch_queue"
+    ]
   },
   "PATCH /rules/{ruleID}": {
     "decision": "covered",
@@ -620,6 +634,20 @@
     "decision": "not_planned",
     "reason": "org/billing/admin",
     "summary": "Export organization billing stats"
+  },
+  "POST /queues/from_template": {
+    "decision": "covered",
+    "summary": "Create queue from template",
+    "tools": [
+      "rossum_create_queue_from_template"
+    ]
+  },
+  "POST /queues/{id}/duplicate": {
+    "decision": "covered",
+    "summary": "Duplicate queue",
+    "tools": [
+      "rossum_duplicate_queue"
+    ]
   },
   "POST /queues/{id}/next": {
     "decision": "not_planned",

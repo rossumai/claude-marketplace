@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.29.0"
+_SERVER_VERSION = "0.30.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -2523,6 +2523,383 @@ def handle_list_queues(request_id, arguments):
 )
 def handle_get_queue(request_id, arguments):
     _rossum_get(request_id, f"/api/v1/queues/{arguments['queue_id']}")
+
+
+@_tool(
+    "rossum_create_queue_from_template",
+    "Provisions a self-contained queue from a Rossum queue template — creates the queue PLUS a "
+    "fresh schema, inbox, and extraction engine in one call (nothing is shared with existing "
+    "queues). This is the fastest way to spin up a throwaway test queue; tear it down with "
+    "rossum_delete_queue (cascade removes the created schema/inbox/engine too). Known-good "
+    "template_name values: 'EU Demo Template', 'Tax Invoice EU Demo Template', 'Tax Invoice US "
+    "Demo Template', 'Tax Invoice UK Demo Template' (an invalid name returns the 400 '...is not "
+    "a valid choice' so probing is cheap). Returns the full new queue object — note its schema/"
+    "inbox/engine URLs. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["name", "template_name", "workspace_id"],
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Display name for the new queue.",
+            },
+            "template_name": {
+                "type": "string",
+                "description": "Queue template to instantiate (e.g. 'EU Demo Template').",
+            },
+            "workspace_id": {
+                "type": "integer",
+                "description": "Workspace ID to place the queue in.",
+            },
+            "include_documents": {
+                "type": "boolean",
+                "description": "Copy the template's demo documents into the queue (default false).",
+            },
+            "engine_id": {
+                "type": "integer",
+                "description": "Attach this existing engine instead of creating a new one. "
+                               "NOTE: rossum_delete_queue's cascade only removes an engine no "
+                               "other queue references, so a shared engine passed here is safe.",
+            },
+            "legacy": {
+                "type": "boolean",
+                "description": "Create the queue with legacy engines instead of a next-generation engine (default false).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_create_queue_from_template(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {
+        "name": arguments["name"],
+        "template_name": arguments["template_name"],
+        "workspace": _resource_url(base_url, "workspaces", arguments["workspace_id"]),
+        # Required by the live API despite being documented optional.
+        "include_documents": arguments.get("include_documents", False),
+    }
+    if "engine_id" in arguments:
+        body["engine"] = _resource_url(base_url, "engines", arguments["engine_id"])
+    query = "?legacy=true" if arguments.get("legacy") else ""
+    _rossum_post(request_id, f"/api/v1/queues/from_template{query}", body)
+
+
+@_tool(
+    "rossum_duplicate_queue",
+    "Clones an existing queue within its workspace. The copy gets a DEEP COPY of the source "
+    "schema and a fresh inbox, but SHARES the source's extraction engine — so deleting the "
+    "clone later (rossum_delete_queue cascade) removes its schema/inbox without touching the "
+    "source queue. The copy_* switches all default to true; pass false to skip copying that "
+    "aspect. Documents/annotations are never copied. Returns the full new queue object. "
+    "This is a write operation.",
+    {
+        "type": "object",
+        "required": ["queue_id", "name"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "ID of the queue to duplicate.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Display name for the duplicated queue.",
+            },
+            "copy_extensions_settings": {
+                "type": "boolean",
+                "description": "Copy hook attachments (default true).",
+            },
+            "copy_email_settings": {
+                "type": "boolean",
+                "description": "Copy email notification settings (default true).",
+            },
+            "copy_delete_recommendations": {
+                "type": "boolean",
+                "description": "Copy delete recommendations (default true).",
+            },
+            "copy_automation_settings": {
+                "type": "boolean",
+                "description": "Copy automation level, automation settings and automation_enabled (default true).",
+            },
+            "copy_permissions": {
+                "type": "boolean",
+                "description": "Copy users and memberships (default true).",
+            },
+            "copy_rules_and_actions": {
+                "type": "boolean",
+                "description": "Copy business rules (default true).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_duplicate_queue(request_id, arguments):
+    body = {"name": arguments["name"]}
+    for key in ("copy_extensions_settings", "copy_email_settings",
+                "copy_delete_recommendations", "copy_automation_settings",
+                "copy_permissions", "copy_rules_and_actions"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, f"/api/v1/queues/{arguments['queue_id']}/duplicate", body)
+
+
+@_tool(
+    "rossum_patch_queue",
+    "Updates an existing queue. Only provide the fields you want to change — unspecified fields "
+    "are left untouched. Covers rename, automation settings (automation_enabled/automation_level/"
+    "default_score_threshold), UI settings, session/locale/retention knobs, workflow bindings, "
+    "and re-pointing references (workspace/schema/hooks/users/engine). For converting a queue to "
+    "a custom extraction engine follow the queue-engine-binding skill — the bind has ordering "
+    "constraints beyond a bare engine patch. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["queue_id"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "The queue ID to update.",
+            },
+            "name": {
+                "type": "string",
+                "description": "New display name (max 255 characters).",
+            },
+            "automation_enabled": {
+                "type": "boolean",
+                "description": "Toggle automation on/off.",
+            },
+            "automation_level": {
+                "type": "string",
+                "enum": ["never", "confident", "always"],
+                "description": "Automation level: 'always' auto-exports error-free documents, "
+                               "'confident' additionally requires all fields above the confidence "
+                               "threshold, 'never' disables auto-export.",
+            },
+            "default_score_threshold": {
+                "type": "number",
+                "description": "AI-confidence threshold used to auto-validate field content (0-1).",
+            },
+            "locale": {
+                "type": "string",
+                "description": "Typical originating region of documents, locale format (e.g. 'en_GB', 'auto').",
+            },
+            "session_timeout": {
+                "type": "string",
+                "description": "Time before a 'reviewing' annotation returns to 'to_review' (e.g. '01:00:00').",
+            },
+            "use_confirmed_state": {
+                "type": "boolean",
+                "description": "When true, confirming transitions annotations to 'confirmed' instead of 'exporting'.",
+            },
+            "document_lifetime": {
+                "type": ["string", "null"],
+                "description": "Data-retention period after which annotations are purged, "
+                               "'[DD] [HH:[MM:]]ss' (e.g. '90 00:00:00'); null disables.",
+            },
+            "training_enabled": {
+                "type": "boolean",
+                "description": "Whether annotations from this queue train the engine.",
+            },
+            "settings": {
+                "type": "object",
+                "description": "Queue UI settings object. Replaces the whole settings blob — "
+                               "read-modify-write via rossum_get_queue to change one key.",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Client-data metadata object (replaces the whole object).",
+            },
+            "rir_params": {
+                "type": ["string", "null"],
+                "description": "Extra AI Core Engine URL parameters (e.g. 'effective_page_count=2').",
+            },
+            "workflows": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Approval-workflow bindings, list of {url, priority} objects (replaces the full list).",
+            },
+            "workspace_id": {
+                "type": "integer",
+                "description": "Move the queue to this workspace.",
+            },
+            "schema_id": {
+                "type": "integer",
+                "description": "Point the queue at this schema.",
+            },
+            "hook_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Replace attached hooks (full list, not additive).",
+            },
+            "user_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Replace associated users (full list, not additive).",
+            },
+            "engine_id": {
+                "type": ["integer", "null"],
+                "description": "Bind this extraction engine (null detaches back to the default "
+                               "generic engine). See the queue-engine-binding skill for the full "
+                               "conversion flow.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_queue(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {}
+    for key in ("name", "automation_enabled", "automation_level", "default_score_threshold",
+                "locale", "session_timeout", "use_confirmed_state", "document_lifetime",
+                "training_enabled", "settings", "metadata", "rir_params", "workflows"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "workspace_id" in arguments:
+        body["workspace"] = _resource_url(base_url, "workspaces", arguments["workspace_id"])
+    if "schema_id" in arguments:
+        body["schema"] = _resource_url(base_url, "schemas", arguments["schema_id"])
+    if "hook_ids" in arguments:
+        body["hooks"] = _resource_urls(base_url, "hooks", arguments["hook_ids"])
+    if "user_ids" in arguments:
+        body["users"] = _resource_urls(base_url, "users", arguments["user_ids"])
+    if "engine_id" in arguments:
+        engine_id = arguments["engine_id"]
+        body["engine"] = None if engine_id is None else _resource_url(base_url, "engines", engine_id)
+    _rossum_patch(request_id, f"/api/v1/queues/{arguments['queue_id']}", body)
+
+
+def _cascade_delete_dependency(base_url, resource, dep_id):
+    """Delete a queue dependency (schema/inbox) once its owning queue is gone.
+
+    Only deletes when no other queue references it: re-reads the resource and
+    requires an empty 'queues' list. Returns a result dict for the tool response.
+    Rossum auto-removes the inbox with the queue on current API versions, so
+    'already_gone' is a normal outcome, not an error.
+    """
+    url = _resource_url(base_url, resource, dep_id)
+    status, payload = _http_request_status(url)
+    if status == 404:
+        return {"id": dep_id, "result": "already_gone"}
+    if status is None or not (200 <= status < 300) or not isinstance(payload, dict):
+        return {"id": dep_id, "result": f"skipped (could not re-read: HTTP {status})"}
+    if payload.get("queues"):
+        return {"id": dep_id, "result": "skipped_shared",
+                "queues": [_url_to_id(q) for q in payload["queues"]]}
+    # _http_request_silent, not _http_request_status: DELETE answers 204 with an
+    # empty body, which the latter would misreport as a JSON-decode failure.
+    status = _http_request_silent(url, method="DELETE")
+    if status is not None and 200 <= status < 300:
+        return {"id": dep_id, "result": "deleted"}
+    return {"id": dep_id, "result": f"skipped (DELETE failed: HTTP {status})"}
+
+
+@_tool(
+    "rossum_delete_queue",
+    "Deletes a queue immediately (skips the 24h grace window via ?delete_after=0), polls until "
+    "the queue is really gone, then — with cascade=true (default) — also deletes the queue's now-"
+    "orphaned dependencies: its schema, inbox, and extraction engine. Each dependency is only "
+    "removed when NO other queue references it (shared ones are reported as skipped_shared); the "
+    "API auto-removes the inbox with the queue, the schema and engine would otherwise be left "
+    "orphaned. If the queue deletion does not complete within poll_timeout the cascade is NOT "
+    "attempted and the tool reports the still-pending state. Returns a JSON report of what was "
+    "actually deleted. All annotations in the queue are destroyed with it — this is a destructive "
+    "operation that cannot be undone. NEVER on production queues.",
+    {
+        "type": "object",
+        "required": ["queue_id"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "The queue ID to delete.",
+            },
+            "cascade": {
+                "type": "boolean",
+                "description": "Also delete the queue's schema, inbox, and engine when this queue "
+                               "was their sole reference (default true).",
+            },
+            "poll_timeout": {
+                "type": "integer",
+                "description": "Seconds to wait for the async queue deletion to complete (default 30).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_queue(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    queue_id = arguments["queue_id"]
+    cascade = arguments.get("cascade", True)
+    queue_url = _resource_url(base_url, "queues", queue_id)
+
+    # Capture dependency references before the queue disappears.
+    queue = _http_request(request_id, queue_url)
+    if queue is None:
+        return
+    schema_id = _url_to_id(queue.get("schema"))
+    inbox_id = _url_to_id(queue.get("inbox"))
+    engine_id = _url_to_id(queue.get("engine"))
+
+    status = _http_request(request_id, f"{base_url}/api/v1/queues/{queue_id}?delete_after=0",
+                           method="DELETE", parse_json=False)
+    if status is None:
+        return
+
+    gone = _poll_until(
+        lambda: {"code": _http_request_silent(queue_url)},
+        lambda r: r["code"] == 404,
+        timeout=int(arguments.get("poll_timeout", 30)),
+        interval=2,
+    )
+    result = {"queue_id": queue_id, "delete_accepted": f"HTTP {status}"}
+    if gone is None or gone["code"] != 404:
+        result["queue_deleted"] = False
+        result["note"] = ("Deletion accepted but the queue still exists after the poll "
+                          "timeout; cascade was NOT attempted. Re-run rossum_delete_queue "
+                          "once GET /queues/{id} returns 404.")
+        tool_result(request_id, json.dumps(result, indent=2))
+        return
+    result["queue_deleted"] = True
+
+    if cascade:
+        if schema_id is not None:
+            result["schema"] = _cascade_delete_dependency(base_url, "schemas", schema_id)
+        if inbox_id is not None:
+            result["inbox"] = _cascade_delete_dependency(base_url, "inboxes", inbox_id)
+        if engine_id is not None:
+            # Engines have no back-reference list; a queues-by-engine filter tells
+            # us whether any other queue still uses it.
+            status_q, payload = _http_request_status(
+                f"{base_url}/api/v1/queues?engine={engine_id}&page_size=1")
+            if status_q is not None and 200 <= status_q < 300 and isinstance(payload, dict):
+                remaining = payload.get("pagination", {}).get("total", 0)
+                if remaining == 0:
+                    # Internal cascade step, not a tool surface (like the schema/inbox
+                    # deletes above) — the engine URL is built outside the HTTP call so
+                    # the coverage scanner doesn't register DELETE /engines as covered.
+                    engine_url = _resource_url(base_url, "engines", engine_id)
+                    code = _http_request_silent(engine_url, method="DELETE")
+                    if code is not None and 200 <= code < 300:
+                        result["engine"] = {"id": engine_id, "result": "deleted"}
+                    elif code == 404:
+                        result["engine"] = {"id": engine_id, "result": "already_gone"}
+                    else:
+                        result["engine"] = {"id": engine_id,
+                                            "result": f"skipped (DELETE failed: HTTP {code})"}
+                else:
+                    result["engine"] = {"id": engine_id, "result": "skipped_shared",
+                                        "queues_still_using_it": remaining}
+            else:
+                result["engine"] = {"id": engine_id,
+                                    "result": f"skipped (could not check usage: HTTP {status_q})"}
+    tool_result(request_id, json.dumps(result, indent=2))
 
 
 def _cache_automation_payload(queue_id, kind, payload):

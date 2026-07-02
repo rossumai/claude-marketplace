@@ -734,3 +734,180 @@ def test_email_template_write_destructive_annotations():
     assert server.TOOLS["rossum_create_email_template"]["annotations"]["destructiveHint"] is False
     assert server.TOOLS["rossum_patch_email_template"]["annotations"]["readOnlyHint"] is False
     assert server.TOOLS["rossum_delete_email_template"]["annotations"]["destructiveHint"] is True
+
+
+# --- queue lifecycle tools (from_template / duplicate / patch / delete-cascade) ---
+
+def test_create_queue_from_template_builds_body(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_create_queue_from_template",
+        {"name": "Test Q", "template_name": "EU Demo Template",
+         "workspace_id": 3, "engine_id": 8, "legacy": True},
+        lambda url, method, body: {"id": 7},
+    )
+    call = fake.calls[0]
+    assert call["url"].endswith("/api/v1/queues/from_template?legacy=true")
+    assert call["method"] == "POST"
+    assert call["body"] == {
+        "name": "Test Q",
+        "template_name": "EU Demo Template",
+        "workspace": f"{BASE}/api/v1/workspaces/3",
+        "include_documents": False,  # required by the live API, defaulted off
+        "engine": f"{BASE}/api/v1/engines/8",
+    }
+
+
+def test_create_queue_from_template_minimal(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_queue_from_template",
+        {"name": "Q", "template_name": "EU Demo Template", "workspace_id": 3},
+        lambda url, method, body: {"id": 7},
+    )
+    call = fake.calls[0]
+    assert call["url"].endswith("/api/v1/queues/from_template")  # no ?legacy
+    assert "engine" not in call["body"]
+    assert call["body"]["include_documents"] is False
+
+
+def test_duplicate_queue_builds_body(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_duplicate_queue",
+        {"queue_id": 7, "name": "Copy", "copy_permissions": False},
+        lambda url, method, body: {"id": 8},
+    )
+    call = fake.calls[0]
+    assert call["url"].endswith("/api/v1/queues/7/duplicate")
+    assert call["method"] == "POST"
+    # only the explicitly-passed flag is sent; the rest keep API defaults (true)
+    assert call["body"] == {"name": "Copy", "copy_permissions": False}
+
+
+def test_patch_queue_maps_ids_to_urls(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_queue",
+        {"queue_id": 7, "name": "Renamed", "automation_level": "confident",
+         "schema_id": 4, "hook_ids": [1, 2], "engine_id": None},
+        lambda url, method, body: {"id": 7},
+    )
+    call = fake.calls[0]
+    assert call["url"].endswith("/api/v1/queues/7")
+    assert call["method"] == "PATCH"
+    assert call["body"] == {
+        "name": "Renamed",
+        "automation_level": "confident",
+        "schema": f"{BASE}/api/v1/schemas/4",
+        "hooks": [f"{BASE}/api/v1/hooks/1", f"{BASE}/api/v1/hooks/2"],
+        "engine": None,  # explicit null detaches back to the generic engine
+    }
+
+
+_QUEUE_TO_DELETE = {
+    "id": 7,
+    "schema": f"{BASE}/api/v1/schemas/4",
+    "inbox": f"{BASE}/api/v1/inboxes/5",
+    "engine": f"{BASE}/api/v1/engines/6",
+}
+
+
+def _delete_queue_responder(url, method, body):
+    if method == "GET" and url.endswith("/api/v1/queues/7"):
+        return _QUEUE_TO_DELETE
+    if method == "DELETE" and "delete_after=0" in url:
+        return 202  # parse_json=False path returns the status code
+    return None
+
+
+def test_delete_queue_cascades_owned_deps(monkeypatch):
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    silent_calls = []
+
+    def silent(url, method="GET"):
+        silent_calls.append((url, method))
+        if method == "GET":
+            return 404  # poll: queue already gone
+        return 204      # schema/engine DELETE
+
+    def status(url, method="GET", body=None):
+        if "/api/v1/schemas/4" in url:
+            return 200, {"id": 4, "queues": []}       # orphaned -> delete
+        if "/api/v1/inboxes/5" in url:
+            return 404, None                          # auto-removed with the queue
+        if "queues?engine=6" in url:
+            return 200, {"pagination": {"total": 0}}  # no other queue uses it
+        return None, "unexpected"
+
+    monkeypatch.setattr(server, "_http_request_silent", silent)
+    monkeypatch.setattr(server, "_http_request_status", status)
+    fake, emitted = run_handler(monkeypatch, "rossum_delete_queue",
+                                {"queue_id": 7}, _delete_queue_responder)
+    assert "delete_after=0" in fake.calls[1]["url"]
+    out = emitted_payload(emitted)
+    assert out["queue_deleted"] is True
+    assert out["schema"] == {"id": 4, "result": "deleted"}
+    assert out["inbox"] == {"id": 5, "result": "already_gone"}
+    assert out["engine"] == {"id": 6, "result": "deleted"}
+    deletes = [u for u, m in silent_calls if m == "DELETE"]
+    assert any("/api/v1/schemas/4" in u for u in deletes)
+    assert any("/api/v1/engines/6" in u for u in deletes)
+
+
+def test_delete_queue_skips_shared_deps(monkeypatch):
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+
+    def silent(url, method="GET"):
+        assert method == "GET", f"must not DELETE a shared dependency: {url}"
+        return 404  # poll: queue gone
+
+    def status(url, method="GET", body=None):
+        assert method == "GET"
+        if "/api/v1/schemas/4" in url:
+            return 200, {"id": 4, "queues": [f"{BASE}/api/v1/queues/9"]}
+        if "/api/v1/inboxes/5" in url:
+            return 404, None
+        if "queues?engine=6" in url:
+            return 200, {"pagination": {"total": 1}}
+        return None, "unexpected"
+
+    monkeypatch.setattr(server, "_http_request_silent", silent)
+    monkeypatch.setattr(server, "_http_request_status", status)
+    _, emitted = run_handler(monkeypatch, "rossum_delete_queue",
+                             {"queue_id": 7}, _delete_queue_responder)
+    out = emitted_payload(emitted)
+    assert out["schema"] == {"id": 4, "result": "skipped_shared", "queues": [9]}
+    assert out["engine"] == {"id": 6, "result": "skipped_shared",
+                             "queues_still_using_it": 1}
+
+
+def test_delete_queue_no_cascade_on_poll_timeout(monkeypatch):
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    monkeypatch.setattr(server, "_http_request_silent", lambda url, method="GET": 200)
+    monkeypatch.setattr(server, "_http_request_status",
+                        lambda url, method="GET", body=None: (_ for _ in ()).throw(
+                            AssertionError("cascade must not run on timeout")))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_queue",
+                             {"queue_id": 7, "poll_timeout": 0}, _delete_queue_responder)
+    out = emitted_payload(emitted)
+    assert out["queue_deleted"] is False
+    assert "schema" not in out and "inbox" not in out and "engine" not in out
+    assert "cascade was NOT attempted" in out["note"]
+
+
+def test_delete_queue_cascade_false_skips_deps(monkeypatch):
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    monkeypatch.setattr(server, "_http_request_silent", lambda url, method="GET": 404)
+    monkeypatch.setattr(server, "_http_request_status",
+                        lambda url, method="GET", body=None: (_ for _ in ()).throw(
+                            AssertionError("cascade=false must not touch dependencies")))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_queue",
+                             {"queue_id": 7, "cascade": False}, _delete_queue_responder)
+    out = emitted_payload(emitted)
+    assert out["queue_deleted"] is True
+    assert "schema" not in out and "inbox" not in out and "engine" not in out
+
+
+def test_queue_lifecycle_annotations():
+    assert server.TOOLS["rossum_create_queue_from_template"]["annotations"]["readOnlyHint"] is False
+    assert server.TOOLS["rossum_create_queue_from_template"]["annotations"]["destructiveHint"] is False
+    assert server.TOOLS["rossum_duplicate_queue"]["annotations"]["destructiveHint"] is False
+    assert server.TOOLS["rossum_patch_queue"]["annotations"]["destructiveHint"] is False
+    assert server.TOOLS["rossum_delete_queue"]["annotations"]["destructiveHint"] is True
