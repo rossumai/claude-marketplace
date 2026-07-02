@@ -2530,9 +2530,11 @@ def handle_get_queue(request_id, arguments):
 @_tool(
     "rossum_create_queue_from_template",
     "Provisions a self-contained queue from a Rossum queue template — creates the queue PLUS a "
-    "fresh schema, inbox, and extraction engine in one call (nothing is shared with existing "
-    "queues). This is the fastest way to spin up a throwaway test queue; tear it down with "
-    "rossum_delete_queue (cascade removes the created schema/inbox/engine too). Known-good "
+    "fresh schema and inbox in one call, and in the default next-generation mode also a fresh "
+    "extraction engine (with legacy=true or an explicit engine_id the engine is shared instead; "
+    "the schema and inbox are always fresh). This is the fastest way to spin up a throwaway test "
+    "queue; tear it down with rossum_delete_queue (cascade removes the created schema/inbox/"
+    "engine too, leaving shared engines alone). Known-good "
     "template_name values: 'EU Demo Template', 'Tax Invoice EU Demo Template', 'Tax Invoice US "
     "Demo Template', 'Tax Invoice UK Demo Template' (an invalid name returns the 400 '...is not "
     "a valid choice' so probing is cheap). Returns the full new queue object — note its schema/"

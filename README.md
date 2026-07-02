@@ -156,7 +156,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_workspace` | Get full workspace details |
 | `rossum_list_queues` | List queues (filter by workspace, status) |
 | `rossum_get_queue` | Get full queue details |
-| `rossum_create_queue_from_template` | ✏️ Provision a self-contained queue from a queue template (creates a fresh schema, inbox, and engine with it) |
+| `rossum_create_queue_from_template` | ✏️ Provision a self-contained queue from a queue template (creates a fresh schema and inbox with it, plus a fresh engine in the default next-gen mode) |
 | `rossum_duplicate_queue` | ✏️ Clone a queue (deep-copies the schema, fresh inbox, shares the source's engine; `copy_*` switches for hooks/rules/permissions/…) |
 | `rossum_patch_queue` | ✏️ Update a queue (name, automation settings, UI settings, workflow bindings, workspace/schema/hooks/users/engine references) |
 | `rossum_delete_queue` | ⚠️ Delete a queue immediately (skips the 24h grace window), poll until gone, then cascade-delete its now-orphaned schema/inbox/engine unless shared with another queue |
