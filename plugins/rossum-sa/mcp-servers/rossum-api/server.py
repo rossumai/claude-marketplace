@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.30.0"
+_SERVER_VERSION = "0.31.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -325,7 +325,9 @@ def _http_request_status(url, *, method="GET", body=None):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
+            raw = resp.read()
+            # 204 No Content (e.g. DELETE) has no body — that's a success, not a parse error.
+            return resp.status, (json.loads(raw.decode("utf-8")) if raw else None)
     except urllib.error.HTTPError as e:
         # Reading/decoding the error body can itself fail (dropped connection,
         # non-UTF-8 proxy page) — that must not escape the never-raise contract.
@@ -340,6 +342,18 @@ def _http_request_status(url, *, method="GET", body=None):
         return e.code, error_body
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
+
+
+def _delete_returning_status(request_id, url):
+    """DELETE returning (status_code, parsed_body) without emitting a tool_result.
+
+    For handlers that turn specific 4xx responses into remediation guidance instead
+    of a generic error (e.g. the engine-field 409 referenced-by-schema guard).
+    request_id is unused (nothing is emitted) but kept for helper-signature parity —
+    the coverage scanner resolves URL-builder helpers as helper(request_id, url).
+    """
+    del request_id
+    return _http_request_status(url, method="DELETE")
 
 
 def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_type=None):
@@ -4241,6 +4255,263 @@ def handle_patch_schema(request_id, arguments):
         if key in arguments:
             body[key] = arguments[key]
     _rossum_patch(request_id, f"/api/v1/schemas/{schema_id}", body)
+
+
+# POST endpoint, but a pure dry-run (nothing is saved) -> annotated _READ_ONLY so it
+# does not trigger a write-permission prompt.
+@_tool(
+    "rossum_validate_schema",
+    "Dry-run validation of schema content via POST /schemas/validate — checks a datapoint "
+    "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema to catch "
+    "problems without touching the live schema. Returns valid=true/false plus the API's "
+    "error tree, which mirrors the content positionally: content[N] -> "
+    "{'children': {'<child index>': {'<attribute>': ['message', ...]}}}. IMPORTANT: pass "
+    "schema_id whenever validating an edit to an EXISTING schema — engine-binding checks "
+    "(e.g. \"extracted field 'x' is not present among names of engine fields\" on an "
+    "engine-bound queue) only run when the API knows which schema the content belongs to; "
+    "without schema_id those violations pass silently. Create missing engine fields with "
+    "rossum_create_engine_field before adding their captured datapoints.",
+    {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+            "content": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Schema content to validate (the full datapoint tree: sections, fields, multivalues).",
+            },
+            "schema_id": {
+                "type": "integer",
+                "description": "ID of the existing schema this content is destined for. Enables "
+                               "schema-context checks (engine-field coupling on engine-bound "
+                               "queues, Aurora engine checks). Omit only for brand-new schemas.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_validate_schema(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {"content": arguments["content"]}
+    if "schema_id" in arguments:
+        body["id"] = arguments["schema_id"]
+    resp = _http_request(request_id, f"{base_url}/api/v1/schemas/validate",
+                         method="POST", body=body)
+    if resp is None:
+        return
+    # The API returns HTTP 200 either way: {} when valid, an error tree otherwise.
+    result = {"valid": not resp, "errors": resp}
+    tool_result(request_id, json.dumps(result, indent=2))
+
+
+@_tool(
+    "rossum_create_engine_field",
+    "Creates an engine field on a custom extraction engine (POST /engine_fields). On an "
+    "engine-bound queue every captured schema datapoint must have an engine field whose "
+    "'name' equals the datapoint's schema id — and the engine field must exist FIRST. "
+    "To add a field to an engine-bound queue: 1) create the engine field with this tool, "
+    "2) add the matching captured datapoint (rir_field_names: []) to the schema via "
+    "rossum_patch_schema — dry-run the schema edit with rossum_validate_schema (pass "
+    "schema_id) first. 'name' is IMMUTABLE after creation and must be unique per engine; "
+    "to rename, remove the datapoint, delete the field, and recreate both. Seed from the "
+    "pretrained catalog via pre_trained_field_id (see GET /engine_fields/pre_trained_fields "
+    "through rossum_get) for catalog-quality extraction; custom fields (no "
+    "pre_trained_field_id) start cold and learn from confirmed annotations. This is a "
+    "write operation.",
+    {
+        "type": "object",
+        "required": ["engine_id", "name", "label", "type"],
+        "properties": {
+            "engine_id": {
+                "type": "integer",
+                "description": "ID of the engine to attach the field to (from queue.engine URL).",
+            },
+            "name": {
+                "type": "string",
+                "description": "Field name — must equal the schema datapoint id it backs. Only "
+                               "letters, numbers and underscores; unique per engine; immutable "
+                               "after creation.",
+            },
+            "label": {
+                "type": "string",
+                "description": "Human-readable field label.",
+            },
+            "type": {
+                "type": "string",
+                "enum": ["string", "number", "date", "enum"],
+                "description": "Field type.",
+            },
+            "subtype": {
+                "type": "string",
+                "description": "Optional validation subtype. For string: alphanumeric, numeric, "
+                               "country_code, currency_code, iban, vat_number. For number: "
+                               "integer, rate, amount. For date: period_begin, period_end.",
+            },
+            "pre_trained_field_id": {
+                "type": "string",
+                "description": "Pretrained-catalog field to seed from (e.g. 'document_id', "
+                               "'date_issue'). Omit for a custom field that learns from scratch.",
+            },
+            "tabular": {
+                "type": "boolean",
+                "description": "True when the field is a column inside a tabular multivalue "
+                               "(line item). Must match the datapoint's position in the schema. "
+                               "Default false (header field).",
+            },
+            "multiline": {
+                "type": "string",
+                "enum": ["true", "false"],
+                "description": "String enum, not a boolean: 'true' when the field's parent is a "
+                               "tuple (multiline extraction). Default 'false'.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_create_engine_field(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {
+        "engine": _resource_url(base_url, "engines", arguments["engine_id"]),
+        "name": arguments["name"],
+        "label": arguments["label"],
+        "type": arguments["type"],
+    }
+    for key in ("subtype", "pre_trained_field_id", "tabular", "multiline"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, "/api/v1/engine_fields", body)
+
+
+@_tool(
+    "rossum_patch_engine_field",
+    "Updates an engine field (PATCH /engine_fields/{id}). Only provide the fields you want "
+    "to change — unspecified fields are left untouched. 'name' cannot be changed (the API "
+    "rejects it: to rename, remove the schema datapoint, delete the field, and recreate "
+    "both). Keep type/tabular consistent with the schema datapoint the field backs — "
+    "validate schema edits with rossum_validate_schema. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["engine_field_id"],
+        "properties": {
+            "engine_field_id": {
+                "type": "integer",
+                "description": "The engine field ID to update.",
+            },
+            "label": {
+                "type": "string",
+                "description": "New human-readable label.",
+            },
+            "type": {
+                "type": "string",
+                "enum": ["string", "number", "date", "enum"],
+                "description": "New field type — keep in sync with the backing schema datapoint.",
+            },
+            "subtype": {
+                "type": ["string", "null"],
+                "description": "New validation subtype (see rossum_create_engine_field for "
+                               "per-type values); null clears it.",
+            },
+            "pre_trained_field_id": {
+                "type": ["string", "null"],
+                "description": "Change the pretrained-catalog seeding; null detaches from the catalog.",
+            },
+            "tabular": {
+                "type": "boolean",
+                "description": "Whether the field is a column inside a tabular multivalue — must "
+                               "match the datapoint's position in the schema.",
+            },
+            "multiline": {
+                "type": "string",
+                "enum": ["true", "false"],
+                "description": "String enum, not a boolean: 'true' when the field's parent is a tuple.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_engine_field(request_id, arguments):
+    engine_field_id = arguments["engine_field_id"]
+    body = {}
+    for key in ("label", "type", "subtype", "pre_trained_field_id", "tabular", "multiline"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_patch(request_id, f"/api/v1/engine_fields/{engine_field_id}", body)
+
+
+@_tool(
+    "rossum_delete_engine_field",
+    "Deletes an engine field (DELETE /engine_fields/{id}). ORDER MATTERS: remove the "
+    "matching captured datapoint from the bound schema (rossum_patch_schema) BEFORE "
+    "deleting the engine field — while any schema still references the field's name, the "
+    "API refuses with HTTP 409 conflict_referenced (this tool then reports which schemas "
+    "to edit). This is a destructive operation that cannot be undone; a field created "
+    "without pre_trained_field_id loses its learned extraction state.",
+    {
+        "type": "object",
+        "required": ["engine_field_id"],
+        "properties": {
+            "engine_field_id": {
+                "type": "integer",
+                "description": "The engine field ID to delete.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_engine_field(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    engine_field_id = arguments["engine_field_id"]
+    url = f"{base_url}/api/v1/engine_fields/{engine_field_id}"
+    status, resp_body = _delete_returning_status(request_id, url)
+    if status is not None and 200 <= status < 300:
+        tool_result(request_id, f"Engine field {engine_field_id} deleted (HTTP {status}).")
+        return
+    if status == 401:
+        _invalidate_connection()
+        tool_result(
+            request_id,
+            "Authentication failed (HTTP 401). Token may be expired. "
+            "Call rossum_set_token to re-authenticate.",
+            is_error=True,
+        )
+        return
+    if status == 409:
+        # The API guards the schema<->engine-field coupling: a captured datapoint
+        # with this field's name still exists in a schema bound to the engine.
+        # Enrich the refusal with which schemas to edit (best-effort lookups).
+        message = (
+            f"HTTP 409: {json.dumps(resp_body)}\n"
+            f"A schema still references this engine field — remove the captured "
+            f"datapoint from the schema first (rossum_patch_schema), then re-run "
+            f"rossum_delete_engine_field."
+        )
+        field_status, field = _http_request_status(url)
+        if field_status == 200 and isinstance(field, dict):
+            engine_id = _url_to_id(field.get("engine"))
+            message += (f"\nField name: '{field.get('name')}' "
+                        f"(engine {engine_id}).")
+            queues_status, queues = _http_request_status(
+                f"{base_url}/api/v1/queues?engine={engine_id}&page_size=100"
+                f"&fields=id,name,schema")
+            if queues_status == 200 and isinstance(queues, dict):
+                schemas = sorted({_url_to_id(q["schema"]) for q in queues.get("results", [])
+                                  if q.get("schema")})
+                if schemas:
+                    message += (f" Schemas bound to this engine (look for a datapoint "
+                                f"with id '{field.get('name')}'): {schemas}.")
+        tool_result(request_id, message, is_error=True)
+        return
+    tool_result(request_id, f"HTTP {status}: {json.dumps(resp_body)}", is_error=True)
 
 
 @_tool(

@@ -984,3 +984,127 @@ def test_queue_lifecycle_annotations():
     assert server.TOOLS["rossum_duplicate_queue"]["annotations"]["destructiveHint"] is False
     assert server.TOOLS["rossum_patch_queue"]["annotations"]["destructiveHint"] is False
     assert server.TOOLS["rossum_delete_queue"]["annotations"]["destructiveHint"] is True
+
+
+# --- engine-field CRUD + schema validate (engine-bound schema editing bundle) ---
+
+def test_validate_schema_builds_body_and_reports_valid(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content": [{"category": "section", "id": "s", "children": []}], "schema_id": 42},
+        lambda url, method, body: {},  # live API: HTTP 200 + {} means valid
+    )
+    call = fake.calls[0]
+    assert call["url"].endswith("/api/v1/schemas/validate")
+    assert call["method"] == "POST"
+    assert call["body"] == {
+        "content": [{"category": "section", "id": "s", "children": []}],
+        "id": 42,  # schema_id maps to the API's 'id' key (enables engine checks)
+    }
+    out = emitted_payload(emitted)
+    assert out == {"valid": True, "errors": {}}
+
+
+def test_validate_schema_surfaces_error_tree(monkeypatch):
+    tree = {"content": [{"children": {"3": {"id": ["Engine restriction: ..."]}}}]}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content": [{"category": "section", "id": "s", "children": []}]},
+        lambda url, method, body: tree,
+    )
+    assert "id" not in fake.calls[0]["body"]  # no schema_id -> no 'id' key
+    out = emitted_payload(emitted)
+    assert out["valid"] is False
+    assert out["errors"] == tree
+
+
+def test_create_engine_field_builds_body(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_engine_field",
+        {"engine_id": 8, "name": "doc_ref", "label": "Doc Ref", "type": "string",
+         "subtype": "alphanumeric", "pre_trained_field_id": "document_id",
+         "tabular": True, "multiline": "false"},
+        lambda url, method, body: {"id": 3},
+    )
+    call = fake.calls[0]
+    assert call["url"].endswith("/api/v1/engine_fields")
+    assert call["method"] == "POST"
+    assert call["body"] == {
+        "engine": f"{BASE}/api/v1/engines/8",
+        "name": "doc_ref",
+        "label": "Doc Ref",
+        "type": "string",
+        "subtype": "alphanumeric",
+        "pre_trained_field_id": "document_id",
+        "tabular": True,
+        "multiline": "false",
+    }
+
+
+def test_create_engine_field_minimal_omits_optionals(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_engine_field",
+        {"engine_id": 8, "name": "doc_ref", "label": "Doc Ref", "type": "string"},
+        lambda url, method, body: {"id": 3},
+    )
+    body = fake.calls[0]["body"]
+    assert set(body) == {"engine", "name", "label", "type"}
+
+
+def test_patch_engine_field_partial_body(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_engine_field",
+        {"engine_field_id": 3, "label": "Renamed", "subtype": None},
+        lambda url, method, body: {"id": 3},
+    )
+    call = fake.calls[0]
+    assert call["url"].endswith("/api/v1/engine_fields/3")
+    assert call["method"] == "PATCH"
+    # explicit null clears subtype; unspecified fields are not sent at all
+    assert call["body"] == {"label": "Renamed", "subtype": None}
+
+
+def test_delete_engine_field_success(monkeypatch):
+    monkeypatch.setattr(server, "_http_request_status",
+                        lambda url, method="GET", body=None: (204, None))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
+                             {"engine_field_id": 3},
+                             lambda url, method, body: None)
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "deleted" in text
+    assert not emitted[-1]["result"].get("isError")
+
+
+def test_delete_engine_field_409_guard_names_schemas(monkeypatch):
+    calls = []
+
+    def status(url, method="GET", body=None):
+        calls.append((method, url))
+        if method == "DELETE":
+            return 409, {"detail": "Cannot delete engine field used in a schema.",
+                         "code": "conflict_referenced"}
+        if url.endswith("/api/v1/engine_fields/3"):
+            return 200, {"id": 3, "name": "doc_ref",
+                         "engine": f"{BASE}/api/v1/engines/8"}
+        if "/api/v1/queues?engine=8" in url:
+            return 200, {"results": [{"id": 7, "schema": f"{BASE}/api/v1/schemas/44"}]}
+        raise AssertionError(f"unexpected request {method} {url}")
+
+    monkeypatch.setattr(server, "_http_request_status", status)
+    _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
+                             {"engine_field_id": 3},
+                             lambda url, method, body: None)
+    result = emitted[-1]["result"]
+    assert result.get("isError")
+    text = result["content"][0]["text"]
+    assert "rossum_patch_schema" in text          # remediation order is spelled out
+    assert "'doc_ref'" in text                    # field name resolved
+    assert "44" in text                           # offending schema candidates listed
+    assert calls[0][0] == "DELETE"                # no pre-flight reads before the DELETE
+
+
+def test_engine_field_bundle_annotations():
+    assert server.TOOLS["rossum_validate_schema"]["annotations"]["readOnlyHint"] is True
+    assert server.TOOLS["rossum_create_engine_field"]["annotations"]["destructiveHint"] is False
+    assert server.TOOLS["rossum_patch_engine_field"]["annotations"]["destructiveHint"] is False
+    assert server.TOOLS["rossum_delete_engine_field"]["annotations"]["destructiveHint"] is True
