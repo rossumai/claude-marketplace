@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 14 reference packs · 79 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 14 reference packs · 90 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -157,11 +157,19 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_workspace` | Get full workspace details |
 | `rossum_list_queues` | List queues (filter by workspace, status) |
 | `rossum_get_queue` | Get full queue details |
+| `rossum_create_queue_from_template` | ✏️ Provision a self-contained queue from a queue template (creates a fresh schema and inbox with it, plus a fresh engine in the default next-gen mode) |
+| `rossum_duplicate_queue` | ✏️ Clone a queue (deep-copies the schema, fresh inbox, shares the source's engine; `copy_*` switches for hooks/rules/permissions/…) |
+| `rossum_patch_queue` | ✏️ Update a queue (name, automation settings, UI settings, workflow bindings, workspace/schema/hooks/users/engine references) |
+| `rossum_delete_queue` | ⚠️ Delete a queue immediately (skips the 24h grace window), poll until gone, then cascade-delete its now-orphaned schema/inbox/engine unless shared with another queue |
 | `rossum_get_automation_insights` | Queue automation analytics: rates, blockers, per-field statistics (compact digest by default, full payload cached) |
 | `rossum_get_automation_projections` | Simulate automation at recalibrated confidence thresholds; degrades gracefully when the queue has too little reviewed data |
 | `rossum_get_schema` | Get queue schema (datapoints, sections, tables) |
 | `rossum_patch_schema` | ✏️ Update a schema (name, content, metadata) |
+| `rossum_validate_schema` | Dry-run schema content validation (`POST /schemas/validate` — non-mutating despite being a POST; pass `schema_id` to enable engine-binding checks) |
 | `rossum_list_schemas` | List all schemas |
+| `rossum_create_engine_field` | ✏️ Create an engine field on a custom extraction engine — create it BEFORE adding the matching captured datapoint to the schema |
+| `rossum_patch_engine_field` | ✏️ Update an engine field (label, type, subtype, pretrained seeding; `name` is immutable) |
+| `rossum_delete_engine_field` | ⚠️ Delete an engine field — remove the matching schema datapoint first (the API 409s while referenced; the tool reports which schemas to edit) |
 | `rossum_list_hooks` | List hooks/extensions (filter by queue, active) |
 | `rossum_get_hook` | Get full hook details including code and config |
 | `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) |
@@ -197,10 +205,12 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_task` | 👁️ Retrieve an async task object (uses `?no_redirect=true` to read status instead of following the /tasks 303 to its result) |
 | `rossum_delete_annotation` | ⚠️ Delete annotations (reversible soft-delete; optional irreversible purge with poll-to-purged) — cleanup for test/iteration loops |
 | `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); self-managing start→ops→release |
+| `rossum_apply_labels` | ✏️ Bulk add/remove labels across annotations in one call (label definitions must already exist — created in the UI or via raw `POST /labels`; list them via `rossum_get` path `/api/v1/labels`) |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |
 | `rossum_list_emails` | List emails (filter by queue, type) |
 | `rossum_get_email` | Get full email details (subject, body, attachments) |
+| `rossum_import_email` | ✏️ Simulate an inbound email via async `POST /emails/import` — imports a raw or constructed (subject/body/attachments) message into an inbox, runs the full `email.received` pipeline, and returns the created email + annotation/document ids; for testing Email Body Converter, `email_header:*`/`email_body:*` fields, and no-attachment bounce handling |
 | `rossum_list_email_threads` | List email threads (filter by queue) |
 | `rossum_create_email_template` | ✏️ Create an email template (rejection/custom notification subject + body, scoped to a queue) |
 | `rossum_patch_email_template` | ✏️ Update an email template (subject, message, automate, recipients, queue) |
@@ -209,6 +219,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_list_groups` | List available user roles (groups) and their IDs |
 | `rossum_list_users` | List organization users |
 | `rossum_create_user` | ✏️ Create a new user in the organization |
+| `rossum_patch_user` | ✏️ Update a user — assign queues, change role (groups), rename, or deactivate (`is_active=false`); queue/group lists replace, not add |
 | `rossum_list_audit_logs` | Query audit logs (admin only) |
 
 #### Data Storage

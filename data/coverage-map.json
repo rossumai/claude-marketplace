@@ -21,11 +21,25 @@
       "rossum_delete_email_template"
     ]
   },
+  "DELETE /engine_fields/{engineFieldID}": {
+    "decision": "covered",
+    "summary": "Delete engine field",
+    "tools": [
+      "rossum_delete_engine_field"
+    ]
+  },
   "DELETE /hooks/{hookID}": {
     "decision": "covered",
     "summary": "Delete hook",
     "tools": [
       "rossum_delete_hook"
+    ]
+  },
+  "DELETE /queues/{id}": {
+    "decision": "covered",
+    "summary": "Delete queue",
+    "tools": [
+      "rossum_delete_queue"
     ]
   },
   "DELETE /rules/{ruleID}": {
@@ -265,6 +279,13 @@
     "reason": "niche",
     "summary": "Partial update email thread"
   },
+  "PATCH /engine_fields/{engineFieldID}": {
+    "decision": "covered",
+    "summary": "Partial update engine field",
+    "tools": [
+      "rossum_patch_engine_field"
+    ]
+  },
   "PATCH /hooks/{hookID}": {
     "decision": "covered",
     "summary": "Partial update hook",
@@ -276,6 +297,13 @@
     "decision": "not_planned",
     "reason": "org/billing/admin",
     "summary": "Partial update organization"
+  },
+  "PATCH /queues/{id}": {
+    "decision": "covered",
+    "summary": "Partial update queue",
+    "tools": [
+      "rossum_patch_queue"
+    ]
   },
   "PATCH /rules/{ruleID}": {
     "decision": "covered",
@@ -296,6 +324,13 @@
     "reason": "niche",
     "summary": "Partial update suggested edit"
   },
+  "PATCH /users/{userID}": {
+    "decision": "covered",
+    "summary": "Partial update user",
+    "tools": [
+      "rossum_patch_user"
+    ]
+  },
   "POST /annotations": {
     "decision": "not_planned",
     "reason": "advanced/pipeline",
@@ -311,18 +346,18 @@
     "reason": "operator/validation-UI",
     "summary": "Export annotations (cross-queue, POST)"
   },
-  "POST /annotations/search": {
-    "decision": "covered",
-    "summary": "Search annotations",
-    "tools": [
-      "rossum_search_annotations_advanced"
-    ]
-  },
   "POST /annotations/purge_deleted": {
     "decision": "covered",
     "summary": "Permanently purge soft-deleted annotations",
     "tools": [
       "rossum_delete_annotation"
+    ]
+  },
+  "POST /annotations/search": {
+    "decision": "covered",
+    "summary": "Search annotations",
+    "tools": [
+      "rossum_search_annotations_advanced"
     ]
   },
   "POST /annotations/suggested_recipients": {
@@ -541,6 +576,20 @@
       "rossum_render_email_template"
     ]
   },
+  "POST /emails/import": {
+    "decision": "covered",
+    "summary": "Import email",
+    "tools": [
+      "rossum_import_email"
+    ]
+  },
+  "POST /engine_fields": {
+    "decision": "covered",
+    "summary": "Create engine field",
+    "tools": [
+      "rossum_create_engine_field"
+    ]
+  },
   "POST /hooks": {
     "decision": "covered",
     "summary": "Create hook",
@@ -584,6 +633,13 @@
       "rossum_test_hook"
     ]
   },
+  "POST /labels/apply": {
+    "decision": "covered",
+    "summary": "Add/remove annotation labels",
+    "tools": [
+      "rossum_apply_labels"
+    ]
+  },
   "POST /organization_groups/{organizationGroupID}/billing_stats": {
     "decision": "not_planned",
     "reason": "org/billing/admin",
@@ -614,6 +670,20 @@
     "reason": "org/billing/admin",
     "summary": "Export organization billing stats"
   },
+  "POST /queues/from_template": {
+    "decision": "covered",
+    "summary": "Create queue from template",
+    "tools": [
+      "rossum_create_queue_from_template"
+    ]
+  },
+  "POST /queues/{id}/duplicate": {
+    "decision": "covered",
+    "summary": "Duplicate queue",
+    "tools": [
+      "rossum_duplicate_queue"
+    ]
+  },
   "POST /queues/{id}/next": {
     "decision": "not_planned",
     "reason": "operator",
@@ -639,6 +709,13 @@
     "summary": "Create rule",
     "tools": [
       "rossum_create_rule"
+    ]
+  },
+  "POST /schemas/validate": {
+    "decision": "covered",
+    "summary": "Validate schema",
+    "tools": [
+      "rossum_validate_schema"
     ]
   },
   "POST /suggested_edits": {
@@ -701,6 +778,11 @@
     "reason": "niche",
     "summary": "Update email thread"
   },
+  "PUT /engine_fields/{engineFieldID}": {
+    "decision": "not_planned",
+    "reason": "partial update covered by rossum_patch_engine_field; full-PUT replace clobbers omitted fields",
+    "summary": "Update engine field"
+  },
   "PUT /hooks/{hookID}": {
     "decision": "not_planned",
     "reason": "partial update covered by rossum_patch_hook; full-PUT replace clobbers omitted fields (code, settings, secrets, queues)",
@@ -720,5 +802,285 @@
     "decision": "not_planned",
     "reason": "niche",
     "summary": "Update suggested edit"
+  },
+  "POST /connectors": {
+    "decision": "not_planned",
+    "reason": "legacy extension type, superseded by hooks (webhooks/functions)",
+    "summary": "Create connector"
+  },
+  "PATCH /connectors/{connectorID}": {
+    "decision": "not_planned",
+    "reason": "legacy extension type, superseded by hooks (webhooks/functions)",
+    "summary": "Partial update connector"
+  },
+  "PUT /connectors/{connectorID}": {
+    "decision": "not_planned",
+    "reason": "legacy extension type, superseded by hooks (webhooks/functions)",
+    "summary": "Update connector"
+  },
+  "DELETE /connectors/{connectorID}": {
+    "decision": "not_planned",
+    "reason": "legacy extension type, superseded by hooks (webhooks/functions)",
+    "summary": "Delete connector"
+  },
+  "POST /documents/downloads": {
+    "decision": "not_planned",
+    "reason": "bulk file-download convenience; single-document content is already retrievable, and batched download is an operator/UI flow rather than an integration primitive",
+    "summary": "Create download"
+  },
+  "POST /documents": {
+    "decision": "not_planned",
+    "reason": "document creation/attachment is a programmatic primitive driven by ingestion (/uploads) and export-pipeline/service code, not a manual operation",
+    "summary": "Create document"
+  },
+  "PATCH /documents/{documentID}": {
+    "decision": "not_planned",
+    "reason": "document metadata is set at upload or carried on the annotation; no manual edit workflow",
+    "summary": "Partial update document"
+  },
+  "DELETE /documents/{documentID}": {
+    "decision": "not_planned",
+    "reason": "document removal is handled at the annotation level",
+    "summary": "Delete document"
+  },
+  "POST /document_relations": {
+    "decision": "not_planned",
+    "reason": "document relations are created and consumed in-process by export-pipeline and hook code, not edited by hand",
+    "summary": "Create document relation"
+  },
+  "PATCH /document_relations/{documentRelationID}": {
+    "decision": "not_planned",
+    "reason": "document relations are created and consumed in-process by export-pipeline and hook code, not edited by hand",
+    "summary": "Partial update document relation"
+  },
+  "PUT /document_relations/{documentRelationID}": {
+    "decision": "not_planned",
+    "reason": "document relations are created and consumed in-process by export-pipeline and hook code, not edited by hand",
+    "summary": "Update document relation"
+  },
+  "DELETE /document_relations/{documentRelationID}": {
+    "decision": "not_planned",
+    "reason": "document relations are created and consumed in-process by export-pipeline and hook code, not edited by hand",
+    "summary": "Delete document relation"
+  },
+  "POST /emails/send": {
+    "decision": "not_planned",
+    "reason": "outbound email is automation-driven via rules/workflow + email templates and is an external side effect, not a manual operator action",
+    "summary": "Send email"
+  },
+  "PATCH /emails/{emailID}": {
+    "decision": "not_planned",
+    "reason": "niche email-object field edit, no manual workflow",
+    "summary": "Partial update email"
+  },
+  "PUT /emails/{emailID}": {
+    "decision": "not_planned",
+    "reason": "niche email-object edit; full-PUT replace clobbers omitted fields",
+    "summary": "Update email"
+  },
+  "POST /engines": {
+    "decision": "not_planned",
+    "reason": "custom-engine lifecycle is orchestrated by the queue-engine-binding skill's bundled CLI; the bind is an ordering-sensitive, one-time-per-project sequence, not a standalone manual primitive",
+    "summary": "Create engine"
+  },
+  "PATCH /engines/{engineID}": {
+    "decision": "not_planned",
+    "reason": "custom-engine lifecycle is orchestrated by the queue-engine-binding skill's bundled CLI; the bind is an ordering-sensitive, one-time-per-project sequence, not a standalone manual primitive",
+    "summary": "Partial update engine"
+  },
+  "PUT /engines/{engineID}": {
+    "decision": "not_planned",
+    "reason": "custom-engine lifecycle is orchestrated by the queue-engine-binding skill's bundled CLI; the bind is an ordering-sensitive, one-time-per-project sequence, not a standalone manual primitive",
+    "summary": "Update engine"
+  },
+  "DELETE /engines/{engineID}": {
+    "decision": "not_planned",
+    "reason": "custom-engine lifecycle is orchestrated by the queue-engine-binding skill's bundled CLI; the bind is an ordering-sensitive, one-time-per-project sequence, not a standalone manual primitive",
+    "summary": "Delete engine"
+  },
+  "POST /engines/{engineID}/duplicate": {
+    "decision": "not_planned",
+    "reason": "niche helper within the one-time engine-binding flow handled by the queue-engine-binding skill",
+    "summary": "Duplicate engine"
+  },
+  "POST /engines/{engineID}/check_template_compatibility": {
+    "decision": "not_planned",
+    "reason": "niche helper within the one-time engine-binding flow handled by the queue-engine-binding skill",
+    "summary": "Check engine template schema compatibility"
+  },
+  "POST /inboxes": {
+    "decision": "not_planned",
+    "reason": "trivial one-time-per-queue config (email prefix); set up in seconds via the UI with no recurring or friction-heavy interactive use that a tool would relieve, unlike frequently-iterated hooks/rules",
+    "summary": "Create inbox"
+  },
+  "PATCH /inboxes/{inboxID}": {
+    "decision": "not_planned",
+    "reason": "trivial one-time-per-queue config (email prefix); set up in seconds via the UI with no recurring or friction-heavy interactive use that a tool would relieve, unlike frequently-iterated hooks/rules",
+    "summary": "Partial update inbox"
+  },
+  "PUT /inboxes/{inboxID}": {
+    "decision": "not_planned",
+    "reason": "trivial one-time-per-queue config; full-PUT replace clobbers omitted fields and the UI handles it in seconds",
+    "summary": "Update inbox"
+  },
+  "DELETE /inboxes/{inboxID}": {
+    "decision": "not_planned",
+    "reason": "set-once-with-queue; inbox removal is rare and happens as part of queue teardown (prd2/cascade)",
+    "summary": "Delete inbox"
+  },
+  "POST /labels": {
+    "decision": "not_planned",
+    "reason": "creating a label definition is low-frequency, trivial-in-UI config with no friction to relieve (cf. inbox); the operational POST /labels/apply stays open as a wanted candidate",
+    "summary": "Create label"
+  },
+  "PATCH /labels/{labelID}": {
+    "decision": "not_planned",
+    "reason": "rename/recolor a label definition - trivial, rare, handled in the UI",
+    "summary": "Partial update label"
+  },
+  "PUT /labels/{labelID}": {
+    "decision": "not_planned",
+    "reason": "full-PUT replace clobbers omitted fields; trivial label-definition edit handled in the UI",
+    "summary": "Update label"
+  },
+  "DELETE /labels/{labelID}": {
+    "decision": "not_planned",
+    "reason": "rare label-definition teardown",
+    "summary": "Delete label"
+  },
+  "POST /organization_groups/{organizationGroupID}/memberships": {
+    "decision": "not_planned",
+    "reason": "organization-group membership is partner/multi-org admin plumbing, outside SA implementation scope; not a manual operation driven from Claude Code",
+    "summary": "Create membership"
+  },
+  "PATCH /organization_groups/{organizationGroupID}/memberships/{membershipID}": {
+    "decision": "not_planned",
+    "reason": "organization-group membership is partner/multi-org admin plumbing, outside SA implementation scope; not a manual operation driven from Claude Code",
+    "summary": "Partial update membership"
+  },
+  "PUT /organization_groups/{organizationGroupID}/memberships/{membershipID}": {
+    "decision": "not_planned",
+    "reason": "organization-group membership is partner/multi-org admin plumbing, outside SA implementation scope; not a manual operation driven from Claude Code",
+    "summary": "Update membership"
+  },
+  "DELETE /organization_groups/{organizationGroupID}/memberships/{membershipID}": {
+    "decision": "not_planned",
+    "reason": "organization-group membership is partner/multi-org admin plumbing, outside SA implementation scope; not a manual operation driven from Claude Code",
+    "summary": "Delete membership"
+  },
+  "POST /queues": {
+    "decision": "not_planned",
+    "reason": "a queue requires pre-existing schema+workspace references, so a bare create is incoherent in isolation (fails or leaves a dangling queue); the coherent unit is the atomic create-chain owned by prd2 (mechanics) + implement skill (guidance). from_template/duplicate stay open as the self-contained provisioning candidates",
+    "summary": "Create queue"
+  },
+  "POST /queues/{id}/export": {
+    "decision": "not_planned",
+    "reason": "redundant with covered export tooling (rossum_generate_export_payload, GET /annotations/export); the POST form is just the long-filter variant",
+    "summary": "Export annotations (POST)"
+  },
+  "PUT /queues/{id}": {
+    "decision": "not_planned",
+    "reason": "full-PUT replace clobbers omitted fields; everyday edits covered by the (open, wanted) PATCH candidate",
+    "summary": "Update queue"
+  },
+  "POST /relations": {
+    "decision": "not_planned",
+    "reason": "annotation relations (duplicate/edit/attachment) are created and managed by the platform and extensions (duplicate detection, edit/split operations), not hand-authored from Claude Code",
+    "summary": "Create relation"
+  },
+  "PATCH /relations/{relationID}": {
+    "decision": "not_planned",
+    "reason": "annotation relations (duplicate/edit/attachment) are created and managed by the platform and extensions (duplicate detection, edit/split operations), not hand-authored from Claude Code",
+    "summary": "Partial update relation"
+  },
+  "PUT /relations/{relationID}": {
+    "decision": "not_planned",
+    "reason": "annotation relations (duplicate/edit/attachment) are created and managed by the platform and extensions (duplicate detection, edit/split operations), not hand-authored from Claude Code",
+    "summary": "Update relation"
+  },
+  "DELETE /relations/{relationID}": {
+    "decision": "not_planned",
+    "reason": "annotation relations (duplicate/edit/attachment) are created and managed by the platform and extensions (duplicate detection, edit/split operations), not hand-authored from Claude Code",
+    "summary": "Delete relation"
+  },
+  "POST /schemas": {
+    "decision": "not_planned",
+    "reason": "standalone schema create is incoherent in isolation (orphan until a queue references it); provisioning chain owned by prd2/implement, and content editing is covered by rossum_patch_schema. POST /schemas/validate stays open as a wanted dry-run candidate",
+    "summary": "Create schema"
+  },
+  "POST /schemas/from_template": {
+    "decision": "not_planned",
+    "reason": "schema-only-from-template is niche; the coherent provisioning path is queues/from_template (kept open), which creates queue+schema together",
+    "summary": "Create schema from template"
+  },
+  "DELETE /schemas/{schemaID}": {
+    "decision": "not_planned",
+    "reason": "schema teardown is handled inside the queue-teardown cascade (delete_queue design note); a schema is not deleted independently of its queue",
+    "summary": "Delete schema"
+  },
+  "PUT /schemas/{schemaID}": {
+    "decision": "not_planned",
+    "reason": "full-PUT replace clobbers omitted fields; schema edits covered by rossum_patch_schema",
+    "summary": "Update schema"
+  },
+  "POST /workspaces": {
+    "decision": "not_planned",
+    "reason": "workspace is a trivial top-level container (name only), created ~once per project and handled in the UI; low frequency/friction, and throwaway test queues can reuse an existing sandbox workspace rather than provision a new one",
+    "summary": "Create workspace"
+  },
+  "PATCH /workspaces/{workspaceID}": {
+    "decision": "not_planned",
+    "reason": "rename a trivial container; rare, handled in the UI",
+    "summary": "Partial update workspace"
+  },
+  "PUT /workspaces/{workspaceID}": {
+    "decision": "not_planned",
+    "reason": "full-PUT replace clobbers omitted fields; trivial container handled in the UI",
+    "summary": "Update workspace"
+  },
+  "DELETE /workspaces/{workspaceID}": {
+    "decision": "not_planned",
+    "reason": "destructive, rare; workspace teardown is not part of the throwaway test-queue lifecycle (test queues reuse an existing sandbox workspace)",
+    "summary": "Delete workspace"
+  },
+  "DELETE /users/{userID}": {
+    "decision": "not_planned",
+    "reason": "user offboarding is admin work, destructive and rare; Rossum deactivation is usually soft and UI-driven",
+    "summary": "Delete user"
+  },
+  "PUT /users/{userID}": {
+    "decision": "not_planned",
+    "reason": "full-PUT replace clobbers omitted fields; the open PATCH /users/{id} candidate covers assign-to-queue/role edits",
+    "summary": "Update user"
+  },
+  "PATCH /auth/user": {
+    "decision": "not_planned",
+    "reason": "edits the authenticated account's own profile (name/locale/UI prefs), not an implementation action",
+    "summary": "Partial update current user"
+  },
+  "PUT /auth/user": {
+    "decision": "not_planned",
+    "reason": "edits the authenticated account's own profile (full replace), not an implementation action",
+    "summary": "Update current user"
+  },
+  "POST /triggers": {
+    "decision": "not_planned",
+    "reason": "niche event-binding entity (queue+event+condition -> email_templates/delete_recommendations); the SA-authored automation surface is the native Rule entity (covered by rule CRUD) with an inline trigger_condition. Confirmed not_planned with the team",
+    "summary": "Create trigger"
+  },
+  "PATCH /triggers/{triggerID}": {
+    "decision": "not_planned",
+    "reason": "niche event-binding entity (queue+event+condition -> email_templates/delete_recommendations); the SA-authored automation surface is the native Rule entity (covered by rule CRUD) with an inline trigger_condition. Confirmed not_planned with the team",
+    "summary": "Partial update trigger"
+  },
+  "PUT /triggers/{triggerID}": {
+    "decision": "not_planned",
+    "reason": "niche event-binding entity (queue+event+condition -> email_templates/delete_recommendations); the SA-authored automation surface is the native Rule entity (covered by rule CRUD) with an inline trigger_condition. Confirmed not_planned with the team",
+    "summary": "Update trigger"
+  },
+  "DELETE /triggers/{triggerID}": {
+    "decision": "not_planned",
+    "reason": "niche event-binding entity (queue+event+condition -> email_templates/delete_recommendations); the SA-authored automation surface is the native Rule entity (covered by rule CRUD) with an inline trigger_condition. Confirmed not_planned with the team",
+    "summary": "Delete trigger"
   }
 }

@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.28.1"
+_SERVER_VERSION = "0.32.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -325,7 +325,9 @@ def _http_request_status(url, *, method="GET", body=None):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
+            raw = resp.read()
+            # 204 No Content (e.g. DELETE) has no body — that's a success, not a parse error.
+            return resp.status, (json.loads(raw.decode("utf-8")) if raw else None)
     except urllib.error.HTTPError as e:
         # Reading/decoding the error body can itself fail (dropped connection,
         # non-UTF-8 proxy page) — that must not escape the never-raise contract.
@@ -340,6 +342,48 @@ def _http_request_status(url, *, method="GET", body=None):
         return e.code, error_body
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
+
+
+def _emit_http_error(request_id, status, body):
+    """Send the standard error tool_result for a (status, body) pair from
+    _http_request_status. Mirrors _http_request's ladder so status-aware handlers
+    that intercept specific codes (e.g. the engine-field 409 guard) can delegate
+    every other outcome here instead of re-implementing it: a transport failure
+    (status None) is labeled 'Error:' and flagged as possibly-not-delivered — NOT
+    'HTTP None:' as if the server had answered; 401 invalidates the cached
+    connection and keeps the API's error detail; anything else is 'HTTP {status}'.
+    """
+    detail = body if isinstance(body, str) else json.dumps(body)
+    if status is None:
+        tool_result(
+            request_id,
+            f"Error: {detail} (transport failure — the request may or may not "
+            f"have reached the server; re-check the resource state before retrying).",
+            is_error=True,
+        )
+        return
+    if status == 401:
+        _invalidate_connection()
+        tool_result(
+            request_id,
+            f"Authentication failed (HTTP 401). Token may be expired. "
+            f"Call rossum_set_token to re-authenticate.\n{detail}",
+            is_error=True,
+        )
+        return
+    tool_result(request_id, f"HTTP {status}: {detail}", is_error=True)
+
+
+def _delete_returning_status(request_id, url):
+    """DELETE returning (status_code, parsed_body) without emitting a tool_result.
+
+    For handlers that turn specific 4xx responses into remediation guidance instead
+    of a generic error (e.g. the engine-field 409 referenced-by-schema guard).
+    request_id is unused (nothing is emitted) but kept for helper-signature parity —
+    the coverage scanner resolves URL-builder helpers as helper(request_id, url).
+    """
+    del request_id
+    return _http_request_status(url, method="DELETE")
 
 
 def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_type=None):
@@ -417,6 +461,8 @@ def _http_get_typed(request_id, url):
 def _poll_until(fetch, done, *, timeout=180, interval=3):
     """Poll a single resource until ready. Calls fetch() repeatedly until done(result)
     is truthy or *timeout* seconds elapse, sleeping *interval* between attempts.
+    Always fetches at least once, even with timeout<=0 — a caller passing a degenerate
+    timeout gets one real observation instead of a report about a check never made.
 
     Returns the last fetched result. Returns None as soon as fetch() returns None (an
     error it already surfaced). On timeout, returns the last (non-None) result with
@@ -424,15 +470,15 @@ def _poll_until(fetch, done, *, timeout=180, interval=3):
     (done False) from errored (None). Owning the deadline here keeps each poll phase on
     its own budget — callers can't accidentally share one deadline across phases."""
     deadline = time.time() + timeout
-    result = None
-    while time.time() < deadline:
+    while True:
         result = fetch()
         if result is None:
             return None
         if done(result):
             return result
+        if time.time() >= deadline:
+            return result
         time.sleep(interval)
-    return result
 
 
 _EXT_CONTENT_TYPE = {
@@ -457,6 +503,37 @@ def _content_type_for(filename):
     return "application/octet-stream"
 
 
+def _multipart_body(file_field, filename, file_bytes, file_content_type, text_fields):
+    """Build a multipart/form-data body for one file part plus text fields.
+
+    text_fields is an iterable of (name, value) pairs; pairs whose value is None are
+    skipped. Uses CRLF line endings (required by /emails/import). Returns
+    (boundary, body_bytes).
+    """
+    boundary = f"----mcp-{int(time.time())}"
+    parts = [
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+            f"Content-Type: {file_content_type}\r\n\r\n"
+        ).encode()
+        + file_bytes
+        + b"\r\n"
+    ]
+    for name, value in text_fields:
+        if value is None:
+            continue
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode()
+        )
+    parts.append(f"--{boundary}--\r\n".encode())
+    return boundary, b"".join(parts)
+
+
 def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
                      content_type=None, *, metadata=None, values=None,
                      reject_identical=None, poll_timeout=180):
@@ -468,30 +545,10 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
     """
     if content_type is None:
         content_type = _content_type_for(filename)
-    boundary = f"----upload-{int(time.time())}"
-    parts = [
-        (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="content"; filename="{filename}"\r\n'
-            f"Content-Type: {content_type}\r\n\r\n"
-        ).encode()
-        + file_bytes
-        + b"\r\n"
-    ]
-
-    def _text_part(name, value):
-        return (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
-            f"{value}\r\n"
-        ).encode()
-
-    if metadata is not None:
-        parts.append(_text_part("metadata", metadata))
-    if values is not None:
-        parts.append(_text_part("values", values))
-    parts.append(f"--{boundary}--\r\n".encode())
-    body = b"".join(parts)
+    boundary, body = _multipart_body(
+        "content", filename, file_bytes, content_type,
+        [("metadata", metadata), ("values", values)],
+    )
 
     query = f"queue={queue_id}"
     if reject_identical:
@@ -553,6 +610,133 @@ def _upload_to_queue(request_id, base_url, queue_id, file_bytes, filename,
     return annotations[0]
 
 
+def _build_raw_email(*, from_addr, to_addr, subject, body_text, body_html,
+                     attachment_paths):
+    """Assemble a raw RFC822/MIME message (bytes) from parts, stdlib-only.
+
+    Used when the caller describes an email (subject/from/body/attachments) instead
+    of supplying a ready .eml file. text + html become a multipart/alternative body so
+    both email_body:text_plain and email_body:text_html selectors have content. The
+    SMTP policy + explicit Date header satisfy /emails/import, which rejects messages
+    with bare-LF line endings or no Date as HTTP 400 "Invalid e-mail format". Returns
+    (raw_bytes, error_string) — error_string is non-None on a bad/oversized attachment.
+    """
+    import os
+    from email.message import EmailMessage
+    from email.policy import SMTP
+    from email.utils import formatdate, make_msgid
+
+    # Pre-check total attachment size before reading + base64-encoding (~1.34x inflation),
+    # so an oversized payload is rejected without peaking in memory first.
+    raw_total = 0
+    for path in attachment_paths or []:
+        if not os.path.isfile(path):
+            return (None, f"Attachment not found: {path}")
+        raw_total += os.path.getsize(path)
+    if raw_total * 1.34 > 40 * 1024 * 1024:
+        return (None, f"Attachments too large: ~{raw_total * 1.34 / 1024 / 1024:.1f} MB "
+                      "encoded; limit is 40 MB.")
+
+    msg = EmailMessage(policy=SMTP)
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg["Subject"] = subject or ""
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain="rossum-import.invalid")
+
+    text = body_text if body_text is not None else ""
+    msg.set_content(text)
+    if body_html is not None:
+        msg.add_alternative(body_html, subtype="html")
+
+    for path in attachment_paths or []:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        ctype = _content_type_for(os.path.basename(path))
+        maintype, _, subtype = ctype.partition("/")
+        msg.add_attachment(
+            data, maintype=maintype or "application",
+            subtype=subtype or "octet-stream", filename=os.path.basename(path),
+        )
+    return (msg.as_bytes(), None)
+
+
+def _import_email(request_id, base_url, recipient, raw_bytes, *, from_addr=None,
+                  subject=None, metadata=None, values=None, poll_timeout=120):
+    """Import a raw email via POST /emails/import (HTTP 202) and resolve the new email.
+
+    Simulates an inbound email landing in `recipient`'s inbox: the async import creates
+    an email object and runs the email.received pipeline (documents + annotations +
+    hooks). The 202 returns a task URL, but that task (type `email_imported`) 404s on
+    GET /tasks/{id} for a support-user token — a confirmed Rossum bug: the task is
+    created in the support user's default org, not the target org, so it's invisible
+    when querying the target org (a normal org user reads it fine). Rather than depend
+    on task visibility, we identify the created email by snapshotting the inbox's recent
+    incoming emails, POSTing, then polling the emails list for the one that appeared —
+    which works regardless of token type.
+
+    metadata/values, when given, must already be JSON strings. from_addr/subject (when
+    known) narrow the search and disambiguate concurrent arrivals — from_addr is matched
+    server-side on the parsed bare address (Rossum stores `a@b` even if the header was
+    `Name <a@b>`); subject is matched client-side among fresh candidates. Returns the
+    created email's URL, or None when an error tool_result was already emitted.
+    """
+    from email.utils import parseaddr
+
+    from_email = parseaddr(from_addr)[1] if from_addr else None
+
+    def _list_recent():
+        # Tight filter (recipient + parsed sender) + a generous page so the imported
+        # email can't be pushed off the first page during the poll window.
+        params = {"to": recipient, "type": "incoming",
+                  "ordering": "-created_at", "page_size": "100"}
+        if from_email:
+            params["from__email"] = from_email
+        return _http_request(request_id, f"{base_url}/api/v1/emails?{urlencode(params)}")
+
+    before = _list_recent()
+    if before is None:
+        return None
+    before_ids = {e["id"] for e in before.get("results", [])}
+
+    boundary, body = _multipart_body(
+        "raw_message", "message.eml", raw_bytes, "message/rfc822",
+        [("recipient", recipient), ("metadata", metadata), ("values", values)],
+    )
+    resp = _http_request_raw(
+        request_id, f"{base_url}/api/v1/emails/import",
+        method="POST", raw_body=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+    if resp is None:
+        return None
+    task_url = resp.get("url") if isinstance(resp, dict) else None
+
+    # Poll the emails list for the new email (id not in the pre-POST snapshot). Reuses
+    # _poll_until: it returns the last list on timeout (done() still false) and None on
+    # a fetch error already surfaced.
+    def _fresh(data):
+        return [e for e in data.get("results", []) if e["id"] not in before_ids]
+
+    data = _poll_until(_list_recent, lambda d: bool(_fresh(d)), timeout=poll_timeout)
+    if data is None:
+        return None
+    fresh = _fresh(data)
+    if not fresh:
+        tool_result(
+            request_id,
+            f"Import was accepted (task {task_url}) but no matching email surfaced for "
+            f"{recipient} within {poll_timeout}s. Check rossum_list_emails.",
+            is_error=True,
+        )
+        return None
+    # Prefer an exact subject match among fresh candidates; else newest (fresh[0]).
+    chosen = fresh[0]
+    if subject is not None:
+        chosen = next((e for e in fresh if (e.get("subject") or "") == subject), fresh[0])
+    return f"{base_url}/api/v1/emails/{chosen['id']}"
+
+
 def _data_storage_call(request_id, path, body):
     """POST to a Data Storage API endpoint."""
     base_url, _ = _ensure_connection(request_id)
@@ -595,9 +779,20 @@ def _rossum_delete(request_id, path):
 
 
 def _rossum_patch(request_id, path, body):
-    """PATCH a Rossum API resource and return the result as JSON."""
+    """PATCH a Rossum API resource and return the result as JSON.
+
+    An empty body is rejected before the round-trip: PATCH {} returns the
+    unchanged resource, which reads as a successful update to the caller.
+    """
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    if not body:
+        tool_result(
+            request_id,
+            "Nothing to update: no fields to change were provided.",
+            is_error=True,
+        )
         return
     result = _http_request(request_id, f"{base_url}{path}", method="PATCH", body=body)
     if result is not None:
@@ -1999,6 +2194,133 @@ def handle_create_user(request_id, arguments):
 
 
 @_tool(
+    "rossum_patch_user",
+    "Updates an existing user. Only provide the fields you want to change — unspecified fields "
+    "are left untouched. Use this to assign a user to queues, change their role (groups), rename "
+    "them, or deactivate them (is_active=false; no user-delete tool is provided — DELETE /users "
+    "is not_planned — so deactivation is the supported retirement path). If you don't already "
+    "have the user's complete queue/group lists, read them first (rossum_get with path "
+    "/api/v1/users/{id}) before sending a replacement. "
+    "Email and username cannot be changed here. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["user_id"],
+        "properties": {
+            "user_id": {
+                "type": "integer",
+                "description": "The user ID to update.",
+            },
+            "first_name": {
+                "type": "string",
+                "description": "New first name.",
+            },
+            "last_name": {
+                "type": "string",
+                "description": "New last name.",
+            },
+            "queue_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Replace the queues the user is assigned to (full list, not additive).",
+            },
+            "group_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": (
+                    "Replace the user's roles (full list, not additive). "
+                    "Group IDs from rossum_list_groups."
+                ),
+            },
+            "is_active": {
+                "type": "boolean",
+                "description": "Enable or disable the account (false = deactivate).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_user(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    user_id = arguments["user_id"]
+    body = {}
+    for key in ("first_name", "last_name", "is_active"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "queue_ids" in arguments:
+        body["queues"] = _resource_urls(base_url, "queues", arguments["queue_ids"])
+    if "group_ids" in arguments:
+        body["groups"] = _resource_urls(base_url, "groups", arguments["group_ids"])
+    _rossum_patch(request_id, f"/api/v1/users/{user_id}", body)
+
+
+@_tool(
+    "rossum_apply_labels",
+    "Adds and/or removes labels on one or more annotations in bulk. This tool does not create "
+    "label definitions — they must already exist (create them in the Rossum UI or via a raw "
+    "POST /api/v1/labels); list existing ones with rossum_get (path /api/v1/labels) to find "
+    "their IDs. Both operations run in a single call across all given annotations. At least "
+    "one of add_label_ids / remove_label_ids is required. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["annotation_ids"],
+        "properties": {
+            "annotation_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 1,
+                "description": "Annotation IDs to apply the label operations to.",
+            },
+            "add_label_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Label IDs to add to every listed annotation.",
+            },
+            "remove_label_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Label IDs to remove from every listed annotation.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_apply_labels(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    operations = {}
+    if arguments.get("add_label_ids"):
+        operations["add"] = _resource_urls(base_url, "labels", arguments["add_label_ids"])
+    if arguments.get("remove_label_ids"):
+        operations["remove"] = _resource_urls(base_url, "labels", arguments["remove_label_ids"])
+    if not operations:
+        tool_result(
+            request_id,
+            "Nothing to do: provide add_label_ids and/or remove_label_ids.",
+            is_error=True,
+        )
+        return
+    body = {
+        "operations": operations,
+        "objects": {
+            "annotations": _resource_urls(base_url, "annotations", arguments["annotation_ids"]),
+        },
+    }
+    # The API answers 204 No Content on success — report the status, there is no body.
+    status = _http_request(
+        request_id, f"{base_url}/api/v1/labels/apply",
+        method="POST", body=body, parse_json=False,
+    )
+    if status is not None:
+        count = len(arguments["annotation_ids"])
+        tool_result(request_id, f"Label operations applied to {count} annotation(s) (HTTP {status}).")
+
+
+@_tool(
     "rossum_list_audit_logs",
     "List audit log entries. Requires admin or organization group admin role AND the audit log "
     "feature flag enabled on the organization. If this call returns HTTP 403, the feature is "
@@ -2385,6 +2707,416 @@ def handle_list_queues(request_id, arguments):
 )
 def handle_get_queue(request_id, arguments):
     _rossum_get(request_id, f"/api/v1/queues/{arguments['queue_id']}")
+
+
+@_tool(
+    "rossum_create_queue_from_template",
+    "Provisions a self-contained queue from a Rossum queue template — creates the queue PLUS a "
+    "fresh schema and inbox in one call, and in the default next-generation mode also a fresh "
+    "extraction engine (with legacy=true or an explicit engine_id the engine is shared instead; "
+    "the schema and inbox are always fresh). This is the fastest way to spin up a throwaway test "
+    "queue; tear it down with rossum_delete_queue (cascade removes the created schema/inbox/"
+    "engine too, leaving shared engines alone). Known-good "
+    "template_name values: 'EU Demo Template', 'Tax Invoice EU Demo Template', 'Tax Invoice US "
+    "Demo Template', 'Tax Invoice UK Demo Template' (an invalid name returns the 400 '...is not "
+    "a valid choice' so probing is cheap). Returns the full new queue object — note its schema/"
+    "inbox/engine URLs. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["name", "template_name", "workspace_id"],
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Display name for the new queue.",
+            },
+            "template_name": {
+                "type": "string",
+                "description": "Queue template to instantiate (e.g. 'EU Demo Template').",
+            },
+            "workspace_id": {
+                "type": "integer",
+                "description": "Workspace ID to place the queue in.",
+            },
+            "include_documents": {
+                "type": "boolean",
+                "description": "Copy the template's demo documents into the queue (default false).",
+            },
+            "engine_id": {
+                "type": "integer",
+                "description": "Attach this existing engine instead of creating a new one. "
+                               "NOTE: rossum_delete_queue's cascade only removes an engine no "
+                               "other queue references, so a shared engine passed here is safe.",
+            },
+            "legacy": {
+                "type": "boolean",
+                "description": "Create the queue with legacy engines (default false). In legacy "
+                               "mode NO fresh engine is created — the queue binds the org's "
+                               "shared generic engine (engine stays null), which "
+                               "rossum_delete_queue's cascade correctly leaves alone.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_create_queue_from_template(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {
+        "name": arguments["name"],
+        "template_name": arguments["template_name"],
+        "workspace": _resource_url(base_url, "workspaces", arguments["workspace_id"]),
+        # Required by the live API despite being documented optional.
+        "include_documents": arguments.get("include_documents", False),
+    }
+    if "engine_id" in arguments:
+        body["engine"] = _resource_url(base_url, "engines", arguments["engine_id"])
+    query = "?legacy=true" if arguments.get("legacy") else ""
+    _rossum_post(request_id, f"/api/v1/queues/from_template{query}", body)
+
+
+@_tool(
+    "rossum_duplicate_queue",
+    "Clones an existing queue within its workspace. The copy gets a DEEP COPY of the source "
+    "schema and a fresh inbox, but SHARES the source's extraction engine — so deleting the "
+    "clone later (rossum_delete_queue cascade) removes its schema/inbox without touching the "
+    "source queue. The copy_* switches all default to true; pass false to skip copying that "
+    "aspect. Documents/annotations are never copied. Returns the full new queue object. "
+    "This is a write operation.",
+    {
+        "type": "object",
+        "required": ["queue_id", "name"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "ID of the queue to duplicate.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Display name for the duplicated queue.",
+            },
+            "copy_extensions_settings": {
+                "type": "boolean",
+                "description": "Copy hook attachments (default true).",
+            },
+            "copy_email_settings": {
+                "type": "boolean",
+                "description": "Copy email notification settings (default true).",
+            },
+            "copy_delete_recommendations": {
+                "type": "boolean",
+                "description": "Copy delete recommendations (default true).",
+            },
+            "copy_automation_settings": {
+                "type": "boolean",
+                "description": "Copy automation level, automation settings and automation_enabled (default true).",
+            },
+            "copy_permissions": {
+                "type": "boolean",
+                "description": "Copy users and memberships (default true).",
+            },
+            "copy_rules_and_actions": {
+                "type": "boolean",
+                "description": "Copy business rules (default true).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_duplicate_queue(request_id, arguments):
+    body = {"name": arguments["name"]}
+    for key in ("copy_extensions_settings", "copy_email_settings",
+                "copy_delete_recommendations", "copy_automation_settings",
+                "copy_permissions", "copy_rules_and_actions"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, f"/api/v1/queues/{arguments['queue_id']}/duplicate", body)
+
+
+@_tool(
+    "rossum_patch_queue",
+    "Updates an existing queue. Only provide the fields you want to change — unspecified fields "
+    "are left untouched. Covers rename, automation settings (automation_enabled/automation_level/"
+    "default_score_threshold), UI settings, session/locale/retention knobs, workflow bindings, "
+    "and re-pointing references (workspace/schema/hooks/users/engine). For converting a queue to "
+    "a custom extraction engine follow the queue-engine-binding skill — the bind has ordering "
+    "constraints beyond a bare engine patch. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["queue_id"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "The queue ID to update.",
+            },
+            "name": {
+                "type": "string",
+                "description": "New display name (max 255 characters).",
+            },
+            "automation_enabled": {
+                "type": "boolean",
+                "description": "Toggle automation on/off.",
+            },
+            "automation_level": {
+                "type": "string",
+                "enum": ["never", "confident", "always"],
+                "description": "Automation level: 'always' auto-exports error-free documents, "
+                               "'confident' additionally requires all fields above the confidence "
+                               "threshold, 'never' disables auto-export.",
+            },
+            "default_score_threshold": {
+                "type": "number",
+                "description": "AI-confidence threshold used to auto-validate field content (0-1).",
+            },
+            "locale": {
+                "type": "string",
+                "description": "Typical originating region of documents, locale format (e.g. 'en_GB', 'auto').",
+            },
+            "session_timeout": {
+                "type": "string",
+                "description": "Time before a 'reviewing' annotation returns to 'to_review' (e.g. '01:00:00').",
+            },
+            "use_confirmed_state": {
+                "type": "boolean",
+                "description": "When true, confirming transitions annotations to 'confirmed' instead of 'exporting'.",
+            },
+            "document_lifetime": {
+                "type": ["string", "null"],
+                "description": "Data-retention period after which annotations are purged, "
+                               "'[DD] [HH:[MM:]]ss' (e.g. '90 00:00:00'); null disables.",
+            },
+            "training_enabled": {
+                "type": "boolean",
+                "description": "Whether annotations from this queue train the engine.",
+            },
+            "settings": {
+                "type": "object",
+                "description": "Queue UI settings object. Replaces the whole settings blob — "
+                               "read-modify-write via rossum_get_queue to change one key.",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Client-data metadata object (replaces the whole object).",
+            },
+            "rir_params": {
+                "type": ["string", "null"],
+                "description": "Extra AI Core Engine URL parameters (e.g. 'effective_page_count=2').",
+            },
+            "workflows": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Approval-workflow bindings, list of {url, priority} objects (replaces the full list).",
+            },
+            "workspace_id": {
+                "type": "integer",
+                "description": "Move the queue to this workspace.",
+            },
+            "schema_id": {
+                "type": "integer",
+                "description": "Point the queue at this schema.",
+            },
+            "hook_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Replace attached hooks (full list, not additive).",
+            },
+            "user_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Replace associated users (full list, not additive).",
+            },
+            "engine_id": {
+                "type": ["integer", "null"],
+                "description": "Bind this extraction engine. An explicit null only clears the "
+                               "engine field — a full revert to the generic engine requires "
+                               "generic_engine in the same PATCH plus schema restoration; follow "
+                               "the queue-engine-binding skill for the conversion/revert flow.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_queue(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {}
+    for key in ("name", "automation_enabled", "automation_level", "default_score_threshold",
+                "locale", "session_timeout", "use_confirmed_state", "document_lifetime",
+                "training_enabled", "settings", "metadata", "rir_params", "workflows"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "workspace_id" in arguments:
+        body["workspace"] = _resource_url(base_url, "workspaces", arguments["workspace_id"])
+    if "schema_id" in arguments:
+        body["schema"] = _resource_url(base_url, "schemas", arguments["schema_id"])
+    if "hook_ids" in arguments:
+        body["hooks"] = _resource_urls(base_url, "hooks", arguments["hook_ids"])
+    if "user_ids" in arguments:
+        body["users"] = _resource_urls(base_url, "users", arguments["user_ids"])
+    if "engine_id" in arguments:
+        engine_id = arguments["engine_id"]
+        body["engine"] = None if engine_id is None else _resource_url(base_url, "engines", engine_id)
+    _rossum_patch(request_id, f"/api/v1/queues/{arguments['queue_id']}", body)
+
+
+def _delete_cascade_dep(url, dep_id):
+    """DELETE an already-orphan-checked cascade dependency and classify the outcome.
+
+    Uses _http_request_silent: cleanup is best-effort and must never emit a
+    tool_result mid-cascade, its 30s timeout suits the retry loop, and only the
+    status code matters (the 400/409 settling classification needs no body). A
+    400/409 means the async queue deletion hasn't settled server-side yet (e.g. the
+    engine's 'engine_attached_to_queues_waiting_for_deletion') — retry once after a
+    beat, then report it as settling rather than a hard failure.
+    """
+    status = _http_request_silent(url, method="DELETE")
+    if status in (400, 409):
+        time.sleep(3)
+        status = _http_request_silent(url, method="DELETE")
+    if status is not None and 200 <= status < 300:
+        return {"id": dep_id, "result": "deleted"}
+    if status == 404:
+        return {"id": dep_id, "result": "already_gone"}
+    if status in (400, 409):
+        return {"id": dep_id, "result": f"skipped (HTTP {status} — the queue's async "
+                                        "deletion is still settling server-side; retry "
+                                        "deleting this object later)"}
+    return {"id": dep_id, "result": f"skipped (DELETE failed: HTTP {status})"}
+
+
+def _cascade_delete_dependency(base_url, resource, dep_id, deleted_queue_id):
+    """Delete a queue dependency (schema/inbox) once its owning queue is gone.
+
+    Only deletes when no other queue references it. Sharedness is re-read from the
+    LIST endpoint (?id=) rather than the retrieve: the schemas list serializer omits
+    the potentially huge 'content' tree, and a zero-hit list doubles as the
+    already-gone check. The just-deleted queue is ignored if the back-reference list
+    hasn't caught up with the deletion yet. Returns a result dict for the tool
+    response. Rossum auto-removes the inbox with the queue on current API versions,
+    so 'already_gone' is a normal outcome, not an error.
+    """
+    status, payload = _http_request_status(f"{base_url}/api/v1/{resource}?id={dep_id}")
+    if status is None or not (200 <= status < 300) or not isinstance(payload, dict):
+        return {"id": dep_id, "result": f"skipped (could not re-read: HTTP {status})"}
+    results = payload.get("results", [])
+    if not results:
+        return {"id": dep_id, "result": "already_gone"}
+    sharers = [_url_to_id(q) for q in (results[0].get("queues") or [])
+               if _url_to_id(q) != deleted_queue_id]
+    if sharers:
+        return {"id": dep_id, "result": "skipped_shared", "queues": sharers}
+    return _delete_cascade_dep(_resource_url(base_url, resource, dep_id), dep_id)
+
+
+@_tool(
+    "rossum_delete_queue",
+    "Deletes a queue immediately (skips the 24h grace window via ?delete_after=0), polls until "
+    "the queue is really gone, then — with cascade=true (default) — also deletes the queue's now-"
+    "orphaned dependencies: its schema, inbox, and extraction engine. Each dependency is only "
+    "removed when NO other queue references it (shared ones are reported as skipped_shared); the "
+    "API auto-removes the inbox with the queue, the schema and engine would otherwise be left "
+    "orphaned. If the queue deletion does not complete within poll_timeout the cascade is NOT "
+    "attempted and the tool reports the still-pending state. Returns a JSON report of what was "
+    "actually deleted. All annotations in the queue are destroyed with it — this is a destructive "
+    "operation that cannot be undone. NEVER on production queues.",
+    {
+        "type": "object",
+        "required": ["queue_id"],
+        "properties": {
+            "queue_id": {
+                "type": "integer",
+                "description": "The queue ID to delete.",
+            },
+            "cascade": {
+                "type": "boolean",
+                "description": "Also delete the queue's schema, inbox, and engine when this queue "
+                               "was their sole reference (default true).",
+            },
+            "poll_timeout": {
+                "type": "integer",
+                "description": "Seconds to wait for the async queue deletion to complete (default 30).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_queue(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    queue_id = arguments["queue_id"]
+    cascade = arguments.get("cascade", True)
+    queue_url = _resource_url(base_url, "queues", queue_id)
+
+    schema_id = inbox_id = engine_id = None
+    if cascade:
+        # Capture dependency references before the queue disappears.
+        queue = _http_request(request_id, queue_url)
+        if queue is None:
+            return
+        schema_id = _url_to_id(queue.get("schema"))
+        inbox_id = _url_to_id(queue.get("inbox"))
+        engine_id = _url_to_id(queue.get("engine"))
+
+    status = _http_request(request_id, f"{base_url}/api/v1/queues/{queue_id}?delete_after=0",
+                           method="DELETE", parse_json=False)
+    if status is None:
+        return
+
+    gone = _poll_until(
+        lambda: {"code": _http_request_silent(queue_url)},
+        lambda r: r["code"] == 404,
+        timeout=int(arguments.get("poll_timeout", 30)),
+        interval=2,
+    )
+    result = {"queue_id": queue_id, "delete_accepted": f"HTTP {status}"}
+    if gone is None or gone["code"] != 404:
+        result["queue_deleted"] = False
+        result["note"] = ("Deletion accepted but the queue still exists after the poll "
+                          "timeout; cascade was NOT attempted. Re-run rossum_delete_queue "
+                          "once GET /queues/{id} returns 404.")
+        tool_result(request_id, json.dumps(result, indent=2))
+        return
+    result["queue_deleted"] = True
+
+    if cascade:
+        if schema_id is not None:
+            result["schema"] = _cascade_delete_dependency(
+                base_url, "schemas", schema_id, queue_id)
+        if inbox_id is not None:
+            result["inbox"] = _cascade_delete_dependency(
+                base_url, "inboxes", inbox_id, queue_id)
+        if engine_id is not None:
+            # Engines have no back-reference list; a queues-by-engine filter tells
+            # us whether any other queue still uses it. Fail closed: an unreadable
+            # or total-less response skips the delete rather than assuming 0 users.
+            status_q, payload = _http_request_status(
+                f"{base_url}/api/v1/queues?engine={engine_id}&page_size=100")
+            total = (payload.get("pagination", {}).get("total")
+                     if status_q is not None and 200 <= status_q < 300
+                     and isinstance(payload, dict) else None)
+            if total is None:
+                result["engine"] = {"id": engine_id,
+                                    "result": f"skipped (could not check usage: HTTP {status_q})"}
+            else:
+                # Ignore the just-deleted queue if the filter still counts it.
+                listed = [q.get("id") for q in payload.get("results", [])]
+                others = total - (1 if queue_id in listed else 0)
+                if others > 0:
+                    result["engine"] = {"id": engine_id, "result": "skipped_shared",
+                                        "queues_still_using_it": others}
+                else:
+                    # Internal cascade step, not a tool surface (like the schema/inbox
+                    # deletes above) — the engine URL is built outside the HTTP call so
+                    # the coverage scanner doesn't register DELETE /engines as covered.
+                    engine_url = _resource_url(base_url, "engines", engine_id)
+                    result["engine"] = _delete_cascade_dep(engine_url, engine_id)
+    tool_result(request_id, json.dumps(result, indent=2))
 
 
 def _cache_automation_payload(queue_id, kind, payload):
@@ -3694,6 +4426,264 @@ def handle_patch_schema(request_id, arguments):
     _rossum_patch(request_id, f"/api/v1/schemas/{schema_id}", body)
 
 
+# POST endpoint, but a pure dry-run (nothing is saved) -> annotated _READ_ONLY so it
+# does not trigger a write-permission prompt.
+@_tool(
+    "rossum_validate_schema",
+    "Dry-run validation of schema content via POST /schemas/validate — checks a datapoint "
+    "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema to catch "
+    "problems without touching the live schema. Returns valid=true/false plus the API's "
+    "error tree, which mirrors the content positionally: content[N] -> "
+    "{'children': {'<child index>': {'<attribute>': ['message', ...]}}}. IMPORTANT: pass "
+    "schema_id whenever validating an edit to an EXISTING schema — engine-binding checks "
+    "(e.g. \"extracted field 'x' is not present among names of engine fields\" on an "
+    "engine-bound queue) only run when the API knows which schema the content belongs to; "
+    "without schema_id those violations pass silently. Create missing engine fields with "
+    "rossum_create_engine_field before adding their captured datapoints.",
+    {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+            "content": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Schema content to validate (the full datapoint tree: sections, fields, multivalues).",
+            },
+            "schema_id": {
+                "type": "integer",
+                "description": "ID of the existing schema this content is destined for. Enables "
+                               "schema-context checks (engine-field coupling on engine-bound "
+                               "queues, Aurora engine checks). Omit only for brand-new schemas.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_validate_schema(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {"content": arguments["content"]}
+    if "schema_id" in arguments:
+        body["id"] = arguments["schema_id"]
+    resp = _http_request(request_id, f"{base_url}/api/v1/schemas/validate",
+                         method="POST", body=body)
+    if resp is None:
+        return
+    # The API returns HTTP 200 either way: {} when valid, an error tree otherwise.
+    result = {"valid": not resp, "errors": resp}
+    tool_result(request_id, json.dumps(result, indent=2))
+
+
+@_tool(
+    "rossum_create_engine_field",
+    "Creates an engine field on a custom extraction engine (POST /engine_fields). On an "
+    "engine-bound queue every captured schema datapoint must have an engine field whose "
+    "'name' equals the datapoint's schema id — and the engine field must exist FIRST. "
+    "To add a field to an engine-bound queue: 1) create the engine field with this tool, "
+    "2) add the matching captured datapoint (rir_field_names: []) to the schema via "
+    "rossum_patch_schema — dry-run the schema edit with rossum_validate_schema (pass "
+    "schema_id) first. 'name' is IMMUTABLE after creation and must be unique per engine; "
+    "to rename, remove the datapoint, delete the field, and recreate both. Seed from the "
+    "pretrained catalog via pre_trained_field_id (see GET /engine_fields/pre_trained_fields "
+    "through rossum_get) for catalog-quality extraction; custom fields (no "
+    "pre_trained_field_id) start cold and learn from confirmed annotations. This is a "
+    "write operation.",
+    {
+        "type": "object",
+        "required": ["engine_id", "name", "label", "type"],
+        "properties": {
+            "engine_id": {
+                "type": "integer",
+                "description": "ID of the engine to attach the field to (from queue.engine URL).",
+            },
+            "name": {
+                "type": "string",
+                "description": "Field name — must equal the schema datapoint id it backs. Only "
+                               "letters, numbers and underscores; unique per engine; immutable "
+                               "after creation.",
+            },
+            "label": {
+                "type": "string",
+                "description": "Human-readable field label.",
+            },
+            "type": {
+                "type": "string",
+                "enum": ["string", "number", "date", "enum"],
+                "description": "Field type.",
+            },
+            "subtype": {
+                "type": "string",
+                "description": "Optional validation subtype. For string: alphanumeric, numeric, "
+                               "country_code, currency_code, iban, vat_number. For number: "
+                               "integer, rate, amount. For date: period_begin, period_end.",
+            },
+            "pre_trained_field_id": {
+                "type": "string",
+                "description": "Pretrained-catalog field to seed from (e.g. 'document_id', "
+                               "'date_issue'). Omit for a custom field that learns from scratch.",
+            },
+            "tabular": {
+                "type": "boolean",
+                "description": "True when the field is a column inside a tabular multivalue "
+                               "(line item). Must match the datapoint's position in the schema. "
+                               "Default false (header field).",
+            },
+            "multiline": {
+                "type": "string",
+                "enum": ["true", "false"],
+                "description": "String enum, not a boolean: 'true' when the field's parent is a "
+                               "tuple (multiline extraction). Default 'false'.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_create_engine_field(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    body = {
+        "engine": _resource_url(base_url, "engines", arguments["engine_id"]),
+        "name": arguments["name"],
+        "label": arguments["label"],
+        "type": arguments["type"],
+    }
+    for key in ("subtype", "pre_trained_field_id", "tabular", "multiline"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_post(request_id, "/api/v1/engine_fields", body)
+
+
+@_tool(
+    "rossum_patch_engine_field",
+    "Updates an engine field (PATCH /engine_fields/{id}). Only provide the fields you want "
+    "to change — unspecified fields are left untouched. 'name' cannot be changed (the API "
+    "rejects it: to rename, remove the schema datapoint, delete the field, and recreate "
+    "both). Keep type/tabular consistent with the schema datapoint the field backs — "
+    "validate schema edits with rossum_validate_schema. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["engine_field_id"],
+        "properties": {
+            "engine_field_id": {
+                "type": "integer",
+                "description": "The engine field ID to update.",
+            },
+            "label": {
+                "type": "string",
+                "description": "New human-readable label.",
+            },
+            "type": {
+                "type": "string",
+                "enum": ["string", "number", "date", "enum"],
+                "description": "New field type — keep in sync with the backing schema datapoint.",
+            },
+            "subtype": {
+                "type": ["string", "null"],
+                "description": "New validation subtype (see rossum_create_engine_field for "
+                               "per-type values); null clears it.",
+            },
+            "pre_trained_field_id": {
+                "type": ["string", "null"],
+                "description": "Change the pretrained-catalog seeding; null detaches from the catalog.",
+            },
+            "tabular": {
+                "type": "boolean",
+                "description": "Whether the field is a column inside a tabular multivalue — must "
+                               "match the datapoint's position in the schema.",
+            },
+            "multiline": {
+                "type": "string",
+                "enum": ["true", "false"],
+                "description": "String enum, not a boolean: 'true' when the field's parent is a tuple.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_engine_field(request_id, arguments):
+    engine_field_id = arguments["engine_field_id"]
+    body = {}
+    for key in ("label", "type", "subtype", "pre_trained_field_id", "tabular", "multiline"):
+        if key in arguments:
+            body[key] = arguments[key]
+    _rossum_patch(request_id, f"/api/v1/engine_fields/{engine_field_id}", body)
+
+
+@_tool(
+    "rossum_delete_engine_field",
+    "Deletes an engine field (DELETE /engine_fields/{id}). ORDER MATTERS: remove the "
+    "matching captured datapoint from the bound schema (rossum_patch_schema) BEFORE "
+    "deleting the engine field — while any schema still references the field's name, the "
+    "API refuses with HTTP 409 conflict_referenced (this tool then reports which schemas "
+    "to edit). This is a destructive operation that cannot be undone; a field created "
+    "without pre_trained_field_id loses its learned extraction state.",
+    {
+        "type": "object",
+        "required": ["engine_field_id"],
+        "properties": {
+            "engine_field_id": {
+                "type": "integer",
+                "description": "The engine field ID to delete.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_DESTRUCTIVE,
+)
+def handle_delete_engine_field(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    engine_field_id = arguments["engine_field_id"]
+    url = f"{base_url}/api/v1/engine_fields/{engine_field_id}"
+    status, resp_body = _delete_returning_status(request_id, url)
+    if status is not None and 200 <= status < 300:
+        tool_result(request_id, f"Engine field {engine_field_id} deleted (HTTP {status}).")
+        return
+    if status == 409:
+        # The API guards the schema<->engine-field coupling: a captured datapoint
+        # with this field's name still exists in a schema bound to the engine.
+        # Enrich the refusal with which schemas to edit (best-effort lookups).
+        message = (
+            f"HTTP 409: {json.dumps(resp_body)}\n"
+            f"A schema still references this engine field — remove the captured "
+            f"datapoint from the schema first (rossum_patch_schema), then re-run "
+            f"rossum_delete_engine_field."
+        )
+        field_status, field = _http_request_status(f"{url}?fields=name,engine")
+        if field_status == 200 and isinstance(field, dict):
+            name = field.get("name")
+            message += f"\nField name: '{name}'."
+            engine_id = _url_to_id(field.get("engine"))
+            if engine_id is not None:
+                queues_status, queues = _http_request_status(
+                    f"{base_url}/api/v1/queues?engine={engine_id}&page_size=100"
+                    f"&fields=schema")
+                if queues_status == 200 and isinstance(queues, dict):
+                    results = queues.get("results", [])
+                    # key=str: _url_to_id falls back to the original string for an
+                    # unparseable URL, and one such entry must not TypeError the
+                    # whole remediation message out of existence.
+                    schemas = sorted({_url_to_id(q["schema"]) for q in results
+                                      if q.get("schema")}, key=str)
+                    if schemas:
+                        message += (f" Schemas bound to engine {engine_id} (look for "
+                                    f"a datapoint with id '{name}'): {schemas}.")
+                        total = (queues.get("pagination") or {}).get("total")
+                        if isinstance(total, int) and total > len(results):
+                            message += (f" NOTE: only the first {len(results)} of "
+                                        f"{total} queues on this engine were checked "
+                                        f"— more schemas may reference the field.")
+        tool_result(request_id, message, is_error=True)
+        return
+    _emit_http_error(request_id, status, resp_body)
+
+
 @_tool(
     "rossum_list_schemas",
     "Lists all schemas in the Rossum organization. Schemas define the data structure "
@@ -4422,6 +5412,194 @@ def handle_upload_document(request_id, arguments):
     }
     if status in ("importing", "created"):
         out["note"] = "Annotation is still importing; poll with rossum_get_annotation."
+    tool_result(request_id, json.dumps(out, indent=2))
+
+
+@_tool(
+    "rossum_import_email",
+    "Simulate an INBOUND email via the async POST /emails/import API — the primitive for "
+    "testing email-driven extensions (Email Body Converter, email_header:*/email_body:* schema "
+    "fields, no-attachment bounce handling, inbox routing). Imports a raw email into an inbox "
+    "and runs the full email.received pipeline (creates the email object + documents + "
+    "annotations and fires hooks), then returns the created email with its annotation/document "
+    "ids. Supply the message one of two ways: (a) raw_message_path — a ready .eml/RFC822 file "
+    "sent as-is; or (b) describe it with subject/from_address/body_text/body_html/attachments "
+    "and the tool assembles a valid MIME message (use body_html to exercise the Email Body "
+    "Converter; omit attachments to exercise no-attachment bounce handling). Write operation; "
+    "admin/organization_group_admin only. Empty 'annotations' is normal for bounce/no-attachment "
+    "scenarios or while the pipeline is still importing — re-check with rossum_get_email. Clean "
+    "up test runs with rossum_delete_annotation.",
+    {
+        "type": "object",
+        "required": ["recipient"],
+        "properties": {
+            "recipient": {
+                "type": "string",
+                "description": "Email address of the destination inbox (must be an inbox within "
+                               "the organization), e.g. the address shown on a queue's inbox.",
+            },
+            "raw_message_path": {
+                "type": "string",
+                "description": "Path (absolute or relative to the server's CWD) to a local "
+                               ".eml/RFC822 file, sent verbatim as raw_message. Mutually "
+                               "exclusive with the subject/body/attachments fields below.",
+            },
+            "subject": {"type": "string", "description": "Subject header (constructed-message mode)."},
+            "from_address": {
+                "type": "string",
+                "description": "From header (constructed-message mode). Default a synthetic "
+                               "sender. The sender receives any automated notifications.",
+            },
+            "to_address": {
+                "type": "string",
+                "description": "To header (constructed-message mode). Default: the recipient.",
+            },
+            "body_text": {
+                "type": "string",
+                "description": "Plain-text body (constructed-message mode).",
+            },
+            "body_html": {
+                "type": "string",
+                "description": "HTML body (constructed-message mode) — use to test the Email "
+                               "Body Converter and email_body:text_html.",
+            },
+            "attachments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Local file paths to attach (constructed-message mode). Omit for "
+                               "a no-attachment email (tests bounce handling).",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata object set on created annotations "
+                               "(sent as a JSON string).",
+            },
+            "values": {
+                "type": "object",
+                "description": "Optional init values set on created annotations (sent as a JSON "
+                               "string). All keys MUST start with 'emails_import:', "
+                               "e.g. {\"emails_import:customer_id\": \"CUST-001\"}.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_import_email(request_id, arguments):
+    import os
+
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    recipient = arguments["recipient"]
+    raw_path = arguments.get("raw_message_path")
+    # Content keys decide constructed-message mode; from/to are modifiers, not content.
+    content_keys = ("subject", "body_text", "body_html", "attachments")
+    modifier_keys = ("from_address", "to_address")
+    has_content = any(arguments.get(k) is not None for k in content_keys)
+    has_any_construct = has_content or any(arguments.get(k) is not None for k in modifier_keys)
+
+    if raw_path and has_any_construct:
+        tool_result(
+            request_id,
+            "Provide either raw_message_path OR the subject/from/to/body/attachment fields, "
+            "not both.",
+            is_error=True,
+        )
+        return
+
+    if raw_path:
+        if not os.path.isfile(raw_path):
+            tool_result(request_id, f"File not found: {raw_path}", is_error=True)
+            return
+        with open(raw_path, "rb") as fh:
+            raw_bytes = fh.read()
+        # Parse the sender/subject out of the supplied .eml so email resolution can narrow.
+        from email import message_from_bytes
+        parsed = message_from_bytes(raw_bytes)
+        from_addr = parsed.get("From")
+        subject = parsed.get("Subject")
+    else:
+        if not has_content:
+            tool_result(
+                request_id,
+                "Provide raw_message_path, or describe the email with at least one of "
+                "subject/body_text/body_html/attachments.",
+                is_error=True,
+            )
+            return
+        from_addr = arguments.get("from_address") or "claude-import@rossum-import.invalid"
+        subject = arguments.get("subject")
+        raw_bytes, err = _build_raw_email(
+            from_addr=from_addr,
+            to_addr=arguments.get("to_address") or recipient,
+            subject=subject,
+            body_text=arguments.get("body_text"),
+            body_html=arguments.get("body_html"),
+            attachment_paths=arguments.get("attachments"),
+        )
+        if err:
+            tool_result(request_id, err, is_error=True)
+            return
+
+    size = len(raw_bytes)
+    if size > 40 * 1024 * 1024:
+        tool_result(
+            request_id,
+            f"Message too large: {size} bytes ({size / 1024 / 1024:.1f} MB); limit is 40 MB.",
+            is_error=True,
+        )
+        return
+
+    metadata = arguments.get("metadata")
+    values = arguments.get("values")
+    email_url = _import_email(
+        request_id, base_url, recipient, raw_bytes, from_addr=from_addr, subject=subject,
+        metadata=json.dumps(metadata) if metadata is not None else None,
+        values=json.dumps(values) if values is not None else None,
+    )
+    if email_url is None:
+        return
+
+    # Annotations populate asynchronously as documents process. Poll briefly; an empty
+    # list is a valid outcome (no-attachment/bounce), not an error. Note: a slow
+    # converter/extraction hook can also create a document + annotation after this
+    # window — including the Email Body Converter, which adds the document async ~10–60s
+    # in — so an empty result here is "nothing yet", not a definitive bounce.
+    email = _poll_until(
+        lambda: _http_request(request_id, email_url),
+        lambda e: bool(e.get("annotations")),
+        timeout=60,
+    )
+    if email is None:
+        return
+
+    annotation_urls = email.get("annotations") or []
+    document_urls = email.get("documents") or []
+    out = {
+        "email_id": _id_from_url(email_url),
+        "email_url": email_url,
+        "recipient": recipient,
+        "subject": email.get("subject"),
+        "type": email.get("type"),
+        "queue": email.get("queue"),
+        "documents": document_urls,
+        "annotations": annotation_urls,
+        "annotation_ids": [_id_from_url(u) for u in annotation_urls],
+        "annotation_counts": email.get("annotation_counts"),
+    }
+    if not annotation_urls:
+        if document_urls:
+            out["note"] = (
+                "Documents were created but annotations are not ready yet; the pipeline is "
+                "still importing. Re-check with rossum_get_email / rossum_get_annotation."
+            )
+        else:
+            out["note"] = (
+                "No documents or annotations on the email. Expected for a no-attachment/bounce "
+                "email; also possible if an async hook (e.g. the Email Body Converter) hasn't "
+                "created the document yet. Re-check with rossum_get_email."
+            )
     tool_result(request_id, json.dumps(out, indent=2))
 
 

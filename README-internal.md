@@ -28,6 +28,19 @@ against the live API. For each tool:
      create_search_index → list_search_indexes (verify) → drop_search_index.
    - Hooks: create_hook → get_hook (verify) → patch_hook (change name/active) →
      get_hook (verify patch) → delete_hook.
+   - Queues: create_queue_from_template (sandbox workspace, e.g. 'EU Demo Template') →
+     get_queue (verify; note the created schema/inbox/engine) → duplicate_queue →
+     patch_queue (rename, toggle automation) → delete_queue the CLONE first (verify the report
+     skips the shared engine as skipped_shared) → delete_queue the original (verify the report
+     says schema/inbox/engine deleted) → get_queue on both (expect 404). Deleting both queues
+     makes the loop self-cleaning — nothing to tidy up after.
+   - Engine fields (needs an engine-bound queue — create_queue_from_template makes one with a
+     fresh engine; do NOT use duplicate_queue, the clone shares the source engine):
+     create_engine_field → rossum_get /engine_fields/{id} (verify) → validate_schema with the
+     matching captured datapoint added to the content + schema_id (expect valid) →
+     patch_schema (add the datapoint) → delete_engine_field (expect the 409 guard naming the
+     schema) → patch_engine_field (change label) → patch_schema (remove the datapoint) →
+     delete_engine_field (expect 204). Tear down via delete_queue (cascade removes the engine).
    - Rules: create_rule (disabled, trivial trigger_condition like "False", attached to a real queue) →
      get_rule (verify) → patch_rule (change name/trigger_condition, keep disabled) →
      get_rule (verify patch) → delete_rule → get_rule (expect 404).
@@ -37,8 +50,16 @@ against the live API. For each tool:
    - update_annotation_content: on a to_review annotation, replace one datapoint value (start→ops→
      cancel is auto-managed), re-read via get_annotation_content to confirm it persisted, then revert
      the value to leave the document unchanged.
-   - Users: create_user (inactive, with a throwaway username) → list_users (verify) →
-     confirm the user appears. No delete endpoint exists, so set is_active=false on creation.
+   - Users: create_user (inactive from birth — is_active=false — with a throwaway
+     username, so a run that dies mid-loop never leaves an account that can log in) →
+     list_users (verify) → patch_user (assign a queue + change role via group_ids;
+     verify with rossum_get /users/{id} that queues/groups replaced and untouched
+     fields survived). Leave the user inactive — no delete tool exists
+     (DELETE /users is not_planned), deactivation IS the cleanup.
+   - Labels: label definitions are UI-managed (no create tool) — create a fixture label
+     via raw POST /labels (rossum_get can list /labels), then apply_labels with
+     add_label_ids on 1-2 disposable annotations → get_annotation (verify labels[]) →
+     apply_labels with remove_label_ids (verify empty) → DELETE /labels/{id} fixture.
 3. Verify that list endpoints handle API pagination correctly (the Rossum API returns paginated
    responses with `pagination.next` URLs — confirm multi-page results are auto-collected).
 4. Record pass/fail for each tool.

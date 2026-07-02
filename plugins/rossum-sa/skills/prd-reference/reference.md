@@ -144,7 +144,7 @@ Before editing extraction-related schema properties, check the queue's binding: 
 - Every captured-looking datapoint (`ui_configuration.type` absent or `captured`) must have a matching engine field (`engine_fields/<schema_id>_[…].json` with `name` == the datapoint `id`). **Create the engine field first** — e.g. an `engine_fields/MyField_[].json` placeholder in the same push, which is safe because engine_field CREATEs run before schema updates in the dependency order — then add the datapoint.
 - Fields with `ui_configuration.type` of `formula`/`data`/`manual`/`reasoning` are exempt; the multivalue container's own `rir_field_names` is also exempt.
 
-Full rules, exact error texts, and the conversion recipe: rossum-sa:rossum-reference → "Extraction Engines".
+Full rules, exact error texts, and the conversion recipe: rossum-sa:rossum-reference → "Extraction Engines". Outside a prd2 tree (or for a quick one-off), the same add/adjust/remove cycle is available as direct MCP tools: `rossum_create_engine_field` / `rossum_patch_engine_field` / `rossum_delete_engine_field`, with `rossum_validate_schema` as the dry-run for the schema edit — remember to `prd2 pull` afterwards if the org is managed as a prd2 project.
 
 #### Deleting objects
 

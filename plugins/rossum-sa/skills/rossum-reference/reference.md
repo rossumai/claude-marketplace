@@ -175,11 +175,12 @@ Supported for upload/export endpoints: `Authorization: Basic {base64(username:pa
 |--------|----------|---------|
 | GET | `/v1/queues` | List queues |
 | POST | `/v1/queues` | Create queue |
+| POST | `/v1/queues/from_template` | Create self-contained queue (+ fresh schema/inbox; fresh engine in next-gen mode, shared generic engine with `?legacy=true`) from a queue template; wrapped by the `rossum_create_queue_from_template` MCP tool |
 | GET | `/v1/queues/{id}` | Retrieve queue |
 | PUT | `/v1/queues/{id}` | Update queue |
-| PATCH | `/v1/queues/{id}` | Partial update |
-| DELETE | `/v1/queues/{id}` | Delete queue |
-| POST | `/v1/queues/{id}/duplicate` | Duplicate queue |
+| PATCH | `/v1/queues/{id}` | Partial update; wrapped by the `rossum_patch_queue` MCP tool |
+| DELETE | `/v1/queues/{id}` | Delete queue — async with a 24h grace window (`?delete_after=0` skips it); wrapped by the `rossum_delete_queue` MCP tool, which also cascade-deletes the queue's sole-referenced schema/inbox/engine |
+| POST | `/v1/queues/{id}/duplicate` | Duplicate queue (deep-copies the schema, fresh inbox, shares the engine); wrapped by the `rossum_duplicate_queue` MCP tool |
 | POST | `/v1/queues/{id}/import` | Import document |
 | GET | `/v1/queues/{id}/export` | Export annotations |
 | GET | `/v1/queues/{id}/counts` | Get counts |
@@ -252,7 +253,7 @@ Schemas define what data gets extracted from documents.
 | PUT | `/v1/schemas/{id}` | Update schema |
 | PATCH | `/v1/schemas/{id}` | Partial update |
 | DELETE | `/v1/schemas/{id}` | Delete schema |
-| POST | `/v1/schemas/validate` | Validate schema |
+| POST | `/v1/schemas/validate` | Validate schema content without saving (dry-run); wrapped by the `rossum_validate_schema` MCP tool — pass the schema `id` in the body to enable engine-binding checks |
 
 ### Schema Content Structure
 
@@ -898,7 +899,7 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 | GET | `/v1/emails/{id}` | Retrieve email |
 | PUT | `/v1/emails/{id}` | Update email |
 | PATCH | `/v1/emails/{id}` | Partial update |
-| POST | `/v1/emails/{id}/import` | Import email |
+| POST | `/v1/emails/import` | Import (simulate an inbound) email — async, fires the `email.received` pipeline; wrapped by the `rossum_import_email` MCP tool |
 | POST | `/v1/emails/{id}/send` | Send email |
 | GET | `/v1/emails/counts` | Get counts |
 
@@ -927,8 +928,8 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 | GET | `/v1/users/{id}` | Retrieve user |
 | GET | `/v1/users/me` | Current user |
 | PUT | `/v1/users/{id}` | Update user |
-| PATCH | `/v1/users/{id}` | Partial update |
-| DELETE | `/v1/users/{id}` | Delete user |
+| PATCH | `/v1/users/{id}` | Partial update (assign queues, change role via `groups`, deactivate); wrapped by the `rossum_patch_user` MCP tool — `queues`/`groups` replace the full list, not additive |
+| DELETE | `/v1/users/{id}` | Delete user (not exposed as a tool — deactivate with `is_active=false` instead) |
 | POST | `/v1/users/{id}/set_password` | Set password |
 
 ### User Fields
@@ -1063,8 +1064,8 @@ All facts in this section were verified against a live org (2026-06-12; the `rea
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | `/v1/engine_fields?engine={id}` | List (cursor-paginated) |
-| POST | `/v1/engine_fields` | Create |
-| GET/PUT/PATCH/DELETE | `/v1/engine_fields/{id}` | Retrieve / update / delete |
+| POST | `/v1/engine_fields` | Create; wrapped by the `rossum_create_engine_field` MCP tool |
+| GET/PUT/PATCH/DELETE | `/v1/engine_fields/{id}` | Retrieve / update / delete; PATCH/DELETE wrapped by the `rossum_patch_engine_field` / `rossum_delete_engine_field` MCP tools. `name` is immutable after creation (PATCH rejects it); DELETE 409s (`conflict_referenced`) while any schema datapoint still uses the name |
 | GET | `/v1/engine_fields/pre_trained_fields` | Catalog of 75 pretrained fields: `name`, `label`, `section`, `type`, `subtype`, `tabular`, `multiline`, `description`. Header fields use plain names (`document_id`, `sender_name`, …); line-item columns use `table_column_*` names. |
 
 ```json
@@ -1097,7 +1098,7 @@ The API enforces these on every schema write and on the queue flip. Exact error 
 
 Consequences:
 
-- **Adding a captured field to an engine-bound queue: create the engine field FIRST**, then add the schema datapoint. The reverse order fails with error 3.
+- **Adding a captured field to an engine-bound queue: create the engine field FIRST** (`rossum_create_engine_field`), then add the schema datapoint (`rossum_patch_schema`; dry-run the edit with `rossum_validate_schema`, passing the schema id) — adding the datapoint first fails the schema write with error 3. Removing one is the mirror image: remove the datapoint first, then `rossum_delete_engine_field` — deleting the engine field first fails with HTTP 409 `conflict_referenced`.
 - Validation timing: `PATCH /queues/{id}` with `engine` enumerates ALL violations at once in `non_field_errors` (wording "should"); schema writes while bound return per-field errors under `content` (wording "must").
 
 ### Converting a queue from the generic engine
@@ -1181,12 +1182,13 @@ Pre-built extraction engines for common document types.
 |--------|----------|---------|
 | GET | `/v1/labels` | List labels |
 | POST | `/v1/labels` | Create label |
+| POST | `/v1/labels/apply` | Bulk add/remove labels on annotations; wrapped by the `rossum_apply_labels` MCP tool |
 | GET | `/v1/labels/{id}` | Retrieve label |
 | PUT | `/v1/labels/{id}` | Update label |
 | PATCH | `/v1/labels/{id}` | Partial update |
 | DELETE | `/v1/labels/{id}` | Delete label |
 
-Labels can be added/removed on annotations for tagging and filtering.
+Labels can be added/removed on annotations for tagging and filtering. Bulk-tagging from a Claude session goes through `rossum_apply_labels` (add + remove in one call, many annotations at once); applying labels from inside a hook uses a raw POST to `/v1/labels/apply` (see the txscript-reference pattern). Either way the label definition must already exist — `apply` attaches, it never creates.
 
 ---
 
