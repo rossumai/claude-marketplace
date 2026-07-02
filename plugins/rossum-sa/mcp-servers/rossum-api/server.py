@@ -417,6 +417,8 @@ def _http_get_typed(request_id, url):
 def _poll_until(fetch, done, *, timeout=180, interval=3):
     """Poll a single resource until ready. Calls fetch() repeatedly until done(result)
     is truthy or *timeout* seconds elapse, sleeping *interval* between attempts.
+    Always fetches at least once, even with timeout<=0 — a caller passing a degenerate
+    timeout gets one real observation instead of a report about a check never made.
 
     Returns the last fetched result. Returns None as soon as fetch() returns None (an
     error it already surfaced). On timeout, returns the last (non-None) result with
@@ -424,15 +426,15 @@ def _poll_until(fetch, done, *, timeout=180, interval=3):
     (done False) from errored (None). Owning the deadline here keeps each poll phase on
     its own budget — callers can't accidentally share one deadline across phases."""
     deadline = time.time() + timeout
-    result = None
-    while time.time() < deadline:
+    while True:
         result = fetch()
         if result is None:
             return None
         if done(result):
             return result
+        if time.time() >= deadline:
+            return result
         time.sleep(interval)
-    return result
 
 
 _EXT_CONTENT_TYPE = {
@@ -2563,7 +2565,10 @@ def handle_get_queue(request_id, arguments):
             },
             "legacy": {
                 "type": "boolean",
-                "description": "Create the queue with legacy engines instead of a next-generation engine (default false).",
+                "description": "Create the queue with legacy engines (default false). In legacy "
+                               "mode NO fresh engine is created — the queue binds the org's "
+                               "shared generic engine (engine stays null), which "
+                               "rossum_delete_queue's cascade correctly leaves alone.",
             },
         },
         "additionalProperties": False,
@@ -2740,9 +2745,10 @@ def handle_duplicate_queue(request_id, arguments):
             },
             "engine_id": {
                 "type": ["integer", "null"],
-                "description": "Bind this extraction engine (null detaches back to the default "
-                               "generic engine). See the queue-engine-binding skill for the full "
-                               "conversion flow.",
+                "description": "Bind this extraction engine. An explicit null only clears the "
+                               "engine field — a full revert to the generic engine requires "
+                               "generic_engine in the same PATCH plus schema restoration; follow "
+                               "the queue-engine-binding skill for the conversion/revert flow.",
             },
         },
         "additionalProperties": False,
@@ -2773,29 +2779,52 @@ def handle_patch_queue(request_id, arguments):
     _rossum_patch(request_id, f"/api/v1/queues/{arguments['queue_id']}", body)
 
 
-def _cascade_delete_dependency(base_url, resource, dep_id):
-    """Delete a queue dependency (schema/inbox) once its owning queue is gone.
+def _delete_cascade_dep(url, dep_id):
+    """DELETE an already-orphan-checked cascade dependency and classify the outcome.
 
-    Only deletes when no other queue references it: re-reads the resource and
-    requires an empty 'queues' list. Returns a result dict for the tool response.
-    Rossum auto-removes the inbox with the queue on current API versions, so
-    'already_gone' is a normal outcome, not an error.
+    Uses _http_request_silent, not _http_request_status: DELETE answers 204 with an
+    empty body, which the latter would misreport as a JSON-decode failure. A 400/409
+    means the async queue deletion hasn't settled server-side yet (e.g. the engine's
+    'engine_attached_to_queues_waiting_for_deletion') — retry once after a beat, then
+    report it as settling rather than a hard failure.
     """
-    url = _resource_url(base_url, resource, dep_id)
-    status, payload = _http_request_status(url)
-    if status == 404:
-        return {"id": dep_id, "result": "already_gone"}
-    if status is None or not (200 <= status < 300) or not isinstance(payload, dict):
-        return {"id": dep_id, "result": f"skipped (could not re-read: HTTP {status})"}
-    if payload.get("queues"):
-        return {"id": dep_id, "result": "skipped_shared",
-                "queues": [_url_to_id(q) for q in payload["queues"]]}
-    # _http_request_silent, not _http_request_status: DELETE answers 204 with an
-    # empty body, which the latter would misreport as a JSON-decode failure.
     status = _http_request_silent(url, method="DELETE")
+    if status in (400, 409):
+        time.sleep(3)
+        status = _http_request_silent(url, method="DELETE")
     if status is not None and 200 <= status < 300:
         return {"id": dep_id, "result": "deleted"}
+    if status == 404:
+        return {"id": dep_id, "result": "already_gone"}
+    if status in (400, 409):
+        return {"id": dep_id, "result": f"skipped (HTTP {status} — the queue's async "
+                                        "deletion is still settling server-side; retry "
+                                        "deleting this object later)"}
     return {"id": dep_id, "result": f"skipped (DELETE failed: HTTP {status})"}
+
+
+def _cascade_delete_dependency(base_url, resource, dep_id, deleted_queue_id):
+    """Delete a queue dependency (schema/inbox) once its owning queue is gone.
+
+    Only deletes when no other queue references it. Sharedness is re-read from the
+    LIST endpoint (?id=) rather than the retrieve: the schemas list serializer omits
+    the potentially huge 'content' tree, and a zero-hit list doubles as the
+    already-gone check. The just-deleted queue is ignored if the back-reference list
+    hasn't caught up with the deletion yet. Returns a result dict for the tool
+    response. Rossum auto-removes the inbox with the queue on current API versions,
+    so 'already_gone' is a normal outcome, not an error.
+    """
+    status, payload = _http_request_status(f"{base_url}/api/v1/{resource}?id={dep_id}")
+    if status is None or not (200 <= status < 300) or not isinstance(payload, dict):
+        return {"id": dep_id, "result": f"skipped (could not re-read: HTTP {status})"}
+    results = payload.get("results", [])
+    if not results:
+        return {"id": dep_id, "result": "already_gone"}
+    sharers = [_url_to_id(q) for q in (results[0].get("queues") or [])
+               if _url_to_id(q) != deleted_queue_id]
+    if sharers:
+        return {"id": dep_id, "result": "skipped_shared", "queues": sharers}
+    return _delete_cascade_dep(_resource_url(base_url, resource, dep_id), dep_id)
 
 
 @_tool(
@@ -2839,13 +2868,15 @@ def handle_delete_queue(request_id, arguments):
     cascade = arguments.get("cascade", True)
     queue_url = _resource_url(base_url, "queues", queue_id)
 
-    # Capture dependency references before the queue disappears.
-    queue = _http_request(request_id, queue_url)
-    if queue is None:
-        return
-    schema_id = _url_to_id(queue.get("schema"))
-    inbox_id = _url_to_id(queue.get("inbox"))
-    engine_id = _url_to_id(queue.get("engine"))
+    schema_id = inbox_id = engine_id = None
+    if cascade:
+        # Capture dependency references before the queue disappears.
+        queue = _http_request(request_id, queue_url)
+        if queue is None:
+            return
+        schema_id = _url_to_id(queue.get("schema"))
+        inbox_id = _url_to_id(queue.get("inbox"))
+        engine_id = _url_to_id(queue.get("engine"))
 
     status = _http_request(request_id, f"{base_url}/api/v1/queues/{queue_id}?delete_after=0",
                            method="DELETE", parse_json=False)
@@ -2870,35 +2901,36 @@ def handle_delete_queue(request_id, arguments):
 
     if cascade:
         if schema_id is not None:
-            result["schema"] = _cascade_delete_dependency(base_url, "schemas", schema_id)
+            result["schema"] = _cascade_delete_dependency(
+                base_url, "schemas", schema_id, queue_id)
         if inbox_id is not None:
-            result["inbox"] = _cascade_delete_dependency(base_url, "inboxes", inbox_id)
+            result["inbox"] = _cascade_delete_dependency(
+                base_url, "inboxes", inbox_id, queue_id)
         if engine_id is not None:
             # Engines have no back-reference list; a queues-by-engine filter tells
-            # us whether any other queue still uses it.
+            # us whether any other queue still uses it. Fail closed: an unreadable
+            # or total-less response skips the delete rather than assuming 0 users.
             status_q, payload = _http_request_status(
-                f"{base_url}/api/v1/queues?engine={engine_id}&page_size=1")
-            if status_q is not None and 200 <= status_q < 300 and isinstance(payload, dict):
-                remaining = payload.get("pagination", {}).get("total", 0)
-                if remaining == 0:
+                f"{base_url}/api/v1/queues?engine={engine_id}&page_size=100")
+            total = (payload.get("pagination", {}).get("total")
+                     if status_q is not None and 200 <= status_q < 300
+                     and isinstance(payload, dict) else None)
+            if total is None:
+                result["engine"] = {"id": engine_id,
+                                    "result": f"skipped (could not check usage: HTTP {status_q})"}
+            else:
+                # Ignore the just-deleted queue if the filter still counts it.
+                listed = [q.get("id") for q in payload.get("results", [])]
+                others = total - (1 if queue_id in listed else 0)
+                if others > 0:
+                    result["engine"] = {"id": engine_id, "result": "skipped_shared",
+                                        "queues_still_using_it": others}
+                else:
                     # Internal cascade step, not a tool surface (like the schema/inbox
                     # deletes above) — the engine URL is built outside the HTTP call so
                     # the coverage scanner doesn't register DELETE /engines as covered.
                     engine_url = _resource_url(base_url, "engines", engine_id)
-                    code = _http_request_silent(engine_url, method="DELETE")
-                    if code is not None and 200 <= code < 300:
-                        result["engine"] = {"id": engine_id, "result": "deleted"}
-                    elif code == 404:
-                        result["engine"] = {"id": engine_id, "result": "already_gone"}
-                    else:
-                        result["engine"] = {"id": engine_id,
-                                            "result": f"skipped (DELETE failed: HTTP {code})"}
-                else:
-                    result["engine"] = {"id": engine_id, "result": "skipped_shared",
-                                        "queues_still_using_it": remaining}
-            else:
-                result["engine"] = {"id": engine_id,
-                                    "result": f"skipped (could not check usage: HTTP {status_q})"}
+                    result["engine"] = _delete_cascade_dep(engine_url, engine_id)
     tool_result(request_id, json.dumps(result, indent=2))
 
 
