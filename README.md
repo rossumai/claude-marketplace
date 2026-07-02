@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 13 reference packs · 80 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 13 reference packs · 84 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -156,6 +156,10 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_workspace` | Get full workspace details |
 | `rossum_list_queues` | List queues (filter by workspace, status) |
 | `rossum_get_queue` | Get full queue details |
+| `rossum_create_queue_from_template` | ✏️ Provision a self-contained queue from a queue template (creates a fresh schema and inbox with it, plus a fresh engine in the default next-gen mode) |
+| `rossum_duplicate_queue` | ✏️ Clone a queue (deep-copies the schema, fresh inbox, shares the source's engine; `copy_*` switches for hooks/rules/permissions/…) |
+| `rossum_patch_queue` | ✏️ Update a queue (name, automation settings, UI settings, workflow bindings, workspace/schema/hooks/users/engine references) |
+| `rossum_delete_queue` | ⚠️ Delete a queue immediately (skips the 24h grace window), poll until gone, then cascade-delete its now-orphaned schema/inbox/engine unless shared with another queue |
 | `rossum_get_automation_insights` | Queue automation analytics: rates, blockers, per-field statistics (compact digest by default, full payload cached) |
 | `rossum_get_automation_projections` | Simulate automation at recalibrated confidence thresholds; degrades gracefully when the queue has too little reviewed data |
 | `rossum_get_schema` | Get queue schema (datapoints, sections, tables) |

@@ -175,11 +175,12 @@ Supported for upload/export endpoints: `Authorization: Basic {base64(username:pa
 |--------|----------|---------|
 | GET | `/v1/queues` | List queues |
 | POST | `/v1/queues` | Create queue |
+| POST | `/v1/queues/from_template` | Create self-contained queue (+ fresh schema/inbox; fresh engine in next-gen mode, shared generic engine with `?legacy=true`) from a queue template; wrapped by the `rossum_create_queue_from_template` MCP tool |
 | GET | `/v1/queues/{id}` | Retrieve queue |
 | PUT | `/v1/queues/{id}` | Update queue |
-| PATCH | `/v1/queues/{id}` | Partial update |
-| DELETE | `/v1/queues/{id}` | Delete queue |
-| POST | `/v1/queues/{id}/duplicate` | Duplicate queue |
+| PATCH | `/v1/queues/{id}` | Partial update; wrapped by the `rossum_patch_queue` MCP tool |
+| DELETE | `/v1/queues/{id}` | Delete queue — async with a 24h grace window (`?delete_after=0` skips it); wrapped by the `rossum_delete_queue` MCP tool, which also cascade-deletes the queue's sole-referenced schema/inbox/engine |
+| POST | `/v1/queues/{id}/duplicate` | Duplicate queue (deep-copies the schema, fresh inbox, shares the engine); wrapped by the `rossum_duplicate_queue` MCP tool |
 | POST | `/v1/queues/{id}/import` | Import document |
 | GET | `/v1/queues/{id}/export` | Export annotations |
 | GET | `/v1/queues/{id}/counts` | Get counts |

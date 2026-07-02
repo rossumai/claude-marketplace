@@ -28,6 +28,12 @@ against the live API. For each tool:
      create_search_index → list_search_indexes (verify) → drop_search_index.
    - Hooks: create_hook → get_hook (verify) → patch_hook (change name/active) →
      get_hook (verify patch) → delete_hook.
+   - Queues: create_queue_from_template (sandbox workspace, e.g. 'EU Demo Template') →
+     get_queue (verify; note the created schema/inbox/engine) → duplicate_queue →
+     patch_queue (rename, toggle automation) → delete_queue the CLONE first (verify the report
+     skips the shared engine as skipped_shared) → delete_queue the original (verify the report
+     says schema/inbox/engine deleted) → get_queue on both (expect 404). Deleting both queues
+     makes the loop self-cleaning — nothing to tidy up after.
    - Rules: create_rule (disabled, trivial trigger_condition like "False", attached to a real queue) →
      get_rule (verify) → patch_rule (change name/trigger_condition, keep disabled) →
      get_rule (verify patch) → delete_rule → get_rule (expect 404).
