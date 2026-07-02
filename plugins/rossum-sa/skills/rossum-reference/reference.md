@@ -1098,7 +1098,7 @@ The API enforces these on every schema write and on the queue flip. Exact error 
 
 Consequences:
 
-- **Adding a captured field to an engine-bound queue: create the engine field FIRST** (`rossum_create_engine_field`), then add the schema datapoint (`rossum_patch_schema`; dry-run the edit with `rossum_validate_schema`, passing the schema id). Removing one is the mirror image: remove the datapoint first, then `rossum_delete_engine_field` — the reverse order fails (error 3 / HTTP 409 `conflict_referenced`).
+- **Adding a captured field to an engine-bound queue: create the engine field FIRST** (`rossum_create_engine_field`), then add the schema datapoint (`rossum_patch_schema`; dry-run the edit with `rossum_validate_schema`, passing the schema id) — adding the datapoint first fails the schema write with error 3. Removing one is the mirror image: remove the datapoint first, then `rossum_delete_engine_field` — deleting the engine field first fails with HTTP 409 `conflict_referenced`.
 - Validation timing: `PATCH /queues/{id}` with `engine` enumerates ALL violations at once in `non_field_errors` (wording "should"); schema writes while bound return per-field errors under `content` (wording "must").
 
 ### Converting a queue from the generic engine

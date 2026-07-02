@@ -1075,22 +1075,30 @@ def test_delete_engine_field_success(monkeypatch):
     assert not emitted[-1]["result"].get("isError")
 
 
-def test_delete_engine_field_409_guard_names_schemas(monkeypatch):
-    calls = []
+def _delete_409_responder(calls, *, field=None, queues=None):
+    """Responder for the delete-engine-field 409 path with pluggable lookups."""
+    field = field if field is not None else {
+        "name": "doc_ref", "engine": f"{BASE}/api/v1/engines/8"}
+    queues = queues if queues is not None else {
+        "pagination": {"total": 1},
+        "results": [{"schema": f"{BASE}/api/v1/schemas/44"}]}
 
     def status(url, method="GET", body=None):
         calls.append((method, url))
         if method == "DELETE":
             return 409, {"detail": "Cannot delete engine field used in a schema.",
                          "code": "conflict_referenced"}
-        if url.endswith("/api/v1/engine_fields/3"):
-            return 200, {"id": 3, "name": "doc_ref",
-                         "engine": f"{BASE}/api/v1/engines/8"}
+        if "/api/v1/engine_fields/3?fields=name,engine" in url:
+            return 200, field
         if "/api/v1/queues?engine=8" in url:
-            return 200, {"results": [{"id": 7, "schema": f"{BASE}/api/v1/schemas/44"}]}
+            return 200, queues
         raise AssertionError(f"unexpected request {method} {url}")
+    return status
 
-    monkeypatch.setattr(server, "_http_request_status", status)
+
+def test_delete_engine_field_409_guard_names_schemas(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_http_request_status", _delete_409_responder(calls))
     _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
                              {"engine_field_id": 3},
                              lambda url, method, body: None)
@@ -1100,7 +1108,79 @@ def test_delete_engine_field_409_guard_names_schemas(monkeypatch):
     assert "rossum_patch_schema" in text          # remediation order is spelled out
     assert "'doc_ref'" in text                    # field name resolved
     assert "44" in text                           # offending schema candidates listed
+    assert "only the first" not in text           # single full page -> no truncation note
     assert calls[0][0] == "DELETE"                # no pre-flight reads before the DELETE
+
+
+def test_delete_engine_field_409_flags_truncated_queue_page(monkeypatch):
+    queues = {"pagination": {"total": 150},
+              "results": [{"schema": f"{BASE}/api/v1/schemas/44"}] * 100}
+    monkeypatch.setattr(server, "_http_request_status",
+                        _delete_409_responder([], queues=queues))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
+                             {"engine_field_id": 3},
+                             lambda url, method, body: None)
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "only the first 100 of 150 queues" in text
+
+
+def test_delete_engine_field_409_survives_unparseable_schema_url(monkeypatch):
+    # one odd schema URL must not TypeError the whole remediation (mixed int/str sort)
+    queues = {"pagination": {"total": 2},
+              "results": [{"schema": f"{BASE}/api/v1/schemas/44"},
+                          {"schema": f"{BASE}/api/v1/schemas/oddball/"}]}
+    monkeypatch.setattr(server, "_http_request_status",
+                        _delete_409_responder([], queues=queues))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
+                             {"engine_field_id": 3},
+                             lambda url, method, body: None)
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "44" in text
+    assert "Internal error" not in text
+
+
+def test_delete_engine_field_409_skips_queue_lookup_without_engine(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_http_request_status",
+                        _delete_409_responder(calls, field={"name": "doc_ref",
+                                                            "engine": None}))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
+                             {"engine_field_id": 3},
+                             lambda url, method, body: None)
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "'doc_ref'" in text                    # name still reported
+    assert "engine=None" not in "".join(u for _, u in calls)
+    assert all("/queues?" not in u for _, u in calls)
+
+
+def test_delete_engine_field_transport_failure_not_reported_as_http(monkeypatch):
+    monkeypatch.setattr(server, "_http_request_status",
+                        lambda url, method="GET", body=None: (None, "URLError: timed out"))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
+                             {"engine_field_id": 3},
+                             lambda url, method, body: None)
+    result = emitted[-1]["result"]
+    assert result.get("isError")
+    text = result["content"][0]["text"]
+    assert "HTTP None" not in text                # transport failure, not an API answer
+    assert text.startswith("Error:")
+    assert "may or may not have reached" in text
+
+
+def test_delete_engine_field_401_invalidates_and_keeps_body(monkeypatch):
+    monkeypatch.setattr(server, "_http_request_status",
+                        lambda url, method="GET", body=None:
+                        (401, {"detail": "Token belongs to another organization."}))
+    invalidated = []
+    monkeypatch.setattr(server, "_invalidate_connection",
+                        lambda: invalidated.append(True))
+    _, emitted = run_handler(monkeypatch, "rossum_delete_engine_field",
+                             {"engine_field_id": 3},
+                             lambda url, method, body: None)
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert invalidated
+    assert "rossum_set_token" in text
+    assert "another organization" in text         # API error detail preserved
 
 
 def test_engine_field_bundle_annotations():

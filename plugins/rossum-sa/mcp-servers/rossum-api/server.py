@@ -344,6 +344,36 @@ def _http_request_status(url, *, method="GET", body=None):
         return None, f"{type(e).__name__}: {e}"
 
 
+def _emit_http_error(request_id, status, body):
+    """Send the standard error tool_result for a (status, body) pair from
+    _http_request_status. Mirrors _http_request's ladder so status-aware handlers
+    that intercept specific codes (e.g. the engine-field 409 guard) can delegate
+    every other outcome here instead of re-implementing it: a transport failure
+    (status None) is labeled 'Error:' and flagged as possibly-not-delivered — NOT
+    'HTTP None:' as if the server had answered; 401 invalidates the cached
+    connection and keeps the API's error detail; anything else is 'HTTP {status}'.
+    """
+    detail = body if isinstance(body, str) else json.dumps(body)
+    if status is None:
+        tool_result(
+            request_id,
+            f"Error: {detail} (transport failure — the request may or may not "
+            f"have reached the server; re-check the resource state before retrying).",
+            is_error=True,
+        )
+        return
+    if status == 401:
+        _invalidate_connection()
+        tool_result(
+            request_id,
+            f"Authentication failed (HTTP 401). Token may be expired. "
+            f"Call rossum_set_token to re-authenticate.\n{detail}",
+            is_error=True,
+        )
+        return
+    tool_result(request_id, f"HTTP {status}: {detail}", is_error=True)
+
+
 def _delete_returning_status(request_id, url):
     """DELETE returning (status_code, parsed_body) without emitting a tool_result.
 
@@ -2798,11 +2828,12 @@ def handle_patch_queue(request_id, arguments):
 def _delete_cascade_dep(url, dep_id):
     """DELETE an already-orphan-checked cascade dependency and classify the outcome.
 
-    Uses _http_request_silent, not _http_request_status: DELETE answers 204 with an
-    empty body, which the latter would misreport as a JSON-decode failure. A 400/409
-    means the async queue deletion hasn't settled server-side yet (e.g. the engine's
-    'engine_attached_to_queues_waiting_for_deletion') — retry once after a beat, then
-    report it as settling rather than a hard failure.
+    Uses _http_request_silent: cleanup is best-effort and must never emit a
+    tool_result mid-cascade, its 30s timeout suits the retry loop, and only the
+    status code matters (the 400/409 settling classification needs no body). A
+    400/409 means the async queue deletion hasn't settled server-side yet (e.g. the
+    engine's 'engine_attached_to_queues_waiting_for_deletion') — retry once after a
+    beat, then report it as settling rather than a hard failure.
     """
     status = _http_request_silent(url, method="DELETE")
     if status in (400, 409):
@@ -4476,15 +4507,6 @@ def handle_delete_engine_field(request_id, arguments):
     if status is not None and 200 <= status < 300:
         tool_result(request_id, f"Engine field {engine_field_id} deleted (HTTP {status}).")
         return
-    if status == 401:
-        _invalidate_connection()
-        tool_result(
-            request_id,
-            "Authentication failed (HTTP 401). Token may be expired. "
-            "Call rossum_set_token to re-authenticate.",
-            is_error=True,
-        )
-        return
     if status == 409:
         # The API guards the schema<->engine-field coupling: a captured datapoint
         # with this field's name still exists in a schema bound to the engine.
@@ -4495,23 +4517,33 @@ def handle_delete_engine_field(request_id, arguments):
             f"datapoint from the schema first (rossum_patch_schema), then re-run "
             f"rossum_delete_engine_field."
         )
-        field_status, field = _http_request_status(url)
+        field_status, field = _http_request_status(f"{url}?fields=name,engine")
         if field_status == 200 and isinstance(field, dict):
+            name = field.get("name")
+            message += f"\nField name: '{name}'."
             engine_id = _url_to_id(field.get("engine"))
-            message += (f"\nField name: '{field.get('name')}' "
-                        f"(engine {engine_id}).")
-            queues_status, queues = _http_request_status(
-                f"{base_url}/api/v1/queues?engine={engine_id}&page_size=100"
-                f"&fields=id,name,schema")
-            if queues_status == 200 and isinstance(queues, dict):
-                schemas = sorted({_url_to_id(q["schema"]) for q in queues.get("results", [])
-                                  if q.get("schema")})
-                if schemas:
-                    message += (f" Schemas bound to this engine (look for a datapoint "
-                                f"with id '{field.get('name')}'): {schemas}.")
+            if engine_id is not None:
+                queues_status, queues = _http_request_status(
+                    f"{base_url}/api/v1/queues?engine={engine_id}&page_size=100"
+                    f"&fields=schema")
+                if queues_status == 200 and isinstance(queues, dict):
+                    results = queues.get("results", [])
+                    # key=str: _url_to_id falls back to the original string for an
+                    # unparseable URL, and one such entry must not TypeError the
+                    # whole remediation message out of existence.
+                    schemas = sorted({_url_to_id(q["schema"]) for q in results
+                                      if q.get("schema")}, key=str)
+                    if schemas:
+                        message += (f" Schemas bound to engine {engine_id} (look for "
+                                    f"a datapoint with id '{name}'): {schemas}.")
+                        total = (queues.get("pagination") or {}).get("total")
+                        if isinstance(total, int) and total > len(results):
+                            message += (f" NOTE: only the first {len(results)} of "
+                                        f"{total} queues on this engine were checked "
+                                        f"— more schemas may reference the field.")
         tool_result(request_id, message, is_error=True)
         return
-    tool_result(request_id, f"HTTP {status}: {json.dumps(resp_body)}", is_error=True)
+    _emit_http_error(request_id, status, resp_body)
 
 
 @_tool(
