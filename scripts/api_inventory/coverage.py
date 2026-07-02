@@ -30,7 +30,7 @@ _RESOURCE_URL_BUILDER = re.compile(r'_resource_urls?\(\s*[^,]+,\s*["\']([a-zA-Z_
 # in the call args — it lives in a `url = f"...{path}..."` assignment in the handler,
 # and the method is fixed by the helper itself (not a method="X" kwarg). For these we
 # read the path from the url-building assignment in the same @_tool block.
-_URL_BUILDER_HELPERS = {"_paginate_search": "POST"}
+_URL_BUILDER_HELPERS = {"_paginate_search": "POST", "_delete_returning_status": "DELETE"}
 # Fixed-endpoint helpers: internal helpers that always call a known endpoint and don't
 # expose the URL as a call arg. Map helper_name -> (method, /api/v1/... path).
 _FIXED_ENDPOINT_HELPERS: dict[str, tuple[str, str]] = {

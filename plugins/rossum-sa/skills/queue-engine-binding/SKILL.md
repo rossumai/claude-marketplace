@@ -11,6 +11,8 @@ allowed-tools: Read, Write, Grep, Glob, Bash
 
 Reconciles schema datapoints ↔ engine fields ↔ queue binding, then sets `queue.engine`. Background and binding rules: `rossum-sa:rossum-reference` → Extraction Engines.
 
+> **Scope**: this skill covers bind-level mode changes (convert/greenfield/attach/revert). For incrementally adding, adjusting, or removing a single field on an ALREADY engine-bound queue, use the MCP tools directly instead — `rossum_create_engine_field` → `rossum_patch_schema` to add (engine field first; dry-run the schema edit with `rossum_validate_schema` + schema id), the reverse order to remove (`rossum_delete_engine_field` 409s while the datapoint exists), `rossum_patch_engine_field` to adjust.
+
 ## Safety
 
 - **Every mode defaults to dry-run.** Show the user the printed plan (engine fields to create, schema changes) and get explicit confirmation before re-running with `--execute`. Never skip this for production queues.

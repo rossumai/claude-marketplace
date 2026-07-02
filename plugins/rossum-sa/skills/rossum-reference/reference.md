@@ -253,7 +253,7 @@ Schemas define what data gets extracted from documents.
 | PUT | `/v1/schemas/{id}` | Update schema |
 | PATCH | `/v1/schemas/{id}` | Partial update |
 | DELETE | `/v1/schemas/{id}` | Delete schema |
-| POST | `/v1/schemas/validate` | Validate schema |
+| POST | `/v1/schemas/validate` | Validate schema content without saving (dry-run); wrapped by the `rossum_validate_schema` MCP tool — pass the schema `id` in the body to enable engine-binding checks |
 
 ### Schema Content Structure
 
@@ -1064,8 +1064,8 @@ All facts in this section were verified against a live org (2026-06-12; the `rea
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | `/v1/engine_fields?engine={id}` | List (cursor-paginated) |
-| POST | `/v1/engine_fields` | Create |
-| GET/PUT/PATCH/DELETE | `/v1/engine_fields/{id}` | Retrieve / update / delete |
+| POST | `/v1/engine_fields` | Create; wrapped by the `rossum_create_engine_field` MCP tool |
+| GET/PUT/PATCH/DELETE | `/v1/engine_fields/{id}` | Retrieve / update / delete; PATCH/DELETE wrapped by the `rossum_patch_engine_field` / `rossum_delete_engine_field` MCP tools. `name` is immutable after creation (PATCH rejects it); DELETE 409s (`conflict_referenced`) while any schema datapoint still uses the name |
 | GET | `/v1/engine_fields/pre_trained_fields` | Catalog of 75 pretrained fields: `name`, `label`, `section`, `type`, `subtype`, `tabular`, `multiline`, `description`. Header fields use plain names (`document_id`, `sender_name`, …); line-item columns use `table_column_*` names. |
 
 ```json
@@ -1098,7 +1098,7 @@ The API enforces these on every schema write and on the queue flip. Exact error 
 
 Consequences:
 
-- **Adding a captured field to an engine-bound queue: create the engine field FIRST**, then add the schema datapoint. The reverse order fails with error 3.
+- **Adding a captured field to an engine-bound queue: create the engine field FIRST** (`rossum_create_engine_field`), then add the schema datapoint (`rossum_patch_schema`; dry-run the edit with `rossum_validate_schema`, passing the schema id) — adding the datapoint first fails the schema write with error 3. Removing one is the mirror image: remove the datapoint first, then `rossum_delete_engine_field` — deleting the engine field first fails with HTTP 409 `conflict_referenced`.
 - Validation timing: `PATCH /queues/{id}` with `engine` enumerates ALL violations at once in `non_field_errors` (wording "should"); schema writes while bound return per-field errors under `content` (wording "must").
 
 ### Converting a queue from the generic engine

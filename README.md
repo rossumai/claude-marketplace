@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 13 reference packs · 84 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+16 skills · 13 reference packs · 88 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -164,7 +164,11 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_automation_projections` | Simulate automation at recalibrated confidence thresholds; degrades gracefully when the queue has too little reviewed data |
 | `rossum_get_schema` | Get queue schema (datapoints, sections, tables) |
 | `rossum_patch_schema` | ✏️ Update a schema (name, content, metadata) |
+| `rossum_validate_schema` | Dry-run schema content validation (`POST /schemas/validate` — non-mutating despite being a POST; pass `schema_id` to enable engine-binding checks) |
 | `rossum_list_schemas` | List all schemas |
+| `rossum_create_engine_field` | ✏️ Create an engine field on a custom extraction engine — create it BEFORE adding the matching captured datapoint to the schema |
+| `rossum_patch_engine_field` | ✏️ Update an engine field (label, type, subtype, pretrained seeding; `name` is immutable) |
+| `rossum_delete_engine_field` | ⚠️ Delete an engine field — remove the matching schema datapoint first (the API 409s while referenced; the tool reports which schemas to edit) |
 | `rossum_list_hooks` | List hooks/extensions (filter by queue, active) |
 | `rossum_get_hook` | Get full hook details including code and config |
 | `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) |

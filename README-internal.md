@@ -34,6 +34,13 @@ against the live API. For each tool:
      skips the shared engine as skipped_shared) → delete_queue the original (verify the report
      says schema/inbox/engine deleted) → get_queue on both (expect 404). Deleting both queues
      makes the loop self-cleaning — nothing to tidy up after.
+   - Engine fields (needs an engine-bound queue — create_queue_from_template makes one with a
+     fresh engine; do NOT use duplicate_queue, the clone shares the source engine):
+     create_engine_field → rossum_get /engine_fields/{id} (verify) → validate_schema with the
+     matching captured datapoint added to the content + schema_id (expect valid) →
+     patch_schema (add the datapoint) → delete_engine_field (expect the 409 guard naming the
+     schema) → patch_engine_field (change label) → patch_schema (remove the datapoint) →
+     delete_engine_field (expect 204). Tear down via delete_queue (cascade removes the engine).
    - Rules: create_rule (disabled, trivial trigger_condition like "False", attached to a real queue) →
      get_rule (verify) → patch_rule (change name/trigger_condition, keep disabled) →
      get_rule (verify patch) → delete_rule → get_rule (expect 404).

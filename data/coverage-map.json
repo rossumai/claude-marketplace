@@ -21,6 +21,13 @@
       "rossum_delete_email_template"
     ]
   },
+  "DELETE /engine_fields/{engineFieldID}": {
+    "decision": "covered",
+    "summary": "Delete engine field",
+    "tools": [
+      "rossum_delete_engine_field"
+    ]
+  },
   "DELETE /hooks/{hookID}": {
     "decision": "covered",
     "summary": "Delete hook",
@@ -272,6 +279,13 @@
     "reason": "niche",
     "summary": "Partial update email thread"
   },
+  "PATCH /engine_fields/{engineFieldID}": {
+    "decision": "covered",
+    "summary": "Partial update engine field",
+    "tools": [
+      "rossum_patch_engine_field"
+    ]
+  },
   "PATCH /hooks/{hookID}": {
     "decision": "covered",
     "summary": "Partial update hook",
@@ -325,18 +339,18 @@
     "reason": "operator/validation-UI",
     "summary": "Export annotations (cross-queue, POST)"
   },
-  "POST /annotations/search": {
-    "decision": "covered",
-    "summary": "Search annotations",
-    "tools": [
-      "rossum_search_annotations_advanced"
-    ]
-  },
   "POST /annotations/purge_deleted": {
     "decision": "covered",
     "summary": "Permanently purge soft-deleted annotations",
     "tools": [
       "rossum_delete_annotation"
+    ]
+  },
+  "POST /annotations/search": {
+    "decision": "covered",
+    "summary": "Search annotations",
+    "tools": [
+      "rossum_search_annotations_advanced"
     ]
   },
   "POST /annotations/suggested_recipients": {
@@ -562,6 +576,13 @@
       "rossum_import_email"
     ]
   },
+  "POST /engine_fields": {
+    "decision": "covered",
+    "summary": "Create engine field",
+    "tools": [
+      "rossum_create_engine_field"
+    ]
+  },
   "POST /hooks": {
     "decision": "covered",
     "summary": "Create hook",
@@ -676,6 +697,13 @@
       "rossum_create_rule"
     ]
   },
+  "POST /schemas/validate": {
+    "decision": "covered",
+    "summary": "Validate schema",
+    "tools": [
+      "rossum_validate_schema"
+    ]
+  },
   "POST /suggested_edits": {
     "decision": "not_planned",
     "reason": "niche",
@@ -735,6 +763,11 @@
     "decision": "not_planned",
     "reason": "niche",
     "summary": "Update email thread"
+  },
+  "PUT /engine_fields/{engineFieldID}": {
+    "decision": "not_planned",
+    "reason": "partial update covered by rossum_patch_engine_field; full-PUT replace clobbers omitted fields",
+    "summary": "Update engine field"
   },
   "PUT /hooks/{hookID}": {
     "decision": "not_planned",
