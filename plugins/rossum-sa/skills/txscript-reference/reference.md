@@ -319,7 +319,7 @@ Gotchas (each one cost real iterations in past sessions):
 
 ## Applying Labels to Annotations
 
-Labels are **not** applied via the hook response. There's no `labels` field on `hook_response()` and no TxScript helper for them — applying or removing a label requires an explicit HTTP `POST` to the `/v1/labels/apply` endpoint from inside the hook.
+Labels are **not** applied via the hook response. There's no `labels` field on `hook_response()` and no TxScript helper for them — applying or removing a label requires an explicit HTTP `POST` to the `/v1/labels/apply` endpoint from inside the hook. (That's the *hook-runtime* pattern below; when tagging annotations directly from a Claude session, use the `rossum_apply_labels` MCP tool instead of a raw request.)
 
 The hook payload already carries everything you need: `payload["base_url"]` for the org URL, `payload["rossum_authorization_token"]` for the auth, and `payload["annotation"]["url"]` for the annotation to label.
 

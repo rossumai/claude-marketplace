@@ -324,6 +324,13 @@
     "reason": "niche",
     "summary": "Partial update suggested edit"
   },
+  "PATCH /users/{userID}": {
+    "decision": "covered",
+    "summary": "Partial update user",
+    "tools": [
+      "rossum_patch_user"
+    ]
+  },
   "POST /annotations": {
     "decision": "not_planned",
     "reason": "advanced/pipeline",
@@ -624,6 +631,13 @@
     "summary": "Test hook",
     "tools": [
       "rossum_test_hook"
+    ]
+  },
+  "POST /labels/apply": {
+    "decision": "covered",
+    "summary": "Add/remove annotation labels",
+    "tools": [
+      "rossum_apply_labels"
     ]
   },
   "POST /organization_groups/{organizationGroupID}/billing_stats": {

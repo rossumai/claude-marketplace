@@ -928,8 +928,8 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 | GET | `/v1/users/{id}` | Retrieve user |
 | GET | `/v1/users/me` | Current user |
 | PUT | `/v1/users/{id}` | Update user |
-| PATCH | `/v1/users/{id}` | Partial update |
-| DELETE | `/v1/users/{id}` | Delete user |
+| PATCH | `/v1/users/{id}` | Partial update (assign queues, change role via `groups`, deactivate); wrapped by the `rossum_patch_user` MCP tool — `queues`/`groups` replace the full list, not additive |
+| DELETE | `/v1/users/{id}` | Delete user (not exposed as a tool — deactivate with `is_active=false` instead) |
 | POST | `/v1/users/{id}/set_password` | Set password |
 
 ### User Fields
@@ -1182,12 +1182,13 @@ Pre-built extraction engines for common document types.
 |--------|----------|---------|
 | GET | `/v1/labels` | List labels |
 | POST | `/v1/labels` | Create label |
+| POST | `/v1/labels/apply` | Bulk add/remove labels on annotations; wrapped by the `rossum_apply_labels` MCP tool |
 | GET | `/v1/labels/{id}` | Retrieve label |
 | PUT | `/v1/labels/{id}` | Update label |
 | PATCH | `/v1/labels/{id}` | Partial update |
 | DELETE | `/v1/labels/{id}` | Delete label |
 
-Labels can be added/removed on annotations for tagging and filtering.
+Labels can be added/removed on annotations for tagging and filtering. Bulk-tagging from a Claude session goes through `rossum_apply_labels` (add + remove in one call, many annotations at once); applying labels from inside a hook uses a raw POST to `/v1/labels/apply` (see the txscript-reference pattern). Either way the label definition must already exist — `apply` attaches, it never creates.
 
 ---
 

@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.31.0"
+_SERVER_VERSION = "0.32.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -779,9 +779,20 @@ def _rossum_delete(request_id, path):
 
 
 def _rossum_patch(request_id, path, body):
-    """PATCH a Rossum API resource and return the result as JSON."""
+    """PATCH a Rossum API resource and return the result as JSON.
+
+    An empty body is rejected before the round-trip: PATCH {} returns the
+    unchanged resource, which reads as a successful update to the caller.
+    """
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    if not body:
+        tool_result(
+            request_id,
+            "Nothing to update: no fields to change were provided.",
+            is_error=True,
+        )
         return
     result = _http_request(request_id, f"{base_url}{path}", method="PATCH", body=body)
     if result is not None:
@@ -2180,6 +2191,133 @@ def handle_create_user(request_id, arguments):
     if "metadata" in arguments:
         body["metadata"] = arguments["metadata"]
     _rossum_post(request_id, "/api/v1/users", body)
+
+
+@_tool(
+    "rossum_patch_user",
+    "Updates an existing user. Only provide the fields you want to change — unspecified fields "
+    "are left untouched. Use this to assign a user to queues, change their role (groups), rename "
+    "them, or deactivate them (is_active=false; no user-delete tool is provided — DELETE /users "
+    "is not_planned — so deactivation is the supported retirement path). If you don't already "
+    "have the user's complete queue/group lists, read them first (rossum_get with path "
+    "/api/v1/users/{id}) before sending a replacement. "
+    "Email and username cannot be changed here. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["user_id"],
+        "properties": {
+            "user_id": {
+                "type": "integer",
+                "description": "The user ID to update.",
+            },
+            "first_name": {
+                "type": "string",
+                "description": "New first name.",
+            },
+            "last_name": {
+                "type": "string",
+                "description": "New last name.",
+            },
+            "queue_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Replace the queues the user is assigned to (full list, not additive).",
+            },
+            "group_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": (
+                    "Replace the user's roles (full list, not additive). "
+                    "Group IDs from rossum_list_groups."
+                ),
+            },
+            "is_active": {
+                "type": "boolean",
+                "description": "Enable or disable the account (false = deactivate).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_patch_user(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    user_id = arguments["user_id"]
+    body = {}
+    for key in ("first_name", "last_name", "is_active"):
+        if key in arguments:
+            body[key] = arguments[key]
+    if "queue_ids" in arguments:
+        body["queues"] = _resource_urls(base_url, "queues", arguments["queue_ids"])
+    if "group_ids" in arguments:
+        body["groups"] = _resource_urls(base_url, "groups", arguments["group_ids"])
+    _rossum_patch(request_id, f"/api/v1/users/{user_id}", body)
+
+
+@_tool(
+    "rossum_apply_labels",
+    "Adds and/or removes labels on one or more annotations in bulk. This tool does not create "
+    "label definitions — they must already exist (create them in the Rossum UI or via a raw "
+    "POST /api/v1/labels); list existing ones with rossum_get (path /api/v1/labels) to find "
+    "their IDs. Both operations run in a single call across all given annotations. At least "
+    "one of add_label_ids / remove_label_ids is required. This is a write operation.",
+    {
+        "type": "object",
+        "required": ["annotation_ids"],
+        "properties": {
+            "annotation_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 1,
+                "description": "Annotation IDs to apply the label operations to.",
+            },
+            "add_label_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Label IDs to add to every listed annotation.",
+            },
+            "remove_label_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Label IDs to remove from every listed annotation.",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_WRITE,
+)
+def handle_apply_labels(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    operations = {}
+    if arguments.get("add_label_ids"):
+        operations["add"] = _resource_urls(base_url, "labels", arguments["add_label_ids"])
+    if arguments.get("remove_label_ids"):
+        operations["remove"] = _resource_urls(base_url, "labels", arguments["remove_label_ids"])
+    if not operations:
+        tool_result(
+            request_id,
+            "Nothing to do: provide add_label_ids and/or remove_label_ids.",
+            is_error=True,
+        )
+        return
+    body = {
+        "operations": operations,
+        "objects": {
+            "annotations": _resource_urls(base_url, "annotations", arguments["annotation_ids"]),
+        },
+    }
+    # The API answers 204 No Content on success — report the status, there is no body.
+    status = _http_request(
+        request_id, f"{base_url}/api/v1/labels/apply",
+        method="POST", body=body, parse_json=False,
+    )
+    if status is not None:
+        count = len(arguments["annotation_ids"])
+        tool_result(request_id, f"Label operations applied to {count} annotation(s) (HTTP {status}).")
 
 
 @_tool(
