@@ -50,11 +50,12 @@ against the live API. For each tool:
    - update_annotation_content: on a to_review annotation, replace one datapoint value (start→ops→
      cancel is auto-managed), re-read via get_annotation_content to confirm it persisted, then revert
      the value to leave the document unchanged.
-   - Users: create_user (with a throwaway username) → list_users (verify) →
-     patch_user (assign a queue + change role via group_ids; verify with rossum_get
-     /users/{id} that queues/groups replaced and untouched fields survived) →
-     patch_user is_active=false to retire the account. No delete endpoint exists,
-     so the deactivation IS the cleanup.
+   - Users: create_user (inactive from birth — is_active=false — with a throwaway
+     username, so a run that dies mid-loop never leaves an account that can log in) →
+     list_users (verify) → patch_user (assign a queue + change role via group_ids;
+     verify with rossum_get /users/{id} that queues/groups replaced and untouched
+     fields survived). Leave the user inactive — no delete tool exists
+     (DELETE /users is not_planned), deactivation IS the cleanup.
    - Labels: label definitions are UI-managed (no create tool) — create a fixture label
      via raw POST /labels (rossum_get can list /labels), then apply_labels with
      add_label_ids on 1-2 disposable annotations → get_annotation (verify labels[]) →

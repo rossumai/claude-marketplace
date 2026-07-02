@@ -779,9 +779,20 @@ def _rossum_delete(request_id, path):
 
 
 def _rossum_patch(request_id, path, body):
-    """PATCH a Rossum API resource and return the result as JSON."""
+    """PATCH a Rossum API resource and return the result as JSON.
+
+    An empty body is rejected before the round-trip: PATCH {} returns the
+    unchanged resource, which reads as a successful update to the caller.
+    """
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    if not body:
+        tool_result(
+            request_id,
+            "Nothing to update: no fields to change were provided.",
+            is_error=True,
+        )
         return
     result = _http_request(request_id, f"{base_url}{path}", method="PATCH", body=body)
     if result is not None:
@@ -2186,10 +2197,10 @@ def handle_create_user(request_id, arguments):
     "rossum_patch_user",
     "Updates an existing user. Only provide the fields you want to change — unspecified fields "
     "are left untouched. Use this to assign a user to queues, change their role (groups), rename "
-    "them, or deactivate them (is_active=false; the API has no user delete, deactivation is the "
-    "supported way to retire an account). queue_ids and group_ids REPLACE the full list (not "
-    "additive) — read the user's current assignments first (rossum_get with path "
-    "/api/v1/users/{id}) and send the complete new list. Group IDs come from rossum_list_groups. "
+    "them, or deactivate them (is_active=false; no user-delete tool is provided — DELETE /users "
+    "is not_planned — so deactivation is the supported retirement path). If you don't already "
+    "have the user's complete queue/group lists, read them first (rossum_get with path "
+    "/api/v1/users/{id}) before sending a replacement. "
     "Email and username cannot be changed here. This is a write operation.",
     {
         "type": "object",
@@ -2242,24 +2253,16 @@ def handle_patch_user(request_id, arguments):
         body["queues"] = _resource_urls(base_url, "queues", arguments["queue_ids"])
     if "group_ids" in arguments:
         body["groups"] = _resource_urls(base_url, "groups", arguments["group_ids"])
-    if not body:
-        tool_result(
-            request_id,
-            "Nothing to update: provide at least one field to change "
-            "(first_name, last_name, queue_ids, group_ids, is_active).",
-            is_error=True,
-        )
-        return
     _rossum_patch(request_id, f"/api/v1/users/{user_id}", body)
 
 
 @_tool(
     "rossum_apply_labels",
-    "Adds and/or removes labels on one or more annotations in bulk. Label definitions must "
-    "already exist — labels are created in the Rossum UI, not via this tool; list them with "
-    "rossum_get (path /api/v1/labels) to find their IDs. Both operations run in a single call "
-    "across all given annotations. At least one of add_label_ids / remove_label_ids is "
-    "required. This is a write operation.",
+    "Adds and/or removes labels on one or more annotations in bulk. This tool does not create "
+    "label definitions — they must already exist (create them in the Rossum UI or via a raw "
+    "POST /api/v1/labels); list existing ones with rossum_get (path /api/v1/labels) to find "
+    "their IDs. Both operations run in a single call across all given annotations. At least "
+    "one of add_label_ids / remove_label_ids is required. This is a write operation.",
     {
         "type": "object",
         "required": ["annotation_ids"],
@@ -2267,6 +2270,7 @@ def handle_patch_user(request_id, arguments):
             "annotation_ids": {
                 "type": "array",
                 "items": {"type": "integer"},
+                "minItems": 1,
                 "description": "Annotation IDs to apply the label operations to.",
             },
             "add_label_ids": {

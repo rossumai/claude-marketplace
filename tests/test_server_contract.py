@@ -1284,3 +1284,23 @@ def test_operational_outlier_annotations():
     assert server.TOOLS["rossum_apply_labels"]["annotations"]["destructiveHint"] is False
     assert server.TOOLS["rossum_patch_user"]["annotations"]["readOnlyHint"] is False
     assert server.TOOLS["rossum_patch_user"]["annotations"]["destructiveHint"] is False
+
+
+def test_apply_labels_schema_rejects_empty_targets():
+    # annotation_ids: [] would POST "annotations": [] and report success for a
+    # no-op — minItems pushes that to the validation layer (delete_annotation parity).
+    props = server.TOOLS["rossum_apply_labels"]["inputSchema"]["properties"]
+    assert props["annotation_ids"]["minItems"] == 1
+
+
+def test_rossum_patch_rejects_empty_body_family_wide(monkeypatch):
+    # The empty-body guard lives in _rossum_patch so EVERY patch tool gets it:
+    # a PATCH {} round-trip returns the unchanged resource and reads as success.
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook", {"hook_id": 7},
+        lambda url, method, body: {"id": 7},
+    )
+    assert not fake.calls
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    assert "nothing to update" in res["content"][0]["text"].lower()
