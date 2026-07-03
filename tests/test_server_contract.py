@@ -603,6 +603,71 @@ def test_create_hook_from_template_passes_through_optional_fields(monkeypatch):
     assert body["config"] == config
 
 
+def test_create_hook_passes_through_description_settings_secrets_schema(monkeypatch):
+    # The optional description/settings/secrets_schema fields must reach
+    # POST /api/v1/hooks verbatim (objects untouched).
+    secrets_schema = {
+        "type": "object",
+        "properties": {"api_key": {"type": "string", "minLength": 1,
+                                   "description": "Vendor portal API key"}},
+        "additionalProperties": False,
+    }
+    settings = {"endpoint": "https://x.example", "retry": 3}
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "webhook", "events": ["invocation.manual"],
+         "config": {"url": "https://example.com/wh"},
+         "description": "Test hook", "settings": settings,
+         "secrets_schema": secrets_schema},
+        lambda url, method, body: {"id": 60, "name": "H"}
+        if method == "POST" and url.endswith("/api/v1/hooks") else None,
+    )
+    body = fake.calls[0]["body"]
+    assert body["description"] == "Test hook"
+    assert body["settings"] == settings
+    assert body["secrets_schema"] == secrets_schema
+
+
+def test_create_hook_omits_unset_optional_fields(monkeypatch):
+    # Unsupplied optional fields stay absent so the API applies its defaults.
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "webhook", "events": ["invocation.manual"],
+         "config": {"url": "https://example.com/wh"}},
+        lambda url, method, body: {"id": 61, "name": "H"},
+    )
+    body = fake.calls[0]["body"]
+    for absent in ("description", "settings", "secrets_schema"):
+        assert absent not in body
+
+
+def test_patch_hook_passes_through_description_and_secrets_schema(monkeypatch):
+    secrets_schema = {
+        "type": "object",
+        "properties": {"token": {"type": "string", "minLength": 1}},
+        "additionalProperties": False,
+    }
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_hook",
+        {"hook_id": 7, "description": "Updated", "secrets_schema": secrets_schema},
+        lambda url, method, body: {"id": 7}
+        if method == "PATCH" and url.endswith("/api/v1/hooks/7") else None,
+    )
+    body = fake.calls[0]["body"]
+    assert body["description"] == "Updated"
+    assert body["secrets_schema"] == secrets_schema
+
+
+def test_hook_tools_never_accept_secret_values():
+    # Credential values must not flow through model context: neither hook tool
+    # may grow a 'secrets' parameter. secrets_schema declares key NAMES only;
+    # a human fills the values in the UI Secrets editor.
+    for tool in ("rossum_create_hook", "rossum_patch_hook"):
+        props = server.TOOLS[tool]["inputSchema"]["properties"]
+        assert "secrets" not in props, f"{tool} must not accept secret values"
+        assert "secrets_schema" in props
+
+
 # --- email template tools: body shaping, render-as-read, delete, annotations ---
 
 def test_create_email_template_shapes_request_body(monkeypatch):

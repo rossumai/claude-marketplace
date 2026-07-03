@@ -706,7 +706,8 @@ Hooks extend Rossum with custom logic. Three types: **webhooks**, **serverless f
 - `description` (string): Human-readable description of what the hook does — always fill this in and keep it up to date when creating or modifying hooks
 - `metadata` (object): Custom JSON (up to 4 KB)
 - `settings` (object): Behavior settings (retry, timeout, queue filters)
-- `secrets` (object): Sensitive credential storage
+- `secrets` (object): Sensitive credential storage — write-only (never returned by GET; declared key names are listed by `GET /hooks/{id}/secrets_keys` once values are saved). Values are entered by a human (UI Secrets editor or a direct API PATCH outside model context), never passed through MCP tools
+- `secrets_schema` (object): JSON Schema declaring the hook's expected secret key names — set it via the `rossum_create_hook` / `rossum_patch_hook` MCP tools (or raw API/prd2; the UI cannot edit the schema itself). The API enforces the shape: only `type`/`properties`/`additionalProperties` are accepted at the top level (no `$schema`, no `required`), every property must be `{"type": "string", …}` (add `minLength: 1` + a `description` by convention), and `additionalProperties` is required and must be literally `false` — HTTP 400 otherwise. Secret writes are validated against it (undeclared keys and, with `minLength`, empty values are rejected), and the UI Secrets editor prefills `{"<key>": "__change_me__"}` for each declared key instead of an empty `{}`
 
 ### Webhook Extension
 

@@ -39,19 +39,20 @@ Flag hooks where the entire logic could be replaced by a no-code extension.
 ### 2.2 — Security (Critical)
 
 **No hardcoded credentials**
-Passwords, API keys, client secrets must never appear in code. Use `payload["secrets"]` and define `secrets_schema` in the hook JSON:
+Passwords, API keys, client secrets must never appear in code. Use `payload["secrets"]` and define `secrets_schema` in the hook JSON (outside a prd2 tree, set it via the `rossum_create_hook` / `rossum_patch_hook` MCP tools — key names only, a human enters the values):
 ```json
 // hook.json — secrets_schema
 {
-  "$schema": "http://json-schema.org/draft-04/schema#",
   "type": "object",
   "properties": {
-    "username": { "type": "string" },
-    "password": { "type": "string" }
+    "username": { "type": "string", "minLength": 1, "description": "Service account login" },
+    "password": { "type": "string", "minLength": 1, "description": "Service account password" }
   },
-  "required": ["username", "password"]
+  "additionalProperties": false
 }
 ```
+
+The API enforces exactly this shape: top-level keys other than `type`/`properties`/`additionalProperties` are rejected (no `$schema`, no `required`), every property must be type `string`, and `additionalProperties` must be present and literally `false` — HTTP 400 otherwise.
 ```python
 # Bad
 auth=("api_user", "Hardcoded123")

@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.32.0"
+_SERVER_VERSION = "0.32.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -3426,7 +3426,10 @@ def handle_get_hook(request_id, arguments):
     "rossum_create_hook",
     "Creates a new hook (extension) in the Rossum organization. Hooks can be serverless functions "
     "(type='function') executed in Python 3.12 or webhooks (type='webhook') that POST to an external URL. "
-    "This is a write operation.",
+    "Always set description, and when the hook reads payload['secrets'] also set secrets_schema so the "
+    "expected secret key names are declared up front. Deliberately does NOT accept secret VALUES — "
+    "credential values must never flow through model context; declare key names via secrets_schema and "
+    "let a human enter the values in the UI Secrets editor. This is a write operation.",
     {
         "type": "object",
         "required": ["name", "type", "events", "config"],
@@ -3482,6 +3485,37 @@ def handle_get_hook(request_id, arguments):
                 "type": "integer",
                 "description": "User ID whose permissions the hook uses for API calls.",
             },
+            "description": {
+                "type": "string",
+                "description": (
+                    "Human-readable description of what the hook does and why it exists. "
+                    "Always fill this in when creating a hook."
+                ),
+            },
+            "settings": {
+                "type": "object",
+                "description": (
+                    "Hook settings, available to the hook code as payload['settings'] — non-sensitive "
+                    "configuration such as endpoints, queue filters, or mappings. Never put credentials "
+                    "here; declare them in secrets_schema instead."
+                ),
+            },
+            "secrets_schema": {
+                "type": "object",
+                "description": (
+                    "JSON Schema declaring the hook's expected secret KEY NAMES (never values), one property per "
+                    "key the code reads from payload['secrets']. The API enforces this exact shape (HTTP 400 "
+                    "otherwise): {\"type\": \"object\", \"properties\": {\"<key>\": {\"type\": \"string\", "
+                    "\"minLength\": 1, \"description\": \"<what the key is>\"}}, \"additionalProperties\": false} "
+                    "— every property must be type string, additionalProperties is required and must be literally "
+                    "false, and no other top-level keys are accepted ($schema and required are rejected; "
+                    "minLength/description per property are convention, not enforced). Secret writes are then "
+                    "validated against it: undeclared keys and (with minLength) empty values are rejected. The UI "
+                    "Secrets editor uses the declared keys to prefill '{\"<key>\": \"__change_me__\"}' instead of "
+                    "an empty {} (API-side, GET /hooks/{id}/secrets_keys stays [] until a human saves values). "
+                    "Secret VALUES are entered by a human in the UI — never through this tool."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -3505,6 +3539,9 @@ def handle_create_hook(request_id, arguments):
         body["sideload"] = arguments["sideload"]
     if "token_owner" in arguments:
         body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
+    for key in ("description", "settings", "secrets_schema"):
+        if key in arguments:
+            body[key] = arguments[key]
     _rossum_post(request_id, "/api/v1/hooks", body)
 
 
@@ -3644,7 +3681,10 @@ def handle_delete_hook(request_id, arguments):
     "rossum_patch_hook",
     "Updates an existing hook (extension). Only provide the fields you want to change — "
     "unspecified fields are left untouched. Use this to update hook code, toggle active state, "
-    "change events, or reassign queues without recreating the hook. This is a write operation.",
+    "change events, or reassign queues without recreating the hook. Deliberately does NOT accept "
+    "secret VALUES — credential values must never flow through model context; declare key names "
+    "via secrets_schema and let a human enter the values in the UI Secrets editor. "
+    "This is a write operation.",
     {
         "type": "object",
         "required": ["hook_id"],
@@ -3696,6 +3736,30 @@ def handle_delete_hook(request_id, arguments):
                 "type": "object",
                 "description": "Updated hook settings.",
             },
+            "description": {
+                "type": "string",
+                "description": (
+                    "Updated human-readable description of what the hook does and why it exists. "
+                    "Keep it up to date whenever the hook's behavior changes."
+                ),
+            },
+            "secrets_schema": {
+                "type": "object",
+                "description": (
+                    "JSON Schema declaring the hook's expected secret KEY NAMES (never values), one property per "
+                    "key the code reads from payload['secrets']. Replaces the whole schema. The API enforces this "
+                    "exact shape (HTTP 400 otherwise): {\"type\": \"object\", \"properties\": {\"<key>\": "
+                    "{\"type\": \"string\", \"minLength\": 1, \"description\": \"<what the key is>\"}}, "
+                    "\"additionalProperties\": false} — every property must be type string, additionalProperties "
+                    "is required and must be literally false, and no other top-level keys are accepted ($schema "
+                    "and required are rejected; minLength/description per property are convention, not enforced). "
+                    "Secret writes are then validated against it: undeclared keys and "
+                    "(with minLength) empty values are rejected. The UI Secrets editor uses the declared keys to "
+                    "prefill '{\"<key>\": \"__change_me__\"}' instead of an empty {} (API-side, GET "
+                    "/hooks/{id}/secrets_keys stays [] until a human saves values). Secret VALUES are entered by "
+                    "a human in the UI — never through this tool."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -3707,7 +3771,8 @@ def handle_patch_hook(request_id, arguments):
         return
     hook_id = arguments["hook_id"]
     body = {}
-    for key in ("name", "config", "events", "active", "sideload", "settings"):
+    for key in ("name", "config", "events", "active", "sideload", "settings",
+                "description", "secrets_schema"):
         if key in arguments:
             body[key] = arguments[key]
     if "queue_ids" in arguments:
