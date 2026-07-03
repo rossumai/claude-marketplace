@@ -1,0 +1,119 @@
+{
+  "configurations": [
+    {
+      "wsdl": {
+        "domain": "«tenant_domain»",
+        "tenant": "«tenant»",
+        "api_version": "«api_version»"
+      },
+      "request": {
+        "service": "Resource_Management",
+        "operation": "Submit_Supplier_Invoice",
+        "mapping": {
+          "Add_Only": true,
+          "Supplier_Invoice_Data": {
+            "Submit": true,
+            "Memo": {
+              "$IF_SCHEMA_ID$": {
+                "mapping": "@{memo}",
+                "schema_id": "memo"
+              }
+            },
+            "Invoice_Date": "@{date_issue}",
+            "Invoice_Received_Date": "@{date_received}",
+            "Suppliers_Invoice_Number": "@{document_id}",
+            "Company_Reference": {
+              "ID": [
+                {
+                  "type": "Organization_Reference_ID",
+                  "_value_1": "@{company_wd}"
+                }
+              ]
+            },
+            "Currency_Reference": {
+              "ID": [
+                {
+                  "type": "Currency_ID",
+                  "_value_1": "@{currency}"
+                }
+              ]
+            },
+            "Supplier_Reference": {
+              "ID": [
+                {
+                  "type": "Supplier_ID",
+                  "_value_1": "@{supplier_wd}"
+                }
+              ]
+            },
+            "Attachment_Data": [
+              {
+                "Encoding": "base64",
+                "Filename": "@{file_name}",
+                "Content_Type": "application/pdf",
+                "File_Content": "{document_content}"
+              }
+            ],
+            "Invoice_Line_Replacement_Data": {
+              "$FOR_EACH_SCHEMA_ID$": {
+                "schema_id": "line_items",
+                "mapping": {
+                  "Item_Description": "@{item_description}",
+                  "Memo": "@{item_description}",
+                  "Extended_Amount": "@{item_total_base}",
+                  "Tax_Applicability_Reference": {
+                    "$IF_SCHEMA_ID$": {
+                      "mapping": {
+                        "ID": [
+                          {
+                            "type": "Tax_Applicability_ID",
+                            "_value_1": "@{item_tax_applicability_wd}"
+                          }
+                        ]
+                      },
+                      "schema_id": "item_tax_applicability_wd",
+                      "fallback_mapping": {}
+                    }
+                  },
+                  "Worktags_Reference": [
+                    {
+                      "$IF_SCHEMA_ID$": {
+                        "mapping": {
+                          "ID": [
+                            {
+                              "type": "Cost_Center_Reference_ID",
+                              "_value_1": "@{item_cost_center_wd}"
+                            }
+                          ]
+                        },
+                        "schema_id": "item_cost_center_wd",
+                        "fallback_mapping": {}
+                      }
+                    },
+                    {
+                      "$IF_SCHEMA_ID$": {
+                        "mapping": {
+                          "ID": [
+                            {
+                              "type": "Project_ID",
+                              "_value_1": "@{item_project_wd}"
+                            }
+                          ]
+                        },
+                        "schema_id": "item_project_wd",
+                        "fallback_mapping": {}
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "Business_Process_Parameters": {
+            "Auto_Complete": false
+          }
+        }
+      }
+    }
+  ]
+}

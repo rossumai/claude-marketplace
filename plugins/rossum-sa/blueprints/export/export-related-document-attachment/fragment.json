@@ -1,0 +1,44 @@
+{
+  "get_content": [
+    {
+      "name": "related_documents",
+      "source": "document_relation_content",
+      "query": {"key": {"$regex": "«relation_pattern»"}}
+    }
+  ],
+  "call_api": [
+    {
+      "name": "upload_related_documents",
+      "auth": {
+        "url": "«auth_ref»",
+        "method": "POST",
+        "content_type": "form",
+        "content": {
+          "grant_type": "client_credentials"
+        },
+        "credential_key": "access_token"
+      },
+      "request": {
+        "url": "«upload_url»",
+        "method": "POST",
+        "iterate_over": "property.related_documents",
+        "iteration_item_name": "item",
+        "content_type": "multipart",
+        "content": {
+          "«file_field»": ["{item.original_file_name}", "{item.content.@}"]
+        },
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer {token}"
+        }
+      },
+      "response_handlers": [
+        {
+          "target_type": "schema_id",
+          "target_key": "«status_field»",
+          "value": {"response": {"$jmespath": "status_code"}}
+        }
+      ]
+    }
+  ]
+}

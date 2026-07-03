@@ -1,0 +1,17 @@
+{
+  "name": "workday-live-po-line-status",
+  "axis": "matching",
+  "summary": "On-open TxScript hook refreshing each matched PO line's live received/invoiced consumption from the Workday procurement REST API — quantities for goods lines, amounts for service lines.",
+  "maturity": "candidate",
+  "params": {
+    "token_url":             {"required": true, "description": "OAuth2 token endpoint — https://<host>/ccx/oauth2/<tenant>/token"},
+    "po_endpoint_url":       {"required": true, "description": "procurement purchaseOrders endpoint — https://<host>/ccx/api/procurement/v5/<tenant>/purchaseOrders"},
+    "goods_order_type_id":   {"required": true, "description": "order-type id marking goods lines (quantity consumption)"},
+    "service_order_type_id": {"required": true, "description": "order-type id marking service lines (amount consumption)"}
+  },
+  "produces": ["item_order_line_quantity_received", "item_order_line_quantity_invoiced", "item_order_line_amount_received", "item_order_line_amount_invoiced"],
+  "consumes": ["line_items", "item_order_line_nr_wd", "item_order_internal_id_wd", "item_order_type_wd"],
+  "provenance": "Harvested 2026-07-03 from one production Workday AP implementation (refined: per-run PO cache added — the source refetched the same PO once per line — and the OAuth call corrected to POST); demanded verbatim by an upcoming Workday AP SOW (live status verification on annotation open). Single-source — treat with extra suspicion.",
+  "reference": "txscript-reference#serverless-hooks",
+  "notes": "REST, not SOAP, on purpose: the SOAP Get_Purchase_Orders sync does not expose per-line received/invoiced consumption, so master data is always stale for GRN/over-invoicing checks; a full-SOAP path is a separate extension (out of scope). Hook events: annotation_content.initialize/started/updated, run_after the PO-matching hook, sideload schemas, token_owner set (the hook PATCHes its own secrets to cache the bearer), org must allow external HTTPS egress. Secrets: client_id, client_secret, refresh_token (bearer_token is written back by the hook). The REST path segment is the PO's Workday internal id (WID), NOT the PO document number — project it onto lines during PO header matching. Line lookup parses the line number from the trailing token of the REST line 'descriptor' (no bare line-number field observed) — fragile; verify per tenant/API version, as is the bare-vs-{value:...}-wrapped numeric shape. CANDIDATE: single-source; validate on a second tenant before promoting."
+}

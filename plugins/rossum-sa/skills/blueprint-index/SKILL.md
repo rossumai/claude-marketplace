@@ -45,3 +45,9 @@ These are believed-good but **unproven** — offer them to a human for review, n
 | blueprint | axis | summary |
 |--------|------|---------|
 | `mdh-fanout-matches-to-selectable-table` | matching | fan all MDH match options into a multivalue table with a per-row select flag (hash-guarded); maintain a filtered export list — the multi-select counterpart to `mdh-picker-with-exact-preselect`. Composes with `export-iterate-line-items`. |
+| `export-workday-soap-invoice-mapping` | export | Workday `Submit_Supplier_Invoice` SOAP-connector mapping skeleton — reference-ID header projections, `$IF_SCHEMA_ID$`-guarded optional refs, amount-coded lines + worktags. Composition root for the other Workday candidates. |
+| `export-workday-po-line-type-projection` | export | per-line goods (`Quantity`×`Unit_Cost`) vs service (`Extended_Amount`) projection switched on the matched PO line's order type; swaps into the mapping skeleton's line block. |
+| `export-workday-soap-attachment-data` | export | `Attachment_Data` block iterating a related-documents table and base64-embedding each file; attachments **>50 MB fail through Rossum infra**. |
+| `export-related-document-attachment` | export | Request Processor stage uploading every regex-matched document relation via multipart — the REST counterpart of the SOAP attachment block. |
+| `mdh-workday-po-line-type-match` | matching | invoice-line → Workday PO-line match by PO number + supplier + exact `$toDecimal` amount; unions goods+service line arrays tagging each candidate with its order type; whole-PO pick-list fallback. |
+| `workday-live-po-line-status` | matching | on-open hook refreshing live received/invoiced consumption per matched PO line from the Workday procurement REST API (the SOAP sync can't carry it); feeds GRN / over-invoicing rules. |

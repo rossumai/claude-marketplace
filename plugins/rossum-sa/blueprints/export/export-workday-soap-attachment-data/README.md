@@ -1,0 +1,29 @@
+# export-workday-soap-attachment-data
+
+Use this block as the `Attachment_Data` of a Workday `Submit_Supplier_Invoice` mapping (see `export-workday-soap-invoice-mapping`) when the submission must carry **more documents than the scanned invoice** — e-invoice source files, email siblings, delivery notes, DMS confirmations. It iterates a multivalue table with one row per document; for each row the connector fetches the Rossum document content URL stored in the row (`$FETCH_DOCUMENT_CONTENT$`) and embeds it base64 into the SOAP payload.
+
+## The >50 MB gotcha
+
+Attachments over ~50 MB **fail through Rossum infra** — hook payload and connector limits, with no streaming path. Base64 encoding inflates content by ~33 %, so the practical ceiling for source files is lower still. Filter or split oversize files in the collector hook that populates the table; never let one oversize attachment fail the whole invoice submission.
+
+## Params
+
+- `attachment_table` — multivalue tuple, one row per document to attach
+- `name_field` / `mime_field` — row columns with filename and MIME type
+- `content_url_field` — row column holding the Rossum content URL (`…/documents/{id}/content`)
+
+## Produces / Consumes
+
+- Produces: nothing.
+- Consumes: the attachment table and its row columns — populated upstream by a **collector hook**, e.g. one of the observed feeders:
+  - email siblings found via `annotations/search` on a shared email-id field and uploaded/linked as documents;
+  - attachments carried inside a structured e-invoice (SFI) converted to Rossum documents — pair with an `upload.created` hook that sets `prevent_importing` on files flagged as attachments so they skip extraction;
+  - an archive/DMS hook writing its response rows (name, MIME, content URL) into the same table.
+
+## Adapt
+
+- Single-document case: skip this blueprint — `export-workday-soap-invoice-mapping` already embeds the source document inline as `Attachment_Data: [{"Encoding": "base64", "Filename": "@{file_name}", "Content_Type": "application/pdf", "File_Content": "{document_content}"}]`.
+- A free-text row column (e.g. an archive response) can ride along as `Comment` per attachment.
+- For REST-style targets, the same related-documents problem is solved by `export-related-document-attachment` (Request Processor, multipart upload) instead of payload embedding.
+
+See `export-workday-soap-invoice-mapping` for the mapping DSL and hook wiring.

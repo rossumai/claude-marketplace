@@ -1,0 +1,45 @@
+{
+  "Invoice_Line_Replacement_Data": {
+    "$FOR_EACH_SCHEMA_ID$": {
+      "schema_id": "line_items",
+      "mapping": {
+        "Item_Description": "@{item_description}",
+        "Memo": "@{item_description}",
+        "Quantity": {
+          "$DATAPOINT_MAPPING$": {
+            "mapping": {
+              "«goods_order_type_id»": "@{item_quantity}"
+            },
+            "schema_id": "item_order_type_wd"
+          }
+        },
+        "Unit_Cost": {
+          "$DATAPOINT_MAPPING$": {
+            "mapping": {
+              "«goods_order_type_id»": "@{item_amount_base}"
+            },
+            "schema_id": "item_order_type_wd"
+          }
+        },
+        "Extended_Amount": {
+          "$DATAPOINT_MAPPING$": {
+            "mapping": {
+              "«service_order_type_id»": "@{item_total_base}"
+            },
+            "schema_id": "item_order_type_wd"
+          }
+        },
+        "Purchase_Order_Line_Reference": {
+          "ID": [
+            {
+              "type": "Line_Number",
+              "_value_1": "@{item_order_line_nr_wd}",
+              "parent_id": "@{item_document_number_po_wd}",
+              "parent_type": "Document_Number"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

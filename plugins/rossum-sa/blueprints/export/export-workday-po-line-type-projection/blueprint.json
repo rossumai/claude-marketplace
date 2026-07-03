@@ -1,0 +1,15 @@
+{
+  "name": "export-workday-po-line-type-projection",
+  "axis": "export",
+  "summary": "PO-invoice line block projecting goods lines as Quantity × Unit_Cost and service lines as Extended_Amount, switched per line on the matched PO line's order type.",
+  "maturity": "candidate",
+  "params": {
+    "goods_order_type_id":   {"required": true, "description": "tenant order-type reference id tagging goods PO lines (quantity-consumed)"},
+    "service_order_type_id": {"required": true, "description": "tenant order-type reference id tagging service PO lines (amount-consumed)"}
+  },
+  "produces": [],
+  "consumes": ["line_items", "item_order_type_wd", "item_quantity", "item_amount_base", "item_total_base", "item_order_line_nr_wd", "item_document_number_po_wd", "item_description"],
+  "provenance": "Harvested 2026-07-03 from two independent production Workday AP implementations. The per-line $DATAPOINT_MAPPING$ switch is live in one; the second corroborates the underlying model (goods vs service PO lines) but flattens every line to Quantity ±1 × abs(amount) instead. Aligned with Workday's own goods/service line duality (goodsLines vs serviceLines in the procurement REST API).",
+  "reference": "rossum-reference#integrations",
+  "notes": "Workday computes goods lines from Quantity × Unit_Cost and service lines from Extended_Amount; $DATAPOINT_MAPPING$ emits each key only when the line's order type matches, so the projections are mutually exclusive per line and the unused keys drop out of the payload. item_order_type_wd comes from the PO-line match (mdh-workday-po-line-type-match). When several invoice lines match one PO line, aggregate them into one exported line first. Observed alternative: flatten all lines to Quantity ±1 × abs(amount) with the sign encoding credit notes — simpler, but degrades quantity-level matching in Workday. CANDIDATE: order-type reference ids are tenant WIDs — verify per tenant."
+}

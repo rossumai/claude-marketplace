@@ -1,0 +1,16 @@
+{
+  "name": "mdh-workday-po-line-type-match",
+  "axis": "matching",
+  "summary": "Match each invoice line to a Workday PO line by PO number + supplier + exact amount, unioning goods and service line arrays and tagging every candidate with its order type; whole-PO pick-list fallback.",
+  "maturity": "candidate",
+  "params": {
+    "po_dataset":            {"required": true, "description": "MDH collection holding the synchronized Workday purchase orders"},
+    "goods_order_type_id":   {"required": true, "description": "order-type reference id to stamp on Goods_Line_Data candidates"},
+    "service_order_type_id": {"required": true, "description": "order-type reference id to stamp on Service_Line_Data candidates"}
+  },
+  "produces": ["item_order_line_nr_wd", "item_order_type_wd", "item_po_quantity", "item_po_unit_cost", "item_order_line_amount", "item_document_number_po_wd"],
+  "consumes": ["item_order_id", "supplier_wd", "item_total_base"],
+  "provenance": "Harvested 2026-07-03 from two independent production Workday AP implementations. Both anchor on PO-number + supplier $match and exact $toDecimal amount identification; the goods/service union with per-candidate type tagging is live in one (the other unwinds goods lines only). Generalizes mdh-reference example 5.",
+  "reference": "mdh-reference#example-5-po-line-item-matching-with-amount-comparison",
+  "notes": "All mapping/additional_mappings targets must be enum-type schema fields with ui_configuration.type data — a string target fails the whole hook. Amount equality is the line identifier, so a PO with duplicate line amounts yields multiple matches (query 2, the no-amount fallback, turns the whole PO into a pick list — pair with best_match preselect). $toDecimal on BOTH sides is required: dataset amounts arrive as strings from the SOAP sync and the templated invoice value is a string. Some syncs nest records under a wrapper array (e.g. Purchase_Order_Data) — $unwind it first and prefix the paths. Normalize the captured PO number into a formula field if suppliers decorate it. CANDIDATE: field paths (Goods_Line_Data/Service_Line_Data, Supplier_Reference) follow the standard Get_Purchase_Orders sync shape — verify against the actual dataset."
+}

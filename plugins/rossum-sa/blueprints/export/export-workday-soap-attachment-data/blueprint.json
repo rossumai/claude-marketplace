@@ -1,0 +1,17 @@
+{
+  "name": "export-workday-soap-attachment-data",
+  "axis": "export",
+  "summary": "Attachment_Data block for a Workday SOAP mapping — iterates a related-documents multivalue and base64-embeds each file into the invoice submission via $FETCH_DOCUMENT_CONTENT$.",
+  "maturity": "candidate",
+  "params": {
+    "attachment_table":  {"required": true, "description": "multivalue tuple holding one row per document to attach"},
+    "name_field":        {"required": true, "description": "row column with the filename"},
+    "mime_field":        {"required": true, "description": "row column with the MIME type"},
+    "content_url_field": {"required": true, "description": "row column with the Rossum document content URL (…/documents/{id}/content)"}
+  },
+  "produces": [],
+  "consumes": ["«attachment_table»"],
+  "provenance": "Harvested 2026-07-03 from two independent production Workday AP implementations: one iterates a collector-populated related-documents table exactly as here; the other embeds the single source document (the simplification in the README). Not yet re-validated elsewhere.",
+  "reference": "rossum-reference#integrations",
+  "notes": "HARD GOTCHA: attachments over ~50 MB fail through Rossum infra (hook payload/connector limits) — there is no streaming path; base64 inflates content by ~33%, so the practical source-file ceiling is lower. Skip or split oversize files in the collector, do not let one oversize attachment fail the whole invoice submission. The table rows must be populated by a collector hook (email-sibling search, SFI attachment-to-document conversion, or an archive/DMS response writer); pair any attachment-to-document upload with an upload.created hook setting prevent_importing so attachments skip extraction. Content URLs must be Rossum /documents/{id}/content URLs the connector's token can read. REST-counterpart: export-related-document-attachment. CANDIDATE: $FETCH_DOCUMENT_CONTENT$ semantics are connector-internal and undocumented — verify on a live tenant before promoting."
+}

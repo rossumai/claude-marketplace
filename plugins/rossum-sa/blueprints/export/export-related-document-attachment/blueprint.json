@@ -1,0 +1,18 @@
+{
+  "name": "export-related-document-attachment",
+  "axis": "export",
+  "summary": "Request Processor stage that fetches every regex-matched document relation and uploads each related document to an external API via multipart.",
+  "maturity": "candidate",
+  "params": {
+    "relation_pattern": {"required": true, "description": "regex over document-relation keys selecting what to upload, e.g. ^attachment_email_attachments_\\d{8,10}(?:_\\d+)?$"},
+    "auth_ref":         {"required": true, "description": "OAuth token endpoint URL (client_credentials), shared with the export's other stages for token-cache reuse"},
+    "upload_url":       {"required": true, "description": "attachment-upload endpoint, typically templated with the created resource id"},
+    "file_field":       {"required": true, "description": "multipart form-field name the target API expects for the file part, e.g. attachment[file]"},
+    "status_field":     {"required": true, "description": "schema field (ui type data, must pre-exist) receiving the upload HTTP status per iteration"}
+  },
+  "produces": ["«status_field»"],
+  "consumes": [],
+  "provenance": "Designed from the Coupa upload stage in export-pipeline-reference (paused 2026-06, finished 2026-07-03); cross-checked against two production Workday AP attachment paths — both embed attachments base64 inside the SOAP payload instead (see export-workday-soap-attachment-data), so this REST/multipart counterpart is NOT yet live-validated.",
+  "reference": "export-pipeline-reference#get-content-phase",
+  "notes": "Only the FIRST document in each relation's documents[] is fetched — one upload per relation, by engine design. Attachments over ~50 MB fail through Rossum infra (no streaming path) — filter oversize relations upstream. get_content yields a single object (not a 1-item list) when exactly one relation matches; verify iterate_over handles that shape before promoting. Repeated response-handler writes to the same status field during iteration auto-collect into a list. The status field must already exist in the schema (ui_configuration.type data) or the whole export fails with the generic exception blocker. Generating the relations/artifacts themselves (email-attachment relations, rendered payload documents) is out of scope. CANDIDATE: not live-validated on a REST target yet."
+}
