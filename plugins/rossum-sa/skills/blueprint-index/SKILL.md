@@ -35,8 +35,12 @@ schema. See `blueprints/README.md` for the full contract.
 | `export-evaluate-guard` | pre-call guard on required fields + prior-stage success |
 | `export-iterate-line-items` | per-line-item POST with sequence index |
 
-Export blueprints are mechanism-level: a target system (Coupa, SAP, Workday) is a
-*composition* of these plus filled params — never a single per-ERP blueprint.
+Export blueprints are mechanism-level. A target system (Coupa, SAP, Workday) is a
+composition of blueprints plus filled params — never one monolithic per-ERP blueprint.
+A blueprint may be ERP-specific when the mechanism itself is (e.g. a connector's mapping
+dialect) — but it must stay a composable part (if seams alone could make it ERP-neutral,
+generalize instead), carry the ERP token in its name, and link its grammar down to a
+reference pack once one exists.
 
 ## Candidates (`candidate` maturity — NOT for auto-composition)
 

@@ -42,6 +42,25 @@ excluded from `ruff` (see `pyproject.toml`) — the `test_blueprints.py` guard r
 fragments as text, not code. Don't expect a `.py` fragment to import or compile
 until its seams are filled.
 
+## When is a per-ERP blueprint legitimate?
+
+Export blueprints are mechanism-level; a target system is a *composition*, never one
+monolithic per-ERP blueprint. A blueprint may still be ERP-specific — when all three hold:
+
+1. **ERP-ness is in the grammar, not the values.** The fragment speaks a dialect only
+   that ERP uses (e.g. a connector's mapping DSL). If seams alone could de-ERP it, ship
+   the generic blueprint + params instead — this is why there is no
+   `workday-oauth-token-cache`: `export-oauth-token-cache` + params covers it.
+2. **It's a part, not the whole.** The target integration stays a composition of several
+   independently-swappable blueprints. A single folder bundling match + mapping +
+   attachments would resurrect CIB inside the library.
+3. **Tenant-level facts stay seams.** WIDs, hosts, tenant ids, worktag sets, order-type
+   ids — parameterized, never baked.
+
+ERP-specific blueprints carry the ERP token in the name, so the per-ERP subset stays a
+greppable audit. They are also provisional: their grammar lifts into a reference pack
+when one exists, at which point they become thin drop-ins linking down to it.
+
 ## Maturity & promotion
 
 v1 blueprints are `standard` by provenance (lifted from expert-written packs).
