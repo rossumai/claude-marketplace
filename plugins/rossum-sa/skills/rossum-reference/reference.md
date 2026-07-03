@@ -707,6 +707,7 @@ Hooks extend Rossum with custom logic. Three types: **webhooks**, **serverless f
 - `metadata` (object): Custom JSON (up to 4 KB)
 - `settings` (object): Behavior settings (retry, timeout, queue filters)
 - `secrets` (object): Sensitive credential storage
+- `secrets_schema` (object): JSON Schema for `secrets`. **Always set this when creating any hook that needs secrets** (webhook or function): declare each expected key under `properties` (with `minLength: 1` and a `description`) and set `additionalProperties: false`. The hook's Secrets section then presents the expected key names with `__change_me__` placeholders instead of an empty `{}` — whoever fills the credentials sees exactly what to provide, no investigation needed. Settable only via API or prd2, not the UI
 
 ### Webhook Extension
 
