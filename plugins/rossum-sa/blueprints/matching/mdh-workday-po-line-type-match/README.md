@@ -24,4 +24,4 @@ Cascade:
 - **Duplicate amounts on one PO** produce multiple matches by design; `best_match` preselects and the operator can switch. Add a stricter tie-breaker (description similarity, remaining-quantity) only if duplicates are common.
 - The PO **header** match (PO number + status + currency + Workday internal id) is a separate, simpler config that should also project the PO's internal id (WID) onto lines — `workday-live-po-line-status` needs it for the REST lookup.
 
-See `mdh-reference` (Example 5: PO Line Item Matching with Amount Comparison) for the grammar this generalizes, and `export-workday-po-line-type-projection` / `workday-live-po-line-status` for the consumers of `item_order_type_wd`.
+See `mdh-reference` (Example 5: PO Line Item Matching with Amount Comparison) for the grammar this generalizes, `workday-reference` (§ Goods vs Service Lines, § Import Configuration) for the line model and how the dataset shape is produced, and `export-workday-po-line-type-projection` / `workday-live-po-line-status` for the consumers of `item_order_type_wd`.

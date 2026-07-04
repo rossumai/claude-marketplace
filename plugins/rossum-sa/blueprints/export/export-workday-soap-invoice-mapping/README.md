@@ -4,16 +4,11 @@ Use this blueprint to submit an AP invoice to Workday via the Rossum-hosted Work
 
 ## Hook wiring
 
-Not a function hook — create a **webhook** on `annotation_content.export` with `config.url` pointing at the org's Workday connector service (`https://<org-domain>/svc/workday/api/v1/export`), `token_owner` set, and the tenant credentials in hook **secrets** (never in settings). The fragment is the hook's `settings`.
+Not a function hook — create a **webhook** on `annotation_content.export` with `config.url` pointing at the org's Workday connector service (`https://<org-domain>/svc/workday/api/v1/export`), and the tenant credentials in hook **secrets** (never in settings): `workday_username` + `workday_password`, WS-Security as `<username>@<tenant>`. The connector never writes secrets back, so declare a closed `secrets_schema` (`additionalProperties: false`). The fragment is the hook's `settings`. Queue targeting is two-layered: the hook's own `queues` list, then the **first** `configurations[]` entry matching the annotation's queue — and **no matching entry is a silent no-op** (HTTP 200, no message).
 
-## Mapping DSL (as observed; no reference pack documents it yet)
+## Mapping DSL
 
-- `@{schema_id}` — value of a schema field; inside `$FOR_EACH_SCHEMA_ID$` it reads the current row's column.
-- `{document_content}` — connector-supplied base64 of the annotation's source document (single braces — not a schema field).
-- `$IF_SCHEMA_ID$` `{mapping, schema_id, fallback_mapping}` — emit `mapping` only when `schema_id` has a value; `fallback_mapping: {}` drops the key entirely, which is how optional references must be omitted (an empty reference is rejected by the tenant).
-- `$FOR_EACH_SCHEMA_ID$` `{mapping, schema_id}` — repeat `mapping` for each row of a multivalue.
-- `$DATAPOINT_MAPPING$` `{mapping: {value: projection}, schema_id}` — switch the projection on a field's value (see `export-workday-po-line-type-projection`).
-- `$FETCH_DOCUMENT_CONTENT$` `{datapoint}` — fetch + base64 a Rossum document content URL stored in a field (see `export-workday-soap-attachment-data`).
+The full grammar lives in `workday-reference` (§ The Mapping DSL) — including primitives this skeleton doesn't use (`$DATAPOINT_VALUE$`, `$IF_DATAPOINT_VALUE$`, `$CHILD_COUNT$`). What the skeleton relies on: `@{schema_id}` field substitution (row-scoped inside loops; **missing field = export fails** with a message naming the schema id), `{document_content}` (resource placeholder — the source document, base64), `$IF_SCHEMA_ID$` with `fallback_mapping: {}` to *omit* optional references (missing-or-empty → fallback; more than one match → error), and `$FOR_EACH_SCHEMA_ID$` multivalue iteration.
 
 ## Params
 
@@ -30,9 +25,9 @@ Not a function hook — create a **webhook** on `annotation_content.export` with
 
 - **Reference-ID types are tenant configuration.** `Organization_Reference_ID`, `Supplier_ID`, `Tax_Applicability_ID`, worktag types (`Cost_Center_Reference_ID`, `Project_ID`, …) must match the tenant's reference-ID scheme; extend `Worktags_Reference` with further `$IF_SCHEMA_ID$`-guarded entries (fund, region, affiliate company) as coding requires.
 - **PO-based invoices**: replace `Invoice_Line_Replacement_Data` with the block from `export-workday-po-line-type-projection`.
-- **More than one attachment**: replace `Attachment_Data` with the block from `export-workday-soap-attachment-data`. Either way, attachments **>50 MB fail through Rossum infra**.
+- **More than one attachment**: replace `Attachment_Data` with the block from `export-workday-soap-attachment-data`. Either way, mind attachment sizing: no connector-side cap exists, but base64 inflates ~33 % and a slow submit can time out platform-side *after* Workday created the invoice (`Add_Only` guards the retry) — see `workday-reference` § Attachments.
 - **Approval routing**: `Business_Process_Parameters` is where auto-complete and the approver reference for the business process go; `Submit` can also read a field (`"@{submit_flag}"`) to hold given invoices in draft.
 - Header-level free-text extras map to `Additional_Fields_Data_Reference` entries (`Attribute_Value` + `Configurable_Attribute_Reference`) — attribute names are tenant configuration.
 - Credit notes: one observed source maps `Payment_Terms_Reference` per `document_type` via `$DATAPOINT_MAPPING$` and flips line sign via a quantity of −1.
 
-See `rossum-reference` (Integrations) — and note the connector's mapping DSL above is documented only here so far.
+See `workday-reference` for the connector contract this drops into — hook wiring, credentials, the full mapping-DSL grammar, error surface, and regions.

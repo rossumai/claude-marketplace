@@ -20,7 +20,7 @@ This is the **REST counterpart** of `export-workday-soap-attachment-data` — SO
 ## Gotchas
 
 - **Only the first document per relation is fetched** — one upload per relation, by engine design.
-- **Attachments >50 MB fail through Rossum infra** — there is no streaming path; filter oversize relations upstream rather than letting one file fail the stage.
+- **Very large attachments risk hook memory/timeout limits** — content is held in-memory per iteration and there is no streaming path. No verified hard cap exists (the old "~50 MB infra limit" is unconfirmed folklore); test the real size profile and filter oversize relations upstream rather than letting one file fail the stage.
 - `get_content` yields a **single object, not a 1-item list, when exactly one relation matches**; verify `iterate_over` behavior for that shape on your engine version.
 - Add an `evaluate` guard on the prior stage's success (see `export-evaluate-guard`) so attachments are not uploaded against a failed create.
 

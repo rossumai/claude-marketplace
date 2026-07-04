@@ -20,4 +20,4 @@ Use this block as the `Invoice_Line_Replacement_Data` of a Workday `Submit_Suppl
 - **Flat alternative:** if the tenant does not require quantity-level matching, every line can be projected as `Quantity` ±1 × `Unit_Cost` = abs(line total), the sign encoding credit notes — one source runs this in production.
 - Add `$IF_SCHEMA_ID$`-guarded `Tax_Applicability_Reference` / `Withholding_Tax_Code_Reference` / worktag entries per line as tenant coding requires.
 
-See `export-workday-soap-invoice-mapping` for the mapping DSL and hook wiring, `mdh-workday-po-line-type-match` for where the order type comes from, and `workday-live-po-line-status` for validating against live PO consumption before export.
+See `workday-reference` (§ Goods vs Service Lines) for the underlying line model, `export-workday-soap-invoice-mapping` for hook wiring, `mdh-workday-po-line-type-match` for where the order type comes from, and `workday-live-po-line-status` for validating against live PO consumption before export.
