@@ -1,6 +1,6 @@
 ---
 name: workday-reference
-description: Rossum Workday connector reference. Covers the Rossum-hosted SOAP connector (svc/workday) — export and import hook wiring and secrets, the wsdl block and impl-vs-prod tenant domains, the mapping template language ($IF_SCHEMA_ID$, $FOR_EACH_SCHEMA_ID$, $DATAPOINT_MAPPING$, @{schema_id}), Submit_Supplier_Invoice conventions (reference IDs, worktags, attachments, goods-vs-service lines), and master-data import into MDH datasets with differential sync. Use when building, debugging, or explaining a Rossum-Workday integration.
+description: Rossum Workday connector reference. Covers the Rossum-hosted SOAP connector (svc/workday) — export and import hook wiring and secrets, the wsdl block and impl-vs-prod tenant domains, the mapping template language (IF_SCHEMA_ID, FOR_EACH_SCHEMA_ID, DATAPOINT_MAPPING operations and the @{schema_id} shorthand), Submit_Supplier_Invoice conventions (reference IDs, worktags, attachments, goods-vs-service lines), and master-data import into MDH datasets with differential sync. Use when building, debugging, or explaining a Rossum-Workday integration.
 user-invocable: false
 ---
 
