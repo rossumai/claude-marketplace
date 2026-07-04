@@ -208,7 +208,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.32.0"
+_SERVER_VERSION = "0.32.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -3422,11 +3422,58 @@ def handle_get_hook(request_id, arguments):
     _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}")
 
 
+# Shared between rossum_create_hook and rossum_patch_hook: the secrets_schema
+# convention is identical on both, and the no-values invariant is enforced in
+# both handlers via _reject_secret_values.
+_NO_SECRET_VALUES_DOC = (
+    "Deliberately accepts NO secret VALUES (a 'secrets' argument is rejected) — credential values "
+    "must never enter model context as tool inputs; declare key names via secrets_schema and let a "
+    "human enter the values in the UI Secrets editor."
+)
+
+_SECRETS_SCHEMA_DOC = (
+    "JSON Schema declaring the hook's expected secret KEY NAMES (never values). The API validates "
+    "the shape (HTTP 400 otherwise): top-level keys are limited to type/properties/"
+    "additionalProperties ($schema and required are rejected), every declared property must be type "
+    "string, and additionalProperties is required — either false (fixed keys: one property per key "
+    "the code reads from payload['secrets'], each {\"type\": \"string\", \"minLength\": 1, "
+    "\"description\": \"<what the key is>\"}; the default for agent-created hooks) or "
+    "{\"type\": \"string\"} (open string map — use for hooks whose code writes its own secrets at "
+    "runtime, e.g. Request Processor OAuth token caching, where a closed schema would reject the "
+    "cache writes). Secret writes are validated against it: with additionalProperties false, "
+    "undeclared keys and (with minLength) empty values are rejected. The UI Secrets editor uses "
+    "declared keys to prefill '{\"<key>\": \"__change_me__\"}' instead of an empty {} (API-side, "
+    "GET /hooks/{id}/secrets_keys stays [] until a human saves values). Existing hooks may carry "
+    "shapes that predate this validation (e.g. $schema/required) — normalize before re-submitting "
+    "one. Secret VALUES are entered by a human in the UI — never through this tool."
+)
+
+
+def _reject_secret_values(request_id, arguments):
+    """Emit an error and return True if the caller tried to pass secret values.
+
+    The dispatch layer does not validate inputSchema, so without this guard a
+    'secrets' argument would be silently dropped and the tool would report
+    success — the model would believe credentials were stored.
+    """
+    if "secrets" not in arguments:
+        return False
+    tool_result(
+        request_id,
+        "Refusing 'secrets': secret VALUES must not flow through model context. Declare key "
+        "names via secrets_schema; a human enters the values in the UI Secrets editor.",
+        is_error=True,
+    )
+    return True
+
+
 @_tool(
     "rossum_create_hook",
     "Creates a new hook (extension) in the Rossum organization. Hooks can be serverless functions "
     "(type='function') executed in Python 3.12 or webhooks (type='webhook') that POST to an external URL. "
-    "This is a write operation.",
+    "Always set description, and when the hook reads payload['secrets'] also set secrets_schema so the "
+    "expected secret key names are declared up front. " + _NO_SECRET_VALUES_DOC +
+    " This is a write operation.",
     {
         "type": "object",
         "required": ["name", "type", "events", "config"],
@@ -3482,12 +3529,33 @@ def handle_get_hook(request_id, arguments):
                 "type": "integer",
                 "description": "User ID whose permissions the hook uses for API calls.",
             },
+            "description": {
+                "type": "string",
+                "description": (
+                    "Human-readable description of what the hook does and why it exists. "
+                    "Always fill this in when creating a hook."
+                ),
+            },
+            "settings": {
+                "type": "object",
+                "description": (
+                    "Hook settings, available to the hook code as payload['settings'] — non-sensitive "
+                    "configuration such as endpoints, queue filters, or mappings. Never put credentials "
+                    "here; declare them in secrets_schema instead."
+                ),
+            },
+            "secrets_schema": {
+                "type": "object",
+                "description": _SECRETS_SCHEMA_DOC,
+            },
         },
         "additionalProperties": False,
     },
     annotations=_WRITE,
 )
 def handle_create_hook(request_id, arguments):
+    if _reject_secret_values(request_id, arguments):
+        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
@@ -3501,10 +3569,11 @@ def handle_create_hook(request_id, arguments):
     }
     if "run_after" in arguments:
         body["run_after"] = _resource_urls(base_url, "hooks", arguments["run_after"])
-    if "sideload" in arguments:
-        body["sideload"] = arguments["sideload"]
     if "token_owner" in arguments:
         body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
+    for key in ("sideload", "description", "settings", "secrets_schema"):
+        if key in arguments:
+            body[key] = arguments[key]
     _rossum_post(request_id, "/api/v1/hooks", body)
 
 
@@ -3512,7 +3581,9 @@ def handle_create_hook(request_id, arguments):
     "rossum_create_hook_from_template",
     "Creates a new hook (extension) from a hook template in the templates catalog (the objects under "
     "GET /hook_templates). The template supplies the base type, code/config, events, and settings_schema; "
-    "the fields you pass here (name, queues, token_owner, settings, …) are merged on top. Use "
+    "the fields you pass here (name, queues, token_owner, settings, …) are merged on top. The template "
+    "also supplies description and secrets_schema — this tool does not accept them; to adjust either "
+    "after creation, use rossum_patch_hook. Use "
     "rossum_get with path '/api/v1/hook_templates' to find a template ID. This differs from "
     "rossum_create_hook, which builds a hook from scratch with no template. This is a write operation.",
     {
@@ -3643,8 +3714,10 @@ def handle_delete_hook(request_id, arguments):
 @_tool(
     "rossum_patch_hook",
     "Updates an existing hook (extension). Only provide the fields you want to change — "
-    "unspecified fields are left untouched. Use this to update hook code, toggle active state, "
-    "change events, or reassign queues without recreating the hook. This is a write operation.",
+    "unspecified fields are left untouched. Object fields differ in PATCH semantics: config is "
+    "merged per-key, while settings and secrets_schema each replace the whole object. Use this to "
+    "update hook code, toggle active state, change events, or reassign queues without recreating "
+    "the hook. " + _NO_SECRET_VALUES_DOC + " This is a write operation.",
     {
         "type": "object",
         "required": ["hook_id"],
@@ -3660,8 +3733,10 @@ def handle_delete_hook(request_id, arguments):
             "config": {
                 "type": "object",
                 "description": (
-                    "Updated config. For function hooks: {\"code\": \"...\"}. "
-                    "Only include keys you want to change."
+                    "Updated config, merged per-key — include only the keys you want to change "
+                    "(e.g. {\"code\": \"...\"} for function hooks; a partial config does not drop "
+                    "other keys). A function hook still deploying (status 'pending') rejects "
+                    "config patches with HTTP 400 — retry once it is ready."
                 ),
             },
             "events": {
@@ -3694,7 +3769,21 @@ def handle_delete_hook(request_id, arguments):
             },
             "settings": {
                 "type": "object",
-                "description": "Updated hook settings.",
+                "description": (
+                    "Updated hook settings. Replaces the whole settings object — "
+                    "read-modify-write via rossum_get_hook to change one key."
+                ),
+            },
+            "description": {
+                "type": "string",
+                "description": (
+                    "Updated human-readable description of what the hook does and why it exists. "
+                    "Keep it up to date whenever the hook's behavior changes."
+                ),
+            },
+            "secrets_schema": {
+                "type": "object",
+                "description": _SECRETS_SCHEMA_DOC + " Replaces the whole schema.",
             },
         },
         "additionalProperties": False,
@@ -3702,12 +3791,15 @@ def handle_delete_hook(request_id, arguments):
     annotations=_WRITE,
 )
 def handle_patch_hook(request_id, arguments):
+    if _reject_secret_values(request_id, arguments):
+        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
     hook_id = arguments["hook_id"]
     body = {}
-    for key in ("name", "config", "events", "active", "sideload", "settings"):
+    for key in ("name", "config", "events", "active", "sideload", "settings",
+                "description", "secrets_schema"):
         if key in arguments:
             body[key] = arguments[key]
     if "queue_ids" in arguments:
