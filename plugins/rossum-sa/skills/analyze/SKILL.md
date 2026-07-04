@@ -24,6 +24,7 @@ With the full picture from Phase 1, check for these issues:
 
 - **Broken schema references** — fields referenced by extensions, formulas, or rules that don't exist in the schema (orphaned references, typos in field IDs)
 - **Hardcoded values in extensions** — URLs, IDs, or credentials embedded in hook code that should be in `hook.settings` or `hook.secrets`
+- **Undeclared hook secrets** — hooks that use secrets (code reading `payload["secrets"]`, settings referencing `{secrets.*}` / `{payload.secrets.*}`, or credentialed integrations like Coupa/Workday/SFTP) whose `secrets_schema` is absent or still the platform default (no declared `properties`) — whoever rotates the credentials has to guess the key names; recommend declaring them (two shapes — see `rossum-reference` → Hook Object Fields)
 - **Missing extension ordering** — extensions without `run_after` when execution order matters (e.g., data enrichment must run before validation)
 - **Deprecated extensions** — Copy & Paste or Find & Replace extensions that no longer work correctly
 - **Formula field mismatches** — formula files that reference schema fields not present in the queue's schema

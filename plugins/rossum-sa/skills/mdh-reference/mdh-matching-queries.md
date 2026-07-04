@@ -107,6 +107,11 @@ Values from extracted document fields are injected via placeholders:
 
 Schema IDs come from queue schema fields where `category` is `"datapoint"`. Only the `id` value of datapoint-category fields should be used as placeholders.
 
+Keys referenced via `{secrets.*}` live in the MDH hook's `secrets` — declare them in the
+hook's `secrets_schema` (closed `"additionalProperties": false` shape; MDH only reads
+them) so the expected key names prefill as `__change_me__` instead of an empty `{}` —
+see `rossum-reference` → Hook Object Fields.
+
 #### Placeholder field type restrictions
 
 MDH placeholders resolve to **stringifiable** values. The following types are **not supported** as placeholder sources and will fail the query with:
