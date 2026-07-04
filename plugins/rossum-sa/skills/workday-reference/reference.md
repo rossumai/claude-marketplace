@@ -117,9 +117,14 @@ exact keys (both endpoints):
   allowlisted on the tenant.
 - Updating hook secrets merges keys (a PATCH with one key does not drop the other).
 
-When creating the hooks, also set `secrets_schema` (via API or prd2 — the UI cannot set
-it) so the Secrets section presents the two expected keys as `__change_me__`
-placeholders instead of an empty `{}`:
+When creating the hooks, also set `secrets_schema` (via the `rossum_create_hook` /
+`rossum_patch_hook` MCP tools, raw API, or prd2 — the UI cannot edit the schema itself)
+so the Secrets editor presents the two expected keys as `__change_me__` placeholders
+instead of an empty `{}`. The closed `additionalProperties: false` shape is the right
+one here: the connector only ever reads these two credentials and never writes secrets
+of its own at runtime (hooks that cache tokens into their own secrets need the open
+`"additionalProperties": {"type": "string"}` shape instead — see `rossum-reference` →
+Hook Object Fields):
 
 ```json
 "secrets_schema": {
