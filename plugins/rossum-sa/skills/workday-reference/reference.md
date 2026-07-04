@@ -14,8 +14,9 @@ mostly a stub), [Export Configuration](https://knowledge-base.rossum.ai/docs/exp
 and [Import Configuration](https://knowledge-base.rossum.ai/docs/import-configuration-1)
 (example-level; the import page shows an outdated config dialect — see the
 [dialect warning](#differential-sync-placeholders)). This pack documents the connector's
-verified contract: settings are strictly validated, so the shapes below are normative,
-not just conventional.
+verified contract; import settings are strictly validated, so the import shapes below
+are normative — the export side is looser (see the validation note under
+[Hook Wiring](#hook-wiring)).
 
 ## Table of Contents
 
@@ -88,10 +89,14 @@ hook via API or prd2 and point `config.url` at the org's own base URL:
   export-ready fields (supplemental formula/matching hooks), and bound to the queues they
   serve via the hook's `queues` list.
 
-**Settings are strictly validated.** Misspelled or unknown keys in a configuration entry
-are rejected rather than silently ignored (one legacy exception: a stray `debug` key at
-the export settings level is tolerated — and has **no effect**; ignore the `debug: true`
-shown in the KB export example).
+**Validation strictness differs per side.** Import settings are strict end to end —
+misspelled or unknown keys are rejected rather than silently ignored. On the export
+side, only the `request` and `wsdl` blocks are strict; unknown keys at the settings and
+configuration-entry level are **silently ignored**. That includes the `debug: true`
+shown in the KB export example (no effect) — and it bites harder than it sounds:
+mistype `queues` as `queue` and the typo is dropped, `queues` stays unset, and the entry
+applies to **every queue** (see configuration selection below). Double-check export
+top-level key names by hand.
 
 ## Credentials and Secrets
 
@@ -583,18 +588,24 @@ Execution model:
   runs as an independent background job (one hook can refresh entities, cost centers,
   projects, tax objects, … in one scheduled run). Failures surface in the hook's logs,
   not on any annotation.
-- An identical job already queued is skipped (dedup), and two runs writing the **same
-  dataset** cannot overlap — the later one fails with an error telling you to space out
-  the cron schedule.
+- Job deduplication **short-circuits the whole invocation**: if an entry's job is
+  already queued (e.g. the previous cron tick is still waiting), the handler stops
+  there — that entry *and every entry after it* in `configurations[]` is silently not
+  enqueued for this run. Put the most critical datasets first, and don't schedule a
+  multi-entry hook faster than its slowest job drains.
+- Independently, two runs writing the **same dataset** cannot overlap — the later one
+  fails with an error telling you to space out the cron schedule.
 - A `replace` rebuilds the dataset **in place** (not an atomic swap): during a long
   replace run, matching sees partial data. Schedule big replaces off-hours — the
   weekend-full-rebuild pattern below.
 - **Paging is automatic**: all pages are fetched (page size `Response_Filter.Count`,
   default 999, the maximum). Setting `Response_Filter.Page` pins the import to that
   single page — a debugging aid, not something to leave in production.
-- `job_run_settings` bounds the background jobs: `retries` (0–10, default 2),
-  `max_run_time_s` (60–36000 s, default 3600 — initial full loads of large tenants take
-  hours, so raise it), `valid_for_s` (300–172800 s, default 86400).
+- `job_run_settings` is accepted and shape-validated (`retries` 0–10, `max_run_time_s`
+  60–36000 s, `valid_for_s` 300–172800 s) but is currently **inert** — the import runs
+  with fixed job parameters (one retry, a fixed multi-hour run cap, ~1-day expiry)
+  regardless of what you set. Don't tune it expecting effect; initial full loads of
+  large tenants simply take hours within the fixed cap.
 
 ### Differential sync placeholders
 
@@ -694,6 +705,7 @@ confirm availability with the connector team before contracting it.
 |---|---|
 | Worked in UAT, fails after go-live | `wsdl.domain`/`tenant` still point at the implementation tenant (see [domains](#implementation-vs-production-domains-the-classic-cut-over-gotcha)); or ISU/IP allowlist missing on production |
 | Export does nothing — no message at all | No configuration matched the annotation's queue (`queues`/`excluded_queues`); selection is first-match and no-match is silent |
+| An export entry fires on queues it shouldn't | Mistyped export top-level key (e.g. `queue` instead of `queues`) — export settings silently ignore unknown keys, so `queues` stays unset and the entry matches every queue |
 | `Mapping error: Datapoint with schema_id '…' not found` | The mapping references a field absent from that queue's schema — fix the schema id or guard with `$IF_SCHEMA_ID$` |
 | `Mapping error: Cannot convert value … ` | `value_type` conversion failed (bad date/number in the field) |
 | SOAP fault "task not authorized" | ISU lacks the domain/web-service permission for that specific operation |
@@ -704,6 +716,7 @@ confirm availability with the connector team before contracting it.
 | Hook times out but the invoice appears in Workday | Slow submit (large attachment): the platform gave up waiting while the connector finished — rely on `Add_Only`/duplicate checks, raise `timeout_s` |
 | Import config rejected on save/run | Unknown key (strict validation), KB-dialect keys, `id_keys` given as a string instead of a list, or an unsupported `request.payload` top-level key |
 | Import runs but a dataset stays stale | Differential window: records' `Updated_*` dates fall outside `${last_modified_date}` − 24 h, or the entry pins `Response_Filter.Page`; force a `replace` run |
+| Later entries of a multi-entry import stay stale | An earlier entry's job was still queued at invocation time — the duplicate short-circuits the rest of the run; slow the cron down or split the hook |
 | Import fails complaining about overlap | Two runs hit the same dataset concurrently — space out the cron schedules |
 | Deleted Workday records linger in a dataset | Differential sync cannot see deletions — add a periodic `replace` rebuild |
 | Import hook does nothing on schedule | `events` missing `invocation.scheduled`, or empty `config.schedule.cron` |
