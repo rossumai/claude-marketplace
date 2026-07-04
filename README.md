@@ -94,6 +94,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **Data Storage API** — CRUD, indexing, search
 - **TxScript & Serverless Functions** — formula fields, extension development
 - **SAP Integration** — connector setup, mapping
+- **Workday Integration** — the Rossum-hosted SOAP connector: export/import hook wiring, the mapping DSL (`@{…}`, `$IF_SCHEMA_ID$`, `$FOR_EACH_SCHEMA_ID$`, `$DATAPOINT_MAPPING$`, `$FETCH_DOCUMENT_CONTENT$`), goods-vs-service line projection, master-data sync into MDH datasets
 - **Export Pipeline (Request Processor)** — multi-stage API integration engine, SFTP export, auth, response handling
 - **Coupa Integration Baseline (CIB)** — schema, MDH matching, export pipeline, business rules
 - **prd2 CLI** — deployment and management commands
