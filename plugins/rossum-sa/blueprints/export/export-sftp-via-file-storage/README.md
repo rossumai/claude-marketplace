@@ -20,4 +20,6 @@ Use this blueprint when you need to push an exported file to an SFTP server but 
 
 The static pass-through fields (`request_id`, `timestamp`, `hook`, `base_url`, `action`, `event`) must be forwarded exactly as shown — the file-storage-export service validates them. If you need SSH key authentication instead of password, replace the `password` key in `secrets` with `ssh_key` pointing to the appropriate hook secret. To prevent overwriting existing files, set `filename_collision.replace` to `false`.
 
+Declare a **closed** `secrets_schema` (`additionalProperties: false`) with the `«auth_secret»` key under `properties` (`minLength: 1` + a description) — nothing writes secrets back at runtime here, and the Secrets editor prefills the declared key as `__change_me__` so whoever pastes the SFTP password or SSH key sees exactly what to provide.
+
 See `export-pipeline-reference` for the Request Processor stage model.

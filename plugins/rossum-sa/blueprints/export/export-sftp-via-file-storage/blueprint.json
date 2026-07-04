@@ -15,5 +15,5 @@
   "consumes": [],
   "provenance": "export-pipeline-reference / reference.md (SFTP Export Pattern)",
   "reference": "export-pipeline-reference#sftp-export",
-  "notes": "Use file-storage-export rather than a direct SFTP call when egress/credential rotation is a concern."
+  "notes": "Use file-storage-export rather than a direct SFTP call when egress/credential rotation is a concern. Hook secrets_schema: CLOSED shape (declared auth_secret key, additionalProperties: false) — nothing writes secrets back at runtime; the Secrets editor prefills the declared key as __change_me__."
 }

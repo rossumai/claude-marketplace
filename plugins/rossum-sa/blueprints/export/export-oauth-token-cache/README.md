@@ -21,4 +21,6 @@ The `auth` block is reusable across multiple `call_api` entries. Copy the same `
 
 The fragment's `request.url` is set to `{field.api_endpoint.value}` as a placeholder — replace it with your real target endpoint URL, or drop the `request` block entirely and copy only the `auth` block into your actual call stage.
 
+Declare the hook's `secrets_schema` with the **open string-map shape**: the `«client_secret»` key under `properties` (so the Secrets editor prefills it as `__change_me__`) plus `additionalProperties: {"type": "string"}` — the engine **writes the cached token back into hook secrets at runtime**, and a closed `additionalProperties: false` schema would reject that write on the first refresh. Snippet in `export-pipeline-reference#authentication`.
+
 See `export-pipeline-reference` for the Request Processor stage model.

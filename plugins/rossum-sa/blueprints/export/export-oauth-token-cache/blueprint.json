@@ -14,5 +14,5 @@
   "consumes": [],
   "provenance": "export-pipeline-reference / reference.md (Authentication)",
   "reference": "export-pipeline-reference#authentication",
-  "notes": "Store the secret in hook secrets, never inline. Refresh triggered on 401 from a downstream stage."
+  "notes": "Store the secret in hook secrets, never inline. Refresh triggered on 401 from a downstream stage. Hook secrets_schema: OPEN string-map shape (declared client_secret key + additionalProperties {\"type\": \"string\"}) — the engine writes the cached token into hook secrets at runtime; a closed additionalProperties: false schema would reject the first refresh (export-pipeline-reference#authentication)."
 }
