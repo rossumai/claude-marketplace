@@ -501,6 +501,22 @@ In multipart: list/tuple values are sent as files, string/other values as form f
 - Available as `{token}` in request templates
 - You **must** explicitly set the Authorization header: `"Authorization": "Bearer {token}"`
 
+Because the pipeline **writes the cached token into hook secrets at runtime**, the
+hook's `secrets_schema` must use the **open string-map shape** — declare the static
+credential keys for `__change_me__` prefill and keep `additionalProperties` open for the
+cache keys (a closed `"additionalProperties": false` schema would reject the token write
+on the first refresh):
+
+```json
+"secrets_schema": {
+  "type": "object",
+  "properties": {
+    "client_secret": { "type": "string", "minLength": 1, "description": "OAuth client secret" }
+  },
+  "additionalProperties": { "type": "string" }
+}
+```
+
 ---
 
 ## Response Handlers
