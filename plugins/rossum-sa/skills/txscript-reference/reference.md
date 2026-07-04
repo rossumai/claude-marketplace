@@ -394,7 +394,7 @@ Both `add` and `remove` can be sent in the same call — useful for "swap label 
 - Always verify `payload["event"]` and `payload["action"]` before execution in raw hooks
 
 ### Runtime & debugging
-- Python 3.12 runtime (AWS Lambda-style). Store configuration in `hook.settings` and credentials in `hook.secrets_schema` — never hard-code them.
+- Python 3.12 runtime (AWS Lambda-style). Store configuration in `hook.settings` and credentials in `hook.secrets` (declare their expected key names in `hook.secrets_schema`) — never hard-code them.
 - `print(...)` output appears in Extensions → Logs → Detail under the `output` key (alongside `t.show_info` messages).
 - Prefer single-threaded code; reach for `asyncio`/`httpx` only for genuinely I/O-bound parallel calls.
 - Catch specific exceptions rather than a broad `except Exception`.

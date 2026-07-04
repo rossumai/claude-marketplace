@@ -14,6 +14,7 @@ adding more (handler, args, responder, assertions) cases.
 """
 from __future__ import annotations
 
+import copy
 import json
 import sys
 
@@ -605,7 +606,9 @@ def test_create_hook_from_template_passes_through_optional_fields(monkeypatch):
 
 def test_create_hook_passes_through_description_settings_secrets_schema(monkeypatch):
     # The optional description/settings/secrets_schema fields must reach
-    # POST /api/v1/hooks verbatim (objects untouched).
+    # POST /api/v1/hooks verbatim. Handlers pass objects through by reference,
+    # so compare against deepcopy snapshots — equality against the same object
+    # could not detect in-place mutation.
     secrets_schema = {
         "type": "object",
         "properties": {"api_key": {"type": "string", "minLength": 1,
@@ -613,6 +616,8 @@ def test_create_hook_passes_through_description_settings_secrets_schema(monkeypa
         "additionalProperties": False,
     }
     settings = {"endpoint": "https://x.example", "retry": 3}
+    expected_schema = copy.deepcopy(secrets_schema)
+    expected_settings = copy.deepcopy(settings)
     fake, _ = run_handler(
         monkeypatch, "rossum_create_hook",
         {"name": "H", "type": "webhook", "events": ["invocation.manual"],
@@ -622,10 +627,13 @@ def test_create_hook_passes_through_description_settings_secrets_schema(monkeypa
         lambda url, method, body: {"id": 60, "name": "H"}
         if method == "POST" and url.endswith("/api/v1/hooks") else None,
     )
-    body = fake.calls[0]["body"]
-    assert body["description"] == "Test hook"
-    assert body["settings"] == settings
-    assert body["secrets_schema"] == secrets_schema
+    assert fake.calls, "handler should have issued the POST"
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/hooks")
+    assert call["body"]["description"] == "Test hook"
+    assert call["body"]["settings"] == expected_settings
+    assert call["body"]["secrets_schema"] == expected_schema
 
 
 def test_create_hook_omits_unset_optional_fields(monkeypatch):
@@ -636,6 +644,7 @@ def test_create_hook_omits_unset_optional_fields(monkeypatch):
          "config": {"url": "https://example.com/wh"}},
         lambda url, method, body: {"id": 61, "name": "H"},
     )
+    assert fake.calls, "handler should have issued the POST"
     body = fake.calls[0]["body"]
     for absent in ("description", "settings", "secrets_schema"):
         assert absent not in body
@@ -647,25 +656,51 @@ def test_patch_hook_passes_through_description_and_secrets_schema(monkeypatch):
         "properties": {"token": {"type": "string", "minLength": 1}},
         "additionalProperties": False,
     }
+    expected_schema = copy.deepcopy(secrets_schema)
     fake, _ = run_handler(
         monkeypatch, "rossum_patch_hook",
         {"hook_id": 7, "description": "Updated", "secrets_schema": secrets_schema},
         lambda url, method, body: {"id": 7}
         if method == "PATCH" and url.endswith("/api/v1/hooks/7") else None,
     )
-    body = fake.calls[0]["body"]
-    assert body["description"] == "Updated"
-    assert body["secrets_schema"] == secrets_schema
+    assert fake.calls, "handler should have issued the PATCH"
+    call = fake.calls[0]
+    assert call["method"] == "PATCH"
+    assert call["url"].endswith("/api/v1/hooks/7")
+    assert call["body"]["description"] == "Updated"
+    assert call["body"]["secrets_schema"] == expected_schema
 
 
-def test_hook_tools_never_accept_secret_values():
-    # Credential values must not flow through model context: neither hook tool
-    # may grow a 'secrets' parameter. secrets_schema declares key NAMES only;
+def test_no_tool_accepts_secret_values():
+    # Credential values must not flow through model context: NO tool in the
+    # registry may accept a 'secrets' parameter (sweeping all tools catches a
+    # future hook tool growing one). secrets_schema declares key NAMES only;
     # a human fills the values in the UI Secrets editor.
+    for name, tool in server.TOOLS.items():
+        props = tool["inputSchema"].get("properties", {})
+        assert "secrets" not in props, f"{name} must not accept secret values"
     for tool in ("rossum_create_hook", "rossum_patch_hook"):
-        props = server.TOOLS[tool]["inputSchema"]["properties"]
-        assert "secrets" not in props, f"{tool} must not accept secret values"
-        assert "secrets_schema" in props
+        assert "secrets_schema" in server.TOOLS[tool]["inputSchema"]["properties"]
+
+
+def test_hook_write_tools_reject_secret_values_loudly(monkeypatch):
+    # The dispatch layer does not validate inputSchema, so a 'secrets' argument
+    # would be silently dropped and reported as success — the model would
+    # believe credentials were stored. Both handlers must refuse it instead.
+    create_args = {"name": "H", "type": "webhook", "events": ["invocation.manual"],
+                   "config": {"url": "https://example.com/wh"},
+                   "secrets": {"api_key": "hunter2"}}
+    patch_args = {"hook_id": 7, "secrets": {"api_key": "hunter2"}}
+    for handler, args in (("rossum_create_hook", create_args),
+                          ("rossum_patch_hook", patch_args)):
+        fake, emitted = run_handler(
+            monkeypatch, handler, args,
+            lambda url, method, body: {"id": 60},
+        )
+        assert not fake.calls, f"{handler} must not reach the API with secrets"
+        res = emitted[-1]["result"]
+        assert res.get("isError"), f"{handler} must surface an error"
+        assert "secret" in res["content"][0]["text"].lower()
 
 
 # --- email template tools: body shaping, render-as-read, delete, annotations ---
