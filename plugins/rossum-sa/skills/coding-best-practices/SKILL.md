@@ -39,19 +39,20 @@ Flag hooks where the entire logic could be replaced by a no-code extension.
 ### 2.2 — Security (Critical)
 
 **No hardcoded credentials**
-Passwords, API keys, client secrets must never appear in code. Use `payload["secrets"]` and define `secrets_schema` in the hook JSON:
-```json
+Passwords, API keys, client secrets must never appear in code. Use `payload["secrets"]` and define `secrets_schema` in the hook JSON (outside a prd2 tree, set it via the `rossum_create_hook` / `rossum_patch_hook` MCP tools — key names only, a human enters the values):
+```jsonc
 // hook.json — secrets_schema
 {
-  "$schema": "http://json-schema.org/draft-04/schema#",
   "type": "object",
   "properties": {
-    "username": { "type": "string" },
-    "password": { "type": "string" }
+    "username": { "type": "string", "minLength": 1, "description": "Service account login" },
+    "password": { "type": "string", "minLength": 1, "description": "Service account password" }
   },
-  "required": ["username", "password"]
+  "additionalProperties": false
 }
 ```
+
+The API enforces this shape: top-level keys other than `type`/`properties`/`additionalProperties` are rejected (no `$schema`, no `required`), every declared property must be type `string`, and `additionalProperties` must be present — HTTP 400 otherwise. Use `false` (as above) for a fixed credential set; for hooks whose code writes its own secrets at runtime (e.g. OAuth token caches), use `"additionalProperties": {"type": "string"}` instead, since a closed schema would reject those writes.
 ```python
 # Bad
 auth=("api_user", "Hardcoded123")
