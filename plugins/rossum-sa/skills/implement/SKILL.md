@@ -236,7 +236,7 @@ Create a task list with one task per applicable phase to track progress.
 
 2. **Build the export mapping** (Jinja2 template). Use `{{ field.schema_id }}` for header fields, `{{ item.schema_id }}` inside `{% for item in field.line_items %}` for line items. See `rossum-reference` for export mapping patterns.
 
-3. **If the export target requires authentication** (OAuth, API key), configure credentials in `hook.secrets` — never hardcode them in the hook config.
+3. **If the export target requires authentication** (OAuth, API key), configure credentials in `hook.secrets` — never hardcode them in the hook config — and declare the expected key names in the hook's `secrets_schema` so the Secrets editor prefills `__change_me__` placeholders instead of an empty `{}`. This is the standard for every hook that carries secrets; pick the closed or open shape per `rossum-reference` → Hook Object Fields (open when the hook writes its own secrets at runtime, e.g. OAuth token caching).
 
 4. **Chain response parsing.** If the export returns data that needs to be processed (e.g., Coupa returns an invoice ID), create a response parsing hook with `run_after` pointing to the export hook.
 

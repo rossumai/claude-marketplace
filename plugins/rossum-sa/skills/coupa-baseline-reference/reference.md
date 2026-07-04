@@ -784,6 +784,21 @@ All export API calls use OAuth 2.0 client credentials:
 - Client Secret: from hook secret `client_secret`
 - Scopes: `core.invoice.create core.invoice.read core.invoice.write`
 
+Declare `client_secret` in the export hook's `secrets_schema` so the Secrets editor
+prefills the key as `__change_me__` — and use the **open string-map shape**, because the
+Request Processor caches the OAuth token into hook secrets at runtime (a closed
+`"additionalProperties": false` schema would reject that write):
+
+```json
+"secrets_schema": {
+  "type": "object",
+  "properties": {
+    "client_secret": { "type": "string", "minLength": 1, "description": "Coupa OAuth client secret" }
+  },
+  "additionalProperties": { "type": "string" }
+}
+```
+
 ### 6.6 Handle Coupa Responses (Serverless Function)
 
 The final step parses all 4 API responses and shows errors/warnings to the user:
