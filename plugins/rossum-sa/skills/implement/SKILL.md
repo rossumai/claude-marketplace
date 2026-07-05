@@ -246,6 +246,7 @@ See `business-rules-reference` for the full picture — it owns both validation 
 5. **Target-specific references:**
    - **Coupa** → `coupa-baseline-reference` (the CIB baseline: schema, MDH matching, export pipeline); `coupa-bulk-replication` for large master-data imports.
    - **SAP** → `sap-reference` for IDOC generation patterns, middleware requirements, and master data considerations.
+   - **Workday** → `workday-reference` for the Rossum-hosted SOAP connector (`svc/workday`): export/import hook wiring + secrets, the mapping template DSL, and MDH master-data import with differential sync.
    - **SFTP** → `export-pipeline-reference` (file-storage-export) for outbound file delivery.
 
 **Artifact:** Export hook config + Jinja2 mapping template, response parsing hooks if needed.
