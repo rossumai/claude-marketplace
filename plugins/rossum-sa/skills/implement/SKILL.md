@@ -41,12 +41,12 @@ At each phase, reference the appropriate skill for detailed guidance rather than
 | Phase | Reference Skills |
 |-------|-----------------|
 | 1 — Project Setup | `prd-reference` |
-| 2 — Schema Design | `rossum-reference` (schema templates, extraction engines) |
+| 2 — Schema Design | `rossum-reference` (schema templates, extraction engines), `queue-engine-binding` (engine-bound queues) |
 | 3 — Master Data Hub | `mdh-reference`, `mongodb-reference`, `data-storage-reference` |
-| 4 — Extensions & Serverless Functions | `txscript-reference`, `rossum-reference` (hook patterns) |
-| 5 — Business Rules | `rossum-reference` (business rules validation) |
-| 6 — Export Pipeline | `export-pipeline-reference` (Request Processor config), `rossum-reference` (export mapping), `sap-reference` (if SAP) |
-| 7 — Test & Promote | `prd-reference` (deployment) |
+| 4 — Extensions & Serverless Functions | `txscript-reference`, `rossum-reference` (hook patterns), `coding-best-practices` (hook code quality/security) |
+| 5 — Business Rules | `business-rules-reference` (native Rules + legacy BRV extension), `txscript-reference` (`trigger_condition` syntax) |
+| 6 — Export Pipeline | `export-pipeline-reference` (Request Processor config), `render-export-template` (legacy Jinja2 export templates), `sap-reference` / `coupa-baseline-reference` (target-specific) |
+| 7 — Test & Promote | `prd-reference` (deployment), `iterate` (single-annotation loop), `test-behavioral-equivalence` (corpus regression) |
 
 ---
 
@@ -66,6 +66,7 @@ Based on answers, determine:
 - **Which phases are needed** (e.g., no master data = skip Phase 3, no export = skip Phase 6)
 - **Engine binding per queue** — generic engine vs. custom engine, decided by pretrained-catalog coverage of the required fields (see `rossum-reference` → Extraction Engines → "Choosing an engine")
 - **Relative complexity** — simple (1-2 queues, basic matching), medium (3-10 queues, MDH + export), complex (10+ queues, multi-region, multiple integrations)
+- **Multi-step approval** — if documents route through an approval chain, see `approval-workflows-reference` (a paid, Rossum-configured feature — read-only via the public API; no create/edit endpoint)
 
 Create a task list with one task per applicable phase to track progress.
 
@@ -109,7 +110,7 @@ Create a task list with one task per applicable phase to track progress.
 
 **Steps:**
 
-0. **Check the queue's engine binding first** (`queue.json` → `engine`). On engine-bound queues, extraction wiring uses engine fields (name match, empty `rir_field_names`), not `rir_field_names` — and new captured fields need their engine field created first. See `rossum-reference` → Extraction Engines.
+0. **Check the queue's engine binding first** (`queue.json` → `engine`). On engine-bound queues, extraction wiring uses engine fields (name match, empty `rir_field_names`), not `rir_field_names` — and each new captured datapoint needs its engine field (`name` == the datapoint id) created **first**, or the schema push is rejected. Create it with `rossum_create_engine_field` (edit an existing one with `rossum_patch_engine_field`; note `name` is immutable) before adding the datapoint to the schema. For changing which engine a queue is bound to (or greenfield engine creation), use the `queue-engine-binding` skill. See `rossum-reference` → Extraction Engines for the binding rules.
 
 1. **List all fields needed** per queue — group by:
    - **Captured** (OCR-extracted): `type: "string"`, `ui_configuration.type: "captured"` (on engine-bound queues a matching engine field must exist — see step 0)
@@ -121,7 +122,9 @@ Create a task list with one task per applicable phase to track progress.
 
 3. **Add fields to schema.json** locally. Use the schema field templates from `rossum-reference`.
 
-4. **Deploy schema changes.** This requires `prd2 push` — **confirm with user before executing.**
+4. **Dry-run the schema before deploying.** `rossum_validate_schema` (read-only) returns `{}` for a valid schema or a positional error tree — pass the queue's `schema_id` so engine-binding checks run. Fix any errors locally first.
+
+5. **Deploy schema changes.** Either `prd2 push` (the prd2-tree path — **confirm with user before executing**) or, for a direct-API edit outside a prd2 flow, `rossum_patch_schema` (also gated). Prefer `prd2 push` when the project is a prd2 tree so the local tree stays the source of truth.
 
 **Artifact:** Updated schema.json files with all required fields, deployed to the environment.
 
@@ -145,8 +148,8 @@ Create a task list with one task per applicable phase to track progress.
    - **Query 3: Fuzzy search** — Atlas Search with `maxEdits`, score normalization
    - Execution stops at the first query that returns results.
 
-4. **Create the MDH hook.** This is the "mystery" workflow:
-   1. **Create the hook shell via the Rossum API** — this registers the hook on the platform and assigns it an ID. **Confirm with user before executing.**
+4. **Create the MDH hook.** In a prd2 tree, create the hook via the API to get its ID, then author the (large) config locally:
+   1. **Create the hook shell** with `rossum_create_hook` — this registers the hook and assigns an ID. Pass `settings`, `description`, and (if it reads credentials) `secrets_schema` in the same call so you don't have to patch them afterwards. `rossum_create_hook_from_template` instantiates from the `hook_templates` catalog; `rossum_duplicate_hook` clones an existing one. **Confirm with user before executing.**
    2. **`prd2 pull`** — pulls the new hook's JSON config file into the local project directory (read-only).
    3. **Populate the hook config** locally — add sections with datasets, queries, mappings, result actions, and additional mappings.
    4. **`prd2 push`** — deploys the populated config back to the environment. **Confirm with user before executing.**
@@ -175,7 +178,7 @@ Create a task list with one task per applicable phase to track progress.
    - Pre/post-processing around MDH or export
 
 2. **For each extension, follow the hook creation workflow:**
-   1. **Create the hook shell via API.** **Confirm with user before executing.**
+   1. **Create the hook** with `rossum_create_hook` (declare `settings` + `secrets_schema` in the same call for credentialed hooks; `rossum_create_hook_from_template` / `rossum_duplicate_hook` are the template/clone variants). **Confirm with user before executing.** Review the code against `coding-best-practices` before it goes live.
    2. **`prd2 pull`** to get the hook config locally.
    3. **Write the serverless function** code in the `.py` file using the TxScript API (see `txscript-reference`). **NEVER edit the `code` field inside the hook JSON** — `prd2` extracts code into `.py` files on pull and merges it back on push, so the `.py` file is the single source of truth.
    4. **`prd2 push`** to deploy. **Confirm with user before executing.**
@@ -205,22 +208,20 @@ Create a task list with one task per applicable phase to track progress.
 
 **Prerequisites:** Phases 2-4 complete — rules reference schema fields that must exist.
 
+See `business-rules-reference` for the full picture — it owns both validation surfaces and when to choose each.
+
 **Steps:**
 
-1. **Define validation rules.** For each rule, specify:
-   - `rule`: the validation expression (e.g., `has_value({po_number}) or has_value({sender_name})`)
-   - `type`: `error` (blocks confirm/export) or `warning` (informational)
-   - `message`: user-facing message
-   - `condition`: optional — rule only fires when condition is true
-   - `automation_blocker`: `true` to prevent automated processing when rule fires
+1. **Prefer native Rossum Rules** (the `/v1/rules` entity) — the modern, platform-native path. A Rule is a boolean `trigger_condition` (a **TxScript** expression — `field.X` access; see `txscript-reference`) plus an `actions[]` array (`show_message` at `error`/`warning`/`info`, `add_automation_blocker`, show/hide toggles). **Polarity: `trigger_condition` is the FIRE predicate** — it must be `True` in the *problem* state (invert any expression that describes the OK state). A `show_message(error)` + `add_automation_blocker` pair both blocks export and shows the banner.
+   - Use the legacy **Business Rules Validation extension** (`checks[]` config, `{field}`-brace engine) only when maintaining an existing one — `business-rules-reference` covers its syntax.
 
-2. **Add rules to the queue configuration** locally.
+2. **Create/edit the rule.** MCP has full native-rule CRUD: `rossum_create_rule`, `rossum_get_rule`, `rossum_list_rules`, `rossum_patch_rule`, `rossum_delete_rule` (and `rossum_list_rule_execution_logs` for debugging). In a prd2 tree, create via the `_[]` placeholder on push instead. **Confirm with user before any write.** Two gotchas (both live-confirmed):
+   - **`name`/`description` are capped at 255 chars** — a longer `description` 400s. Keep both short; rationale belongs in the spec/plan, not the rule.
+   - **A rule can land with `queues: []` and silently never evaluate** — notably a prd2 `_[]`-placeholder push doesn't send the rule-side queues. After creating, verify `GET /rules/{id}` (or `rossum_get_rule`) shows the intended queues; if empty, set them via `rossum_patch_rule` (`queue_ids`) or add the rule URL to `queue.json`'s `rules` array and push the queue.
 
-3. **Deploy rules.** `prd2 push` — **confirm with user before executing.**
+3. **Configure duplicate detection** if needed — set up the duplicate detection extension with the relevant fields.
 
-4. **Configure duplicate detection** if needed — set up the duplicate detection extension with the relevant fields.
-
-**Artifact:** Business rules JSON configs deployed to the environment.
+**Artifact:** Native Rules (or BRV `checks[]` config) deployed and attached to the queue.
 
 ---
 
@@ -234,13 +235,19 @@ Create a task list with one task per applicable phase to track progress.
 
 1. **Create the export hook** using the hook creation workflow (API → pull → populate → push). **Confirm with user at each write step.**
 
-2. **Build the export mapping** (Jinja2 template). Use `{{ field.schema_id }}` for header fields, `{{ item.schema_id }}` inside `{% for item in field.line_items %}` for line items. See `rossum-reference` for export mapping patterns.
+2. **Build the export mapping.** Two distinct surfaces — pick by target:
+   - **Legacy Jinja2 / Custom Format Templating** (flat file, CSV, XML, EDI, custom JSON) — use the **`render-export-template`** skill to author, render against a real annotation, and iterate on the template; `rossum_extract_export_template` / `rossum_generate_export_payload` / `rossum_generate_export_settings` are the supporting MCP tools.
+   - **Request Processor (JSON export pipeline)** — for multi-stage API integrations; see `export-pipeline-reference`.
 
 3. **If the export target requires authentication** (OAuth, API key), configure credentials in `hook.secrets` — never hardcode them in the hook config — and declare the expected key names in the hook's `secrets_schema` so the Secrets editor prefills `__change_me__` placeholders instead of an empty `{}`. This is the standard for every hook that carries secrets; pick the closed or open shape per `rossum-reference` → Hook Object Fields (open when the hook writes its own secrets at runtime, e.g. OAuth token caching).
 
 4. **Chain response parsing.** If the export returns data that needs to be processed (e.g., Coupa returns an invoice ID), create a response parsing hook with `run_after` pointing to the export hook.
 
-5. **For SAP integrations**, consult `sap-reference` for IDOC generation patterns, middleware requirements, and master data considerations.
+5. **Target-specific references:**
+   - **Coupa** → `coupa-baseline-reference` (the CIB baseline: schema, MDH matching, export pipeline); `coupa-bulk-replication` for large master-data imports.
+   - **SAP** → `sap-reference` for IDOC generation patterns, middleware requirements, and master data considerations.
+   - **Workday** → `workday-reference` for the Rossum-hosted SOAP connector (`svc/workday`): export/import hook wiring + secrets, the mapping template DSL, and MDH master-data import with differential sync.
+   - **SFTP** → `export-pipeline-reference` (file-storage-export) for outbound file delivery.
 
 **Artifact:** Export hook config + Jinja2 mapping template, response parsing hooks if needed.
 
