@@ -86,6 +86,41 @@ def _error_class(event: dict) -> str:
     return str(resp.get("error") or resp.get("stderr") or "unknown")[:80]
 
 
+import os
+from pathlib import Path
+
+ERROR_THRESHOLD = 3
+DEVLOOP_THRESHOLD = 3
+THRESHOLD_FLOOR = 2
+
+
+def _cache_dir() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "rossum-sa"
+
+
+def is_opted_out() -> bool:
+    if os.environ.get("ROSSUM_SA_NO_FEEDBACK") == "1":
+        return True
+    return (_cache_dir() / "feedback-optout").exists()
+
+
+def evaluate(state: dict) -> str | None:
+    n_corr = len(_corroborators(state))
+    err_thr = max(THRESHOLD_FLOOR, ERROR_THRESHOLD - n_corr)
+    dev_thr = max(THRESHOLD_FLOOR, DEVLOOP_THRESHOLD - n_corr)
+    max_streak = max(state["tool_error_streaks"].values(), default=0)
+    if max_streak >= err_thr:
+        desc = f"repeated_tool_error x{max_streak} on {state.get('last_tool')}"
+        state["signals_tripped"].insert(0, "repeated_tool_error")
+        return desc
+    if state["counts"]["devloop_cycles"] >= dev_thr:
+        desc = f"devloop_stall x{state['counts']['devloop_cycles']}"
+        state["signals_tripped"].insert(0, "devloop_stall")
+        return desc
+    return None
+
+
 def apply_event(state: dict, event: dict) -> dict:
     ev = event.get("hook_event_name")
     tool = event.get("tool_name")

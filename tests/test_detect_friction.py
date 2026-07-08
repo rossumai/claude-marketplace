@@ -68,3 +68,45 @@ def test_reprompt_and_frustration():
     assert st["frustration_hit"] is True
     assert m.scan_frustration("that's not what I asked") is True
     assert m.scan_frustration("great, thanks") is False
+
+
+import os
+
+def _fail(tool="rossum_get"):
+    return {"hook_event_name": "PostToolUseFailure", "tool_name": tool,
+            "tool_response": {"error": "HTTP 500"}}
+
+def test_three_errors_trigger():
+    m = _load()
+    st = m.new_state("s")
+    for _ in range(3):
+        m.apply_event(st, _fail())
+    assert m.evaluate(st) is not None
+
+def test_two_errors_plus_frustration_trigger():
+    m = _load()
+    st = m.new_state("s")
+    for _ in range(2):
+        m.apply_event(st, _fail())
+    m.apply_event(st, {"hook_event_name": "UserPromptSubmit",
+                       "prompt": "still broken"})
+    assert m.evaluate(st) is not None      # threshold lowered 3 -> 2
+
+def test_two_errors_alone_no_trigger():
+    m = _load()
+    st = m.new_state("s")
+    for _ in range(2):
+        m.apply_event(st, _fail())
+    assert m.evaluate(st) is None
+
+def test_chatty_session_no_trigger():
+    m = _load()
+    st = m.new_state("s")
+    for _ in range(8):
+        m.apply_event(st, {"hook_event_name": "UserPromptSubmit", "prompt": "next"})
+    assert m.evaluate(st) is None
+
+def test_opt_out_env(monkeypatch):
+    m = _load()
+    monkeypatch.setenv("ROSSUM_SA_NO_FEEDBACK", "1")
+    assert m.is_opted_out() is True
