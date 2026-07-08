@@ -26,7 +26,7 @@ def test_state_to_payload_only_allowlisted():
     st["counts"]["tool_errors"] = 3
     st["_secret_leak"] = {"annotation_id": 999, "raw": "customer data"}
     payload = m.state_to_payload(st, route="agent-bug", description="hi")
-    assert set(payload) <= set(m.FEEDBACK_FIELDS)
+    assert set(payload) == set(m.FEEDBACK_FIELDS)
     assert "annotation_id" not in str(payload)
     assert payload["tool_name"] == "rossum_get_annotation"
     assert payload["counts"]["errors"] == 3
@@ -69,8 +69,6 @@ def test_reprompt_and_frustration():
     assert m.scan_frustration("that's not what I asked") is True
     assert m.scan_frustration("great, thanks") is False
 
-
-import os
 
 def _fail(tool="rossum_get"):
     return {"hook_event_name": "PostToolUseFailure", "tool_name": tool,

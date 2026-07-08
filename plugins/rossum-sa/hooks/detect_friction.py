@@ -7,7 +7,11 @@ plugin-feedback skill. Never sends anything; never blocks; always exits 0.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import sys
+from pathlib import Path
 
 # Frozen sanitized allow-list — the shared contract (mirror: payload-contract.md).
 FEEDBACK_FIELDS = (
@@ -86,9 +90,6 @@ def _error_class(event: dict) -> str:
     return str(resp.get("error") or resp.get("stderr") or "unknown")[:80]
 
 
-import os
-from pathlib import Path
-
 ERROR_THRESHOLD = 3
 DEVLOOP_THRESHOLD = 3
 THRESHOLD_FLOOR = 2
@@ -144,9 +145,6 @@ def apply_event(state: dict, event: dict) -> dict:
             state["frustration_hit"] = True
     return state
 
-
-import json
-import sys
 
 _NUDGE_EVENTS = ("UserPromptSubmit", "Stop")
 

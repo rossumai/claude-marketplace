@@ -18,6 +18,8 @@ def test_config_defaults():
     assert cfg["target_repo"] == "rossumai/claude-marketplace"
     assert cfg["form_url"] == ""          # unset until Plan 1
     assert cfg["form_fields"] == {}
+    assert cfg["labels"] == ["tool-request", "agent-bug", "knowledge-gap"]
+    assert "mailto" in cfg
 
 def test_contract_doc_matches_code():
     spec = importlib.util.spec_from_file_location(
