@@ -136,3 +136,14 @@ def test_run_respects_optout(tmp_path, monkeypatch):
     out = m.run({"hook_event_name": "UserPromptSubmit",
                  "prompt": "help", "session_id": "s10"})
     assert out is None
+
+
+def test_main_always_exits_zero_on_internal_error(monkeypatch):
+    m = _load()
+    import io
+    monkeypatch.setattr(m.sys, "stdin", io.StringIO(
+        '{"hook_event_name":"UserPromptSubmit","prompt":"hi","session_id":"x"}'))
+    def boom(event):
+        raise OSError("disk full")
+    monkeypatch.setattr(m, "run", boom)
+    assert m.main() == 0

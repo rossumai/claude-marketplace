@@ -205,11 +205,11 @@ def run(event: dict) -> dict | None:
 def main() -> int:
     try:
         event = json.loads(sys.stdin.read() or "{}")
-    except ValueError:
+        out = run(event)
+        if out is not None:
+            sys.stdout.write(json.dumps(out))
+    except Exception:
         return 0
-    out = run(event)
-    if out is not None:
-        sys.stdout.write(json.dumps(out))
     return 0
 
 
