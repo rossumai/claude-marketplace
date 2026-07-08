@@ -147,3 +147,15 @@ def test_main_always_exits_zero_on_internal_error(monkeypatch):
         raise OSError("disk full")
     monkeypatch.setattr(m, "run", boom)
     assert m.main() == 0
+
+
+import json as _json
+
+def test_hooks_json_wires_all_events():
+    cfg = _json.loads((ROOT / "plugins/rossum-sa/hooks/hooks.json").read_text())
+    hooks = cfg["hooks"]
+    for ev in ("PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop"):
+        assert ev in hooks, f"missing {ev}"
+        cmd = hooks[ev][0]["hooks"][0]["command"]
+        assert "${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py" in cmd
+        assert cmd.startswith("python3 ")
