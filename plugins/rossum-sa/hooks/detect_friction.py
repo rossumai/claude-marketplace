@@ -143,3 +143,75 @@ def apply_event(state: dict, event: dict) -> dict:
         if scan_frustration(event.get("prompt", "")):
             state["frustration_hit"] = True
     return state
+
+
+import json
+import sys
+
+_NUDGE_EVENTS = ("UserPromptSubmit", "Stop")
+
+
+def state_path(session_id: str) -> Path:
+    return _cache_dir() / "friction" / f"{session_id or 'nosession'}.json"
+
+
+def load_state(session_id: str) -> dict:
+    p = state_path(session_id)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            pass
+    return new_state(session_id)
+
+
+def save_state(state: dict) -> None:
+    p = state_path(state["session_id"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state), encoding="utf-8")
+
+
+def build_nudge(signal_desc: str) -> str:
+    return (
+        f"[rossum-sa] Friction detected this session ({signal_desc}). "
+        "Consider OFFERING once, in your next reply: \"I've hit repeated trouble "
+        "this session — want me to send anonymized feedback to the plugin authors "
+        "via /rossum-sa:plugin-feedback?\" Do NOT run the skill without an explicit "
+        "yes. If the user declines, do not offer again this session."
+    )
+
+
+def run(event: dict) -> dict | None:
+    session_id = event.get("session_id", "")
+    state = load_state(session_id)
+    apply_event(state, event)
+    result = None
+    ev = event.get("hook_event_name")
+    if ev in _NUDGE_EVENTS and not state["offered"] and not is_opted_out():
+        desc = evaluate(state)
+        if desc:
+            state["offered"] = True
+            result = {
+                "continue": True,
+                "hookSpecificOutput": {
+                    "hookEventName": ev,
+                    "additionalContext": build_nudge(desc),
+                },
+            }
+    save_state(state)
+    return result
+
+
+def main() -> int:
+    try:
+        event = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    out = run(event)
+    if out is not None:
+        sys.stdout.write(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

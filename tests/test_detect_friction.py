@@ -110,3 +110,29 @@ def test_opt_out_env(monkeypatch):
     m = _load()
     monkeypatch.setenv("ROSSUM_SA_NO_FEEDBACK", "1")
     assert m.is_opted_out() is True
+
+
+def test_run_emits_nudge_once_then_silent(tmp_path, monkeypatch):
+    m = _load()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.delenv("ROSSUM_SA_NO_FEEDBACK", raising=False)
+    for _ in range(3):
+        m.run(_fail() | {"session_id": "s9"})
+    out = m.run({"hook_event_name": "UserPromptSubmit",
+                 "prompt": "help", "session_id": "s9"})
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "plugin-feedback" in ctx and out["continue"] is True
+    again = m.run({"hook_event_name": "UserPromptSubmit",
+                   "prompt": "again", "session_id": "s9"})
+    assert again is None or "additionalContext" not in (again or {}).get(
+        "hookSpecificOutput", {})
+
+def test_run_respects_optout(tmp_path, monkeypatch):
+    m = _load()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("ROSSUM_SA_NO_FEEDBACK", "1")
+    for _ in range(3):
+        m.run(_fail() | {"session_id": "s10"})
+    out = m.run({"hook_event_name": "UserPromptSubmit",
+                 "prompt": "help", "session_id": "s10"})
+    assert out is None
