@@ -439,3 +439,57 @@ def test_upload_to_queue_polls_task_with_no_redirect(monkeypatch):
     out = server._upload_to_queue(1, "https://x.rossum.ai", 5, b"d", "f.pdf")
     assert out == "https://x.rossum.ai/api/v1/annotations/3"
     assert seen["task_url"].endswith("/tasks/1?no_redirect=true")
+
+
+# --- _walk_compact_content: fields-filter table semantics (review round) ---
+
+_WALK_TREE = [{
+    "category": "section",
+    "children": [
+        {"category": "datapoint", "id": 1, "schema_id": "invoice_id",
+         "content": {"value": "INV-1"}, "validation_sources": ["human"]},
+        {"category": "multivalue", "id": 30, "schema_id": "line_items", "children": [
+            {"category": "tuple", "id": 31, "children": [
+                {"category": "datapoint", "id": 32, "schema_id": "item_desc",
+                 "content": {"value": "Widget"}, "validation_sources": ["human"]},
+                {"category": "datapoint", "id": 33, "schema_id": "item_qty",
+                 "content": {"value": "2"}, "validation_sources": ["human"]},
+            ]},
+            {"category": "tuple", "id": 41, "children": [
+                {"category": "datapoint", "id": 42, "schema_id": "item_desc",
+                 "content": {"value": "Bolt"}, "validation_sources": ["human"]},
+            ]},
+        ]},
+    ],
+}]
+
+
+def test_walk_compact_fields_filter_skips_unmatched_tables():
+    # header-only filter: no {} row skeletons for tables with zero matching cells
+    fields, tables = server._walk_compact_content(_WALK_TREE, fields=["invoice_id"])
+    assert "invoice_id" in fields
+    assert tables == {}
+
+
+def test_walk_compact_fields_filter_multivalue_id_selects_whole_table():
+    fields, tables = server._walk_compact_content(_WALK_TREE, fields=["line_items"])
+    assert fields == {}
+    rows = tables["line_items"]["rows"]
+    assert rows[0]["item_desc"]["value"] == "Widget"
+    assert rows[0]["item_qty"]["value"] == "2"      # all cells, not filtered out
+
+
+def test_walk_compact_include_ids():
+    fields, tables = server._walk_compact_content(
+        _WALK_TREE, fields=["item_desc"], include_ids=True)
+    rows = tables["line_items"]["rows"]
+    assert rows[0]["_row_id"] == 31 and rows[1]["_row_id"] == 41
+    assert rows[0]["item_desc"]["id"] == 32
+
+
+def test_walk_compact_default_shape_unchanged():
+    # no filter, no ids: rossum_get_annotation's existing output must not change
+    fields, tables = server._walk_compact_content(_WALK_TREE)
+    assert fields["invoice_id"] == {"value": "INV-1", "src": "human"}
+    assert tables["line_items"]["rows"][0]["item_desc"] == {"value": "Widget", "src": "human"}
+    assert "_row_id" not in tables["line_items"]["rows"][0]
