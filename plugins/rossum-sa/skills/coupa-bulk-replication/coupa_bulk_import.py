@@ -61,6 +61,16 @@ ROSSUM_API_URL: str = ""
 STATE_FILE    = Path("coupa_import_state.json")  # overridden by --state-file
 DS_BATCH_SIZE = 5000                              # records per insert_many call
 
+RE_REPLICATION_NOTICE = """
+   ================================================================
+   [NOTICE] >=90% of the first batch already exists in this
+   collection. insert-dedup does NOT update existing documents:
+   if you are re-replicating with a changed field list, stop this
+   run, drop (or blue-green swap) the collection, and start fresh.
+   A deliberate fresh run over a partially-loaded collection is
+   fine - duplicates are skipped, missing records are filled in.
+   ================================================================"""
+
 DATASETS: dict[str, dict] = {}
 
 CONFIG_PATH: Path | None = None  # set by load_config(); re-read on DS 401
@@ -323,10 +333,11 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     offset  = start_offset
     buffer: list = []
     last_ts = ds_st.get("last_updated_at", "n/a")
+    first_fresh_flush = not resume
 
     def flush(*, final: bool = False) -> None:
         """Insert buffered records into Data Storage and save state."""
-        nonlocal total, total_ins, last_ts, buffer
+        nonlocal total, total_ins, last_ts, buffer, first_fresh_flush
         if not buffer:
             return
         try:
@@ -342,6 +353,10 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         batch_size = len(buffer)
         total     += batch_size
         total_ins += result.inserted
+        if first_fresh_flush:
+            first_fresh_flush = False
+            if batch_size and result.duplicates / batch_size >= 0.9:
+                print(RE_REPLICATION_NOTICE)
         last_ts    = _updated_at(buffer[-1])
         buffer     = []
         state[key] = {

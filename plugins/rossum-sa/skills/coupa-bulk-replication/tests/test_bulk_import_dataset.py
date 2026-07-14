@@ -32,3 +32,34 @@ def test_resume_old_state_without_total_inserted(monkeypatch, tmp_path):
     assert st["total_processed"] == 3
     assert st["total_inserted"] == 3   # initialized from old total_processed (2) + 1 new
     assert st["anchor_updated_at"] == "2026-07-10T00:00:00Z"  # anchor reused
+
+
+def test_fresh_run_first_batch_all_dups_prints_notice(monkeypatch, tmp_path, capsys):
+    results = [cbi.BatchResult(inserted=0, duplicates=3, failed=0)]
+    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []],
+               batch_results=results)
+    assert "[NOTICE]" in capsys.readouterr().out
+
+
+def test_resume_run_all_dups_no_notice(monkeypatch, tmp_path, capsys):
+    old = {"users": {"offset": 0, "anchor_updated_at": "2026-07-10T00:00:00Z",
+                     "last_updated_at": "x", "total_processed": 0}}
+    results = [cbi.BatchResult(inserted=0, duplicates=3, failed=0)]
+    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []],
+               batch_results=results, resume=True, state=old)
+    assert "[NOTICE]" not in capsys.readouterr().out
+
+
+def test_fresh_run_few_dups_no_notice(monkeypatch, tmp_path, capsys):
+    results = [cbi.BatchResult(inserted=9, duplicates=1, failed=0)]
+    run_import(monkeypatch, tmp_path, [make_records(*range(1, 11)), []],
+               batch_results=results)
+    assert "[NOTICE]" not in capsys.readouterr().out
+
+
+def test_notice_only_checked_on_first_flush(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cbi, "DS_BATCH_SIZE", 2)
+    results = [cbi.BatchResult(2, 0, 0), cbi.BatchResult(0, 2, 0)]
+    run_import(monkeypatch, tmp_path, [make_records(1, 2), make_records(3, 4), []],
+               batch_results=results)
+    assert "[NOTICE]" not in capsys.readouterr().out
