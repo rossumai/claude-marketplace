@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -464,7 +465,7 @@ def state_is_completed(state_path: Path, key: str) -> bool:
     """True iff the dataset's state file carries "completed": true."""
     try:
         return bool(json.loads(state_path.read_text()).get(key, {}).get("completed"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
         return False
 
 
@@ -492,6 +493,85 @@ def build_child_cmd(dataset: str, config: str, *, resume: bool,
     if limit is not None:
         cmd += ["--limit", str(limit)]
     return cmd
+
+
+def supervise(keys: list[str], args) -> int:
+    """Spawn one child per dataset and babysit until all complete or give up.
+
+    Decision table per sweep (see decide()): completed -> done; alive -> wait;
+    dead without the flag -> relaunch with --resume up to args.max_restarts,
+    then give up on that dataset.  Exit 0 iff every dataset completed.
+    """
+    Path("logs").mkdir(exist_ok=True)
+    logs        = {k: Path(f"logs/{k}.log") for k in keys}
+    state_paths = {k: Path(f"coupa_import_state_{k}.json") for k in keys}
+    children: dict = {}
+    restarts    = {k: 0 for k in keys}
+    status      = {}   # 'running' | 'done' | 'given_up'
+
+    def slog(msg: str) -> None:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{ts} supervisor: {msg}", flush=True)
+
+    def launch(key: str, resume: bool) -> None:
+        cmd = build_child_cmd(key, args.config, resume=resume,
+                              username=args.username, password=args.password,
+                              limit=args.limit)
+        with open(logs[key], "ab") as log_f:      # Popen keeps its own fd
+            children[key] = subprocess.Popen(cmd, stdout=log_f,
+                                             stderr=subprocess.STDOUT)
+        status[key] = "running"
+
+    def _sigterm(*_):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _sigterm)
+
+    for key in keys:
+        if args.resume and state_is_completed(state_paths[key], key):
+            slog(f"{key}: already complete — skipping")
+            status[key] = "done"
+        else:
+            slog(f"{key}: launching{' (--resume)' if args.resume else ''}")
+            launch(key, resume=args.resume)
+
+    try:
+        while any(s == "running" for s in status.values()):
+            time.sleep(args.poll_interval)
+            for key in keys:
+                if status[key] != "running":
+                    continue
+                child     = children[key]
+                completed = state_is_completed(state_paths[key], key)
+                alive     = child.poll() is None
+                action    = decide(completed, alive, restarts[key], args.max_restarts)
+                if action == "done":
+                    slog(f"{key}: completed ({restarts[key]} restart(s))")
+                    status[key] = "done"
+                elif action == "relaunch":
+                    restarts[key] += 1
+                    slog(f"{key}: died (exit {child.returncode}) — resuming "
+                         f"(attempt {restarts[key]}/{args.max_restarts}); "
+                         f"last log line: {read_last_log_line(logs[key])}")
+                    launch(key, resume=True)
+                elif action == "give_up":
+                    slog(f"{key}: exceeded {args.max_restarts} restarts — giving up "
+                         f"(manual --resume needed); "
+                         f"last log line: {read_last_log_line(logs[key])}")
+                    status[key] = "given_up"
+    except KeyboardInterrupt:
+        slog("interrupted — terminating children")
+        for child in children.values():
+            if child is not None and child.poll() is None:
+                child.terminate()
+        return 130
+
+    given_up = [k for k, s in status.items() if s == "given_up"]
+    if given_up:
+        slog(f"finished with given-up dataset(s): {', '.join(given_up)} — exit 1")
+        return 1
+    slog("all datasets complete — exit 0")
+    return 0
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────
@@ -542,11 +622,38 @@ def main() -> None:
         metavar="PASS",
         help="Rossum password for automatic token refresh",
     )
+    parser.add_argument(
+        "--supervise",
+        action="store_true",
+        help="Spawn one child per dataset and babysit: relaunch dead jobs with "
+             "--resume (up to --max-restarts each), exit when all are complete "
+             "or given up. Logs go to logs/<dataset>.log",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=60,
+        metavar="SEC",
+        help="Supervision sweep interval in seconds (default: 60)",
+    )
+    parser.add_argument(
+        "--max-restarts",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Relaunch attempts per dataset before giving up on it (default: 3)",
+    )
     args = parser.parse_args()
 
     load_config(Path(args.config))
 
     keys = resolve_dataset_keys(args.dataset, DATASETS)
+
+    if args.supervise:
+        if args.state_file:
+            raise SystemExit("--state-file cannot be combined with --supervise "
+                             "(children always use per-dataset state files)")
+        raise SystemExit(supervise(keys, args))
 
     state_path = default_state_path(args.dataset, keys, args.state_file)
 
