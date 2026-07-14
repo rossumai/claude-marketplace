@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 import time
 from collections import namedtuple
 from datetime import datetime, timezone
@@ -456,6 +458,40 @@ def decide(completed: bool, child_alive: bool, restarts: int, max_restarts: int)
     if restarts < max_restarts:
         return "relaunch"
     return "give_up"
+
+
+def state_is_completed(state_path: Path, key: str) -> bool:
+    """True iff the dataset's state file carries "completed": true."""
+    try:
+        return bool(json.loads(state_path.read_text()).get(key, {}).get("completed"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def read_last_log_line(path: Path) -> str:
+    """Last line of a child's log — the 'why' recorded on death/give-up."""
+    try:
+        lines = path.read_text().strip().splitlines()
+    except OSError:
+        return "(no log)"
+    return lines[-1] if lines else "(empty log)"
+
+
+def build_child_cmd(dataset: str, config: str, *, resume: bool,
+                    username: str | None, password: str | None,
+                    limit: int | None) -> list[str]:
+    """Command line for one supervised child (single dataset, own state file)."""
+    cmd = [sys.executable, "-u", str(Path(__file__).resolve()),
+           "--dataset", dataset, "--config", config]
+    if resume:
+        cmd.append("--resume")
+    if username:
+        cmd += ["--username", username]
+    if password:
+        cmd += ["--password", password]
+    if limit is not None:
+        cmd += ["--limit", str(limit)]
+    return cmd
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────
