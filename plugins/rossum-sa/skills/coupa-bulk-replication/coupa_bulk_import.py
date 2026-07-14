@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections import namedtuple
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -203,13 +204,24 @@ _RETRYABLE = (
     requests.exceptions.Timeout,
 )
 
+BatchResult = namedtuple("BatchResult", "inserted duplicates failed")
+
+_DUPLICATE_KEY_CODE = 11000
+
+
+def _is_duplicate_error(err: dict) -> bool:
+    """Mongo duplicate-key: code 11000, or E11000 in the message (shape varies)."""
+    return err.get("code") == _DUPLICATE_KEY_CODE or "E11000" in str(err.get("errmsg", ""))
+
+
 def insert_batch(session: requests.Session, collection: str, records: list,
-                 _retries: int = 5) -> int:
-    """Synchronous insert_many — returns number of inserted documents.
+                 _retries: int = 5) -> BatchResult:
+    """Synchronous insert_many — returns a BatchResult(inserted, duplicates, failed).
 
     Uses ordered=False so duplicate-key errors on resume are silently skipped
-    rather than aborting the whole batch.  Warns if fewer documents were
-    inserted than sent (document-level validation/size failures).
+    rather than aborting the whole batch. Duplicate-key skips are informational
+    (expected after resume or smoke test); other write failures are warned via
+    [WARN] (document-level validation/size failures).
     Retries on transient SSL/connection errors with exponential backoff.
     """
     for attempt in range(1, _retries + 1):
@@ -220,15 +232,19 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 timeout=120,
             )
             resp.raise_for_status()
-            body         = resp.json()
-            inserted     = len(body.get("result", {}).get("inserted_ids") or [])
-            write_errors = body.get("result", {}).get("write_errors") or []
-            if write_errors or inserted < len(records):
-                skipped = len(records) - inserted
-                print(f"   [WARN] {skipped} document(s) skipped in this batch "
-                      f"(write_errors={len(write_errors)}). "
-                      f"First error: {write_errors[0] if write_errors else 'n/a'}")
-            return inserted
+            body         = resp.json().get("result", {}) or {}
+            inserted     = len(body.get("inserted_ids") or [])
+            write_errors = body.get("write_errors") or []
+            duplicates   = sum(1 for e in write_errors if _is_duplicate_error(e))
+            failed       = max(len(records) - inserted - duplicates, 0)
+            if duplicates:
+                print(f"   {duplicates} duplicate(s) skipped "
+                      "(expected after resume or smoke test)")
+            if failed:
+                non_dup = [e for e in write_errors if not _is_duplicate_error(e)]
+                print(f"   [WARN] {failed} document(s) failed in this batch. "
+                      f"First error: {non_dup[0] if non_dup else 'n/a'}")
+            return BatchResult(inserted, duplicates, failed)
         except _RETRYABLE as exc:
             if attempt == _retries:
                 raise
