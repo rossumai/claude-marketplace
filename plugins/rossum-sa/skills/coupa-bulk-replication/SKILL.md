@@ -279,6 +279,8 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
 1. **Final count check.** For each dataset, confirm `total_inserted` in the state file equals the actual document count in Data Storage. If they differ by more than one batch (5,000 records), investigate `[WARN]` lines in the logs before proceeding.
 
+   If the run logged `[WARN] … record(s) missing 'id'`, this check is blind to those records — a resume overlap re-inserts them and inflates both sides equally, so a resumed run may hold duplicate copies of exactly those records.
+
 2. **Register collections with MDH** (if the collections need fuzzy search or UI visibility). A seed CSV with only the header row is sufficient — MDH manages the collection from then on:
 
    ```bash
