@@ -147,6 +147,27 @@ def test_count_datasets_omits_percent_when_no_total_processed(monkeypatch, tmp_p
     assert "%" not in out
 
 
+def test_count_datasets_falls_back_to_per_dataset_state_file(monkeypatch, tmp_path, capsys):
+    # A supervised run writes per-dataset state files; a --count over the
+    # shared (empty) state must still find the run's anchor + progress there.
+    monkeypatch.chdir(tmp_path)
+    cbi.load_config(write_config(tmp_path))
+    monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
+    calls = []
+    _install_fake_fetch(monkeypatch, calls, virtual_count=100)
+
+    (tmp_path / "coupa_import_state_users.json").write_text(json.dumps(
+        {"users": {"anchor_updated_at": "2026-06-15T12:00:00Z",
+                   "total_processed": 25}}))
+
+    cbi.count_datasets(["users"], {})  # shared state has no entry for users
+
+    out = capsys.readouterr().out
+    assert "anchor: 2026-06-15T12:00:00Z" in out
+    assert all(c["anchor_ts"] == "2026-06-15T12:00:00Z" for c in calls)
+    assert "25.0%" in out
+
+
 # ── CLI guard ──────────────────────────────────────────────────────────────────
 
 def test_main_rejects_count_with_supervise(monkeypatch):

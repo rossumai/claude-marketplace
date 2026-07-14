@@ -603,7 +603,10 @@ def count_datasets(keys: list[str], state: dict) -> None:
     """Print exact per-dataset counts (offset bisection, anchored like the job)."""
     for key in keys:
         cfg = DATASETS[key]
-        anchor = state.get(key, {}).get("anchor_updated_at") \
+        # Supervised runs keep per-dataset state files — fall back to them so
+        # a --count over the shared state still reuses the run's anchor/progress.
+        ds_st = state.get(key) or load_state(default_state_path(key, [key], None)).get(key, {})
+        anchor = ds_st.get("anchor_updated_at") \
             or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         token = get_coupa_token(cfg["scope"])
         session = requests.Session()
@@ -616,7 +619,7 @@ def count_datasets(keys: list[str], state: dict) -> None:
                                    offset, anchor, limit=1))
 
         n = _bisect_count(probe)
-        done = state.get(key, {}).get("total_processed")
+        done = ds_st.get("total_processed")
         pct = f"  ({done / n:.1%} processed)" if done and n else ""
         print(f"   {key:<28} {n:>9}  anchor: {anchor}{pct}")
 
