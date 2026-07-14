@@ -301,6 +301,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     anchor_ts    = ds_st.get("anchor_updated_at") if resume else None
     start_offset = ds_st.get("offset", 0)         if resume else 0
     total        = ds_st.get("total_processed", 0) if resume else 0
+    total_ins    = ds_st.get("total_inserted", ds_st.get("total_processed", 0)) if resume else 0
 
     if anchor_ts is None:
         anchor_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -325,27 +326,30 @@ def import_dataset(key: str, limit: int | None, resume: bool,
 
     def flush(*, final: bool = False) -> None:
         """Insert buffered records into Data Storage and save state."""
-        nonlocal total, last_ts, buffer
+        nonlocal total, total_ins, last_ts, buffer
         if not buffer:
             return
         try:
-            insert_batch(ds_session, cfg["collection"], buffer)
+            result = insert_batch(ds_session, cfg["collection"], buffer)
         except requests.HTTPError as exc:
             if exc.response.status_code == 401 and username and password:
                 print("   [Rossum token expired — refreshing]")
                 new_token = refresh_rossum_token(username, password)
                 ds_session.headers["Authorization"] = f"Bearer {new_token}"
-                insert_batch(ds_session, cfg["collection"], buffer)  # retry once
+                result = insert_batch(ds_session, cfg["collection"], buffer)  # retry once
             else:
                 raise
-        total   += len(buffer)
-        last_ts  = _updated_at(buffer[-1])
-        buffer   = []
+        batch_size = len(buffer)
+        total     += batch_size
+        total_ins += result.inserted
+        last_ts    = _updated_at(buffer[-1])
+        buffer     = []
         state[key] = {
             "offset":            offset,
             "anchor_updated_at": anchor_ts,
             "last_updated_at":   last_ts,
             "total_processed":   total,
+            "total_inserted":    total_ins,
             **({"completed": True} if final else {}),
         }
         save_state(state, state_path)
