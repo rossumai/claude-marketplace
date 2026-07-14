@@ -120,6 +120,20 @@ def load_config(path: Path) -> None:
         seen[coll] = ds_key
 
 
+def resolve_dataset_keys(arg: str, datasets: dict) -> list[str]:
+    """Resolve --dataset: 'all', a single key, or a comma-separated list."""
+    if arg == "all":
+        return list(datasets)
+    keys = [k.strip() for k in arg.split(",") if k.strip()]
+    unknown = [k for k in keys if k not in datasets]
+    if unknown:
+        raise SystemExit(
+            f"Unknown dataset(s): {', '.join(unknown)}. "
+            f"Available: {', '.join(sorted(datasets)) or '(none)'}"
+        )
+    return keys
+
+
 # ── Rossum auth ──────────────────────────────────────────────────────────────────
 
 def refresh_rossum_token(username: str, password: str) -> str:
@@ -353,7 +367,7 @@ def main() -> None:
     parser.add_argument(
         "--dataset",
         default="all",
-        help="Dataset key from the config, or 'all' (default: all)",
+        help="Dataset key, comma-separated list of keys, or 'all' (default: all)",
     )
     parser.add_argument(
         "--limit",
@@ -390,20 +404,15 @@ def main() -> None:
 
     load_config(Path(args.config))
 
-    if args.dataset != "all" and args.dataset not in DATASETS:
-        raise SystemExit(
-            f"Unknown dataset '{args.dataset}'. "
-            f"Available in {args.config}: {', '.join(sorted(DATASETS)) or '(none)'}"
-        )
+    keys = resolve_dataset_keys(args.dataset, DATASETS)
 
     if args.state_file:
         state_path = Path(args.state_file)
-    elif args.dataset != "all":
-        state_path = Path(f"coupa_import_state_{args.dataset}.json")
+    elif len(keys) == 1:
+        state_path = Path(f"coupa_import_state_{keys[0]}.json")
     else:
         state_path = STATE_FILE
 
-    keys  = list(DATASETS) if args.dataset == "all" else [args.dataset]
     state = load_state(state_path) if args.resume else {}
 
     ds_session = requests.Session()
