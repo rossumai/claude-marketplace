@@ -242,6 +242,24 @@ def _updated_at(record: dict) -> str:
     return record.get("updated_at") or record.get("updated-at") or "n/a"
 
 
+def assign_ids(records: list, id_key: str) -> tuple[list, int]:
+    """Set each document's Mongo _id deterministically from its Coupa id.
+
+    Re-inserting the same record then dedupes via duplicate-key skip
+    (ordered=False) instead of creating a second copy.  Records missing
+    the id keep an auto-generated _id — never _id: null, because two
+    nulls would silently dedupe against each other.
+    """
+    missing = 0
+    for rec in records:
+        rid = rec.get(id_key)
+        if rid is None:
+            missing += 1
+        else:
+            rec["_id"] = rid
+    return records, missing
+
+
 # ── State file ───────────────────────────────────────────────────────────────────
 
 def load_state(path: Path) -> dict:
@@ -349,6 +367,11 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 print(f"   limit {limit} reached — stopping")
                 break
             page = page[:remaining]
+
+        page, missing_ids = assign_ids(page, cfg.get("id_key", "id"))
+        if missing_ids:
+            print(f"   [WARN] {missing_ids} record(s) missing '{cfg.get('id_key', 'id')}' "
+                  "— inserted without deterministic _id (will not dedupe)")
 
         buffer.extend(page)
         offset += len(page)
