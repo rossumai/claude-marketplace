@@ -134,6 +134,16 @@ def resolve_dataset_keys(arg: str, datasets: dict) -> list[str]:
     return keys
 
 
+def default_state_path(dataset_arg: str, keys: list[str], state_file: str | None) -> Path:
+    """State-file selection: explicit --state-file wins; an explicit single
+    dataset gets its own file; 'all' and comma lists share STATE_FILE."""
+    if state_file:
+        return Path(state_file)
+    if dataset_arg != "all" and len(keys) == 1:
+        return Path(f"coupa_import_state_{keys[0]}.json")
+    return STATE_FILE
+
+
 # ── Rossum auth ──────────────────────────────────────────────────────────────────
 
 def refresh_rossum_token(username: str, password: str) -> str:
@@ -385,8 +395,8 @@ def main() -> None:
         "--state-file",
         default=None,
         metavar="PATH",
-        help="State file path (default: coupa_import_state_<dataset>.json when "
-             "--dataset is set, else coupa_import_state.json)",
+        help="State file path (default: coupa_import_state_<dataset>.json for a "
+             "single explicit --dataset, else coupa_import_state.json)",
     )
     parser.add_argument(
         "--username",
@@ -406,12 +416,7 @@ def main() -> None:
 
     keys = resolve_dataset_keys(args.dataset, DATASETS)
 
-    if args.state_file:
-        state_path = Path(args.state_file)
-    elif len(keys) == 1:
-        state_path = Path(f"coupa_import_state_{keys[0]}.json")
-    else:
-        state_path = STATE_FILE
+    state_path = default_state_path(args.dataset, keys, args.state_file)
 
     state = load_state(state_path) if args.resume else {}
 
