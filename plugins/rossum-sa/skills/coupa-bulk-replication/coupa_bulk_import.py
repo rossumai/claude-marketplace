@@ -227,7 +227,7 @@ def get_coupa_token(scope: str) -> str:
 # ── Coupa pagination ─────────────────────────────────────────────────────────────
 
 def fetch_page(session: requests.Session, endpoint: str, fields: list,
-               offset: int, anchor_ts: str) -> list:
+               offset: int, anchor_ts: str, limit: int | None = None) -> list:
     """Fetch one page of records sorted newest-first, anchored to anchor_ts."""
     params = {
         "fields":               json.dumps(fields),
@@ -236,10 +236,33 @@ def fetch_page(session: requests.Session, endpoint: str, fields: list,
         "offset":               offset,
         "updated-at[lt_or_eq]": anchor_ts,
     }
+    if limit is not None:
+        params["limit"] = limit
     resp = session.get(f"{COUPA_BASE_URL}/{endpoint}", params=params,
                        verify=False, timeout=120)
     resp.raise_for_status()
     return resp.json() or []
+
+
+def _bisect_count(probe) -> int:
+    """Exact record count given probe(offset) -> bool ("a record exists at offset").
+
+    Coupa has no count endpoint, but limit=1&offset=N returns a record iff
+    count > N.  Exponential growth finds an empty upper bound, binary search
+    pins the boundary — ~2*log2(count) probe calls total.
+    """
+    if not probe(0):
+        return 0
+    lo, hi = 0, 1          # invariant: probe(lo) True, probe(hi) unknown
+    while probe(hi):
+        lo, hi = hi, hi * 2
+    while hi - lo > 1:     # probe(lo) True, probe(hi) False
+        mid = (lo + hi) // 2
+        if probe(mid):
+            lo = mid
+        else:
+            hi = mid
+    return hi
 
 
 # ── Data Storage insert ──────────────────────────────────────────────────────────
@@ -576,6 +599,28 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             break
 
 
+def count_datasets(keys: list[str], state: dict) -> None:
+    """Print exact per-dataset counts (offset bisection, anchored like the job)."""
+    for key in keys:
+        cfg = DATASETS[key]
+        anchor = state.get(key, {}).get("anchor_updated_at") \
+            or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        token = get_coupa_token(cfg["scope"])
+        session = requests.Session()
+        session.verify = False
+        session.headers.update({"Authorization": f"Bearer {token}",
+                                "Accept": "application/json"})
+
+        def probe(offset: int) -> bool:
+            return bool(fetch_page(session, cfg["endpoint"], ["id"],
+                                   offset, anchor, limit=1))
+
+        n = _bisect_count(probe)
+        done = state.get(key, {}).get("total_processed")
+        pct = f"  ({done / n:.1%} processed)" if done and n else ""
+        print(f"   {key:<28} {n:>9}  anchor: {anchor}{pct}")
+
+
 # ── Supervision (--supervise) ────────────────────────────────────────────────────
 
 def decide(completed: bool, child_alive: bool, restarts: int, max_restarts: int) -> str:
@@ -795,6 +840,12 @@ def main() -> None:
         metavar="N",
         help="Relaunch attempts per dataset before giving up on it (default: 3)",
     )
+    parser.add_argument(
+        "--count",
+        action="store_true",
+        help="Print exact per-dataset record counts via offset bisection (uses "
+             "the run's anchor from the state file when one exists) and exit",
+    )
     args = parser.parse_args()
 
     if args.supervise and args.limit is not None:
@@ -804,6 +855,8 @@ def main() -> None:
     if args.supervise and args.state_file:
         raise SystemExit("--state-file cannot be combined with --supervise "
                          "(children always use per-dataset state files)")
+    if args.count and args.supervise:
+        raise SystemExit("--count cannot be combined with --supervise")
 
     load_config(Path(args.config))
 
@@ -813,6 +866,11 @@ def main() -> None:
         raise SystemExit(supervise(keys, args))
 
     state_path = default_state_path(args.dataset, keys, args.state_file)
+
+    if args.count:
+        state = load_state(state_path)
+        count_datasets(keys, state)
+        return
 
     state = load_state(state_path) if args.resume else {}
 
