@@ -341,7 +341,7 @@ DS REST quirk while cleaning up: `find`/`aggregate` take `query`/`pipeline`, but
 
 ### Deterministic `_id` and dedup
 
-Documents are inserted with `_id = record[<id_key>]` (raw Coupa id, no type coercion). With `ordered=False`, re-inserting an existing record is a duplicate-key skip, not a second copy — smoke tests, resume overlap, and fresh runs over partial loads are all self-healing. Consequences:
+Documents are inserted with `_id = record[<id_key>]` (raw Coupa id, no type coercion). Before every batch insert the script checks which `_id`s already exist and skips them — necessary because the DS REST layer reports duplicate-key write errors as an opaque HTTP 400 ("batch op errors occurred") with no per-document detail (live-verified 2026-07). The effect: re-inserting an existing record is a skip, not a second copy — smoke tests, resume overlap, and fresh runs over partial loads are all self-healing. Consequences:
 
 - `total_inserted` (state file) counts actual inserts and must match the DB count; `total_processed` includes duplicate-skips.
 - Records missing the id are inserted with an auto `_id` and warned about — never `_id: null` (two nulls would dedupe against each other).

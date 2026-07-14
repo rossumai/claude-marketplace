@@ -16,14 +16,28 @@ class StubResponse:
 
 
 class StubSession:
-    """Yields queued responses; raises queued exceptions."""
-    def __init__(self, queue):
-        self.queue = list(queue)
-        self.calls = []
+    """Routes POSTs by URL: /data/find answered from `existing` (or a
+    dedicated find_queue for exercising retries/exceptions on the find
+    call itself); /data/insert_many answered from the insert queue.
+    Yields queued responses; raises queued exceptions."""
+
+    def __init__(self, insert_queue=(), existing=None, find_queue=None):
+        self.insert_queue = list(insert_queue)
+        self.find_queue = list(find_queue) if find_queue is not None else None
+        self.existing = existing or set()
+        self.calls = []  # list of (url, json) for every POST made
 
     def post(self, url, json=None, timeout=None):
-        self.calls.append(json)
-        item = self.queue.pop(0)
+        self.calls.append((url, json))
+        if url.endswith("/data/find"):
+            if self.find_queue is not None:
+                item = self.find_queue.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return item
+            return StubResponse({"code": "ok",
+                                 "result": [{"_id": i} for i in self.existing]})
+        item = self.insert_queue.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
@@ -34,15 +48,63 @@ def _resp(inserted_ids, write_errors=()):
                                     "write_errors": list(write_errors)}})
 
 
-def test_all_inserted():
-    s = StubSession([_resp([1, 2, 3])])
+def _insert_calls(session):
+    return [c for c in session.calls if c[0].endswith("/data/insert_many")]
+
+
+def _find_calls(session):
+    return [c for c in session.calls if c[0].endswith("/data/find")]
+
+
+# ── check-then-insert dedup ──────────────────────────────────────────────────
+
+def test_all_new_batch_inserts_everything():
+    s = StubSession([_resp([1, 2, 3])], existing=set())
     r = cbi.insert_batch(s, "c", [{"_id": i} for i in (1, 2, 3)])
     assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0)
+    inserts = _insert_calls(s)
+    assert len(inserts) == 1
+    assert len(inserts[0][1]["documents"]) == 3
 
+
+def test_partial_duplicate_only_inserts_new_records(capsys):
+    s = StubSession([_resp([2])], existing={1})
+    r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+    inserts = _insert_calls(s)
+    assert len(inserts) == 1
+    assert inserts[0][1]["documents"] == [{"_id": 2}]
+    out = capsys.readouterr().out
+    assert "duplicate(s) skipped" in out
+    assert "[WARN]" not in out
+
+
+def test_all_duplicate_skips_insert_entirely(capsys):
+    s = StubSession([], existing={1, 2, 3})
+    r = cbi.insert_batch(s, "c", [{"_id": i} for i in (1, 2, 3)])
+    assert r == cbi.BatchResult(inserted=0, duplicates=3, failed=0)
+    assert len(s.calls) == 1  # only the find call — no insert_many at all
+    out = capsys.readouterr().out
+    assert "duplicate(s) skipped" in out
+
+
+def test_records_without_id_are_never_filtered():
+    s = StubSession([_resp([1, 2])], existing=set())
+    records = [{"_id": 1}, {"no_id": True}]
+    r = cbi.insert_batch(s, "c", records)
+    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=0)
+    find_calls = _find_calls(s)
+    assert len(find_calls) == 1
+    assert find_calls[0][1]["query"]["_id"]["$in"] == [1]
+    inserts = _insert_calls(s)
+    assert inserts[0][1]["documents"] == records
+
+
+# ── belt: 200-with-write_errors still handled ────────────────────────────────
 
 def test_duplicates_by_code_are_informational(capsys):
     errs = [{"code": 11000, "errmsg": "duplicate key"}] * 2
-    s = StubSession([_resp([1], errs)])
+    s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", [{"_id": i} for i in (1, 2, 3)])
     assert r == cbi.BatchResult(inserted=1, duplicates=2, failed=0)
     out = capsys.readouterr().out
@@ -52,14 +114,14 @@ def test_duplicates_by_code_are_informational(capsys):
 
 def test_duplicates_by_errmsg_string():
     errs = [{"errmsg": "E11000 duplicate key error"}]
-    s = StubSession([_resp([1], errs)])
+    s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
     assert r.duplicates == 1 and r.failed == 0
 
 
 def test_real_failures_keep_warn(capsys):
     errs = [{"code": 11000, "errmsg": "dup"}, {"code": 2, "errmsg": "too large"}]
-    s = StubSession([_resp([1], errs)])
+    s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", [{"_id": i} for i in (1, 2, 3)])
     assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=1)
     out = capsys.readouterr().out
@@ -69,21 +131,48 @@ def test_real_failures_keep_warn(capsys):
 
 def test_bare_string_write_error_duplicate():
     errs = ["E11000 duplicate key error"]
-    s = StubSession([_resp([1], errs)])
+    s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
     assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
 
 
 def test_bare_string_write_error_non_duplicate():
     errs = ["boom"]
-    s = StubSession([_resp([1], errs)])
+    s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
     assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1)
 
 
+# ── real 400 after dedupe (not a duplicate — a real failure) ────────────────
+
+def test_real_400_after_dedupe_raises():
+    s = StubSession([StubResponse({"code": "error", "message": "batch op errors occurred"},
+                                  status=400)],
+                    existing=set())
+    try:
+        cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
+        assert False, "expected HTTPError"
+    except requests.HTTPError:
+        pass
+
+
+# ── retry wraps the whole check+insert flow ──────────────────────────────────
+
 def test_transient_error_retries_then_succeeds(monkeypatch):
     monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
-    s = StubSession([requests.exceptions.ConnectionError("boom"), _resp([1])])
+    s = StubSession([requests.exceptions.ConnectionError("boom"), _resp([1])],
+                    existing=set())
     r = cbi.insert_batch(s, "c", [{"_id": 1}])
     assert r.inserted == 1
-    assert len(s.calls) == 2
+    assert len(_insert_calls(s)) == 2
+
+
+def test_transient_error_on_find_retries_whole_flow(monkeypatch):
+    monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
+    find_ok = StubResponse({"code": "ok", "result": []})
+    s = StubSession([_resp([1])],
+                    find_queue=[requests.exceptions.ConnectionError("boom"), find_ok])
+    r = cbi.insert_batch(s, "c", [{"_id": 1}])
+    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=0)
+    assert len(_find_calls(s)) == 2
+    assert len(_insert_calls(s)) == 1

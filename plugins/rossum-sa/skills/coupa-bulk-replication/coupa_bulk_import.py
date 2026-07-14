@@ -258,29 +258,57 @@ def _is_duplicate_error(err) -> bool:
     return err.get("code") == _DUPLICATE_KEY_CODE or "E11000" in str(err.get("errmsg", ""))
 
 
+def _existing_ids(session: requests.Session, collection: str, ids: list) -> set:
+    """Return the subset of ids already present in the collection."""
+    resp = session.post(
+        f"{ROSSUM_DS_URL}/data/find",
+        json={"collectionName": collection,
+              "query": {"_id": {"$in": ids}},
+              "projection": {"_id": 1},
+              "limit": len(ids)},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return {doc["_id"] for doc in resp.json().get("result") or []}
+
+
 def insert_batch(session: requests.Session, collection: str, records: list,
                  _retries: int = 5) -> BatchResult:
-    """Synchronous insert_many — returns a BatchResult(inserted, duplicates, failed).
+    """Check-then-insert — returns BatchResult(inserted, duplicates, failed).
 
-    Uses ordered=False so duplicate-key errors on resume are silently skipped
-    rather than aborting the whole batch. Duplicate-key skips are informational
-    (expected after resume or smoke test); other write failures are warned via
-    [WARN] (document-level validation/size failures).
-    Retries on transient SSL/connection errors with exponential backoff.
+    The DS REST layer reports duplicate-key write errors as an opaque
+    HTTP 400 ("batch op errors occurred") with no write_errors detail
+    (live-verified), so duplicates are filtered out with an _id existence
+    check BEFORE inserting.  The 200-with-write_errors parsing is kept as
+    a belt for servers/races that do return per-document errors.
+    Retries the whole check+insert on transient SSL/connection errors;
+    the re-run existence check absorbs partially-applied batches.
     """
     for attempt in range(1, _retries + 1):
         try:
+            ids = [r["_id"] for r in records if "_id" in r]
+            existing = _existing_ids(session, collection, ids) if ids else set()
+            to_insert = [r for r in records
+                         if "_id" not in r or r["_id"] not in existing]
+            duplicates = len(records) - len(to_insert)
+            if not to_insert:
+                if duplicates:
+                    print(f"   {duplicates} duplicate(s) skipped "
+                          "(expected after resume or smoke test)")
+                return BatchResult(0, duplicates, 0)
             resp = session.post(
                 f"{ROSSUM_DS_URL}/data/insert_many",
-                json={"collectionName": collection, "documents": records, "ordered": False},
+                json={"collectionName": collection, "documents": to_insert,
+                      "ordered": False},
                 timeout=120,
             )
             resp.raise_for_status()
             body         = resp.json().get("result", {}) or {}
             inserted     = len(body.get("inserted_ids") or [])
             write_errors = body.get("write_errors") or []
-            duplicates   = sum(1 for e in write_errors if _is_duplicate_error(e))
-            failed       = max(len(records) - inserted - duplicates, 0)
+            late_dups    = sum(1 for e in write_errors if _is_duplicate_error(e))
+            failed       = max(len(to_insert) - inserted - late_dups, 0)
+            duplicates  += late_dups
             if duplicates:
                 print(f"   {duplicates} duplicate(s) skipped "
                       "(expected after resume or smoke test)")
