@@ -89,7 +89,9 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    |-------------|----------------|---------------|---------|---------|
    | `...`       | `api/...`      | `..._test`    | `...`   | yes/no  |
 
-6. **Get exact counts.** Sibling-org collection counts are ordering estimates only — field runs saw them off by 2.7×–27× (purchase_orders est. 833k → actual 2.27M; lookup_values est. 171k → actual 4.77M). Coupa has no count endpoint, but the script computes exact counts by offset bisection (~45 cheap calls per dataset): `python3 coupa_bulk_import.py --count` (after Phase 2's config exists; add `--dataset a,b` for a subset). Re-run it mid-replication to get exact %-complete — it reuses the run's anchor from the state file.
+6. **Get exact counts.** Coupa has no count endpoint, but the script computes exact per-dataset counts by offset bisection (~45 cheap API calls per dataset): `python3 coupa_bulk_import.py --count` (needs the Phase 2 config; add `--dataset a,b` for a subset). Always do this before planning the run — never plan against collection counts copied from another org (a presale/sibling org, when one even exists): field runs saw those off by 2.7×–27×. Re-run `--count` mid-replication for exact %-complete — it reuses the run's anchor from the state file.
+
+   Until the config exists, a run-ordering prior that holds across Coupa customers: transactional datasets dominate — purchase_order_lines > purchase_orders and lookup_values are typically the giants (hundreds of thousands to millions), suppliers/users mid-sized, and reference tables (uoms, payment_terms, tax_codes, account_types) finish in minutes regardless of order.
 
 **Artifact:** Confirmed list of dataset keys, Coupa credentials, hook IDs to disable, and Rossum org URL.
 
@@ -271,7 +273,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
 **Goal:** Datasets verified and, where needed, registered with MDH.
 
-**Sizing estimates vs completion truth:** sibling-org (presale) collection counts are ESTIMATES for run-ordering only and can be wildly stale — a field run saw `lookup_values` estimated at 171k exceed 1.75M (10×+), while `users` came in under its estimate (differential sibling hooks only accumulate from whenever they were seeded). Completion is decided by Coupa returning an empty page, never by hitting the estimate. Use `--count` (Phase 0) for exact anchored counts — %/ETA then are facts, not guesses. Completion is still decided by the empty page.
+**Counts vs completion truth:** plan and report against `--count`'s exact anchored counts (Phase 0), never against collection counts from another org — %/ETA are then facts, not guesses. Completion is still decided only by Coupa returning an empty page. The integrity check that matters afterwards: `total_inserted` (state file) == actual DB count.
 
 **Steps:**
 
