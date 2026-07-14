@@ -37,11 +37,12 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
 | Phase | What it covers |
 |-------|----------------|
-| 0 — Discovery | Credentials, org URL, Coupa hook settings, dataset selection |
+| 0 — Discovery | Credentials, token strategy, org URL, Coupa hook settings, dataset selection |
 | 1 — Pre-flight | Disable hooks, create/clear collections, create indexes |
 | 2 — Script Setup | Place `coupa_bulk_import.py`, create `coupa_bulk_import.config.json`, smoke-test |
-| 3 — Replication | Launch jobs, monitor progress, handle token expiry |
-| 4 — Completion | Verify counts, register with MDH, re-enable hooks |
+| 3 — Replication | Supervised launch (`--supervise`), keep-awake, monitoring, resume |
+| 4 — Completion | Verify counts, register with MDH |
+| 5 — Handoff to continuous sync | Create or re-enable import hooks, delta seeding, canary |
 
 ---
 
@@ -56,7 +57,21 @@ This skill has 5 phases. Work through them in order — each phase produces conc
    - **If found:** Read `prd_config.yaml` to get the org `api_base` URL (e.g. `https://ups.rossum.app/api/v1`). Read `<org-dir>/credentials.yaml` to get the Rossum bearer token as an initial fallback.
    - **If not found:** Ask the user for the Rossum organization base URL (e.g. `https://ups.rossum.app`) and whether to set up a prd2 project first (recommended for long-term maintenance — see `prd-reference`).
 
-2. **Obtain Rossum credentials.** Ask the user for their Rossum **username and password** — strongly preferred over a bare token because it enables the script to refresh tokens automatically during long unattended runs. Accept a bearer token only as a fallback.
+2. **Obtain Rossum credentials — check `auth_type` first.** Fetch the user object (`GET /auth/user`) and check `auth_type`:
+
+   - **`password`:** username + password work — the script can refresh tokens automatically (`--username`/`--password`).
+   - **`sso`:** `POST /auth/login` is unavailable to this user — the `--username`/`--password` auto-refresh CANNOT work. Use a password-auth **integration/service user** instead, or run purely on pre-staged long-lived tokens.
+
+   Either way, mint a long-lived token up front:
+
+   ```
+   POST <org_url>/api/v1/auth/login
+   {"username": "...", "password": "...", "max_token_lifetime_s": 583200}
+   ```
+
+   583200 s = 162 h, the platform maximum. **Verify a new token before relying on it** — three probes: identity (`GET /auth/user`), DS read (list collections), DS **write** (insert + delete a probe doc in a scratch collection).
+
+   **Token heal path for running jobs:** the script reads the token from the config at start, re-reads it once on a DS 401, and every supervised relaunch re-reads the whole config. If a token dies mid-run: drop a fresh long-lived token into the config — running jobs self-heal, and the supervisor's auto-resume covers any that already died. No interactive step.
 
 3. **Set the MCP token.** Call `rossum_set_token` with the token so MCP tools work in this session.
 
@@ -84,7 +99,7 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
 **Steps:**
 
-1. **Disable import hooks.** For each hook covering a dataset to replicate, call `rossum_patch_hook` with `active: false`. **Confirm with user before executing.** Record hook IDs so they can be re-enabled in Phase 4.
+1. **Disable import hooks.** For each hook covering a dataset to replicate, call `rossum_patch_hook` with `active: false`. **Confirm with user before executing.** Record hook IDs so they can be re-enabled in Phase 5.
 
    > Disable hooks before touching collections. An active hook writing to a collection while replication runs can corrupt record counts and make resume unreliable.
 
@@ -183,6 +198,8 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
    If the config path is non-standard, pass `--config <path>`.
 
+   Smoke records are harmless: documents are inserted with `_id` set to the Coupa id, so the full run skips them as duplicates (logged as `duplicate(s) skipped`). Exception: collections loaded by pre-supervision script versions hold auto-`_id` records the current script cannot dedupe against — wipe those collections before a full re-run.
+
 **Artifact:** `coupa_bulk_import.py` + `coupa_bulk_import.config.json` present, gitignored, and smoke-tested.
 
 ---
@@ -193,66 +210,68 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
 **Steps:**
 
-1. **Start all jobs in parallel.** One process per dataset, each writing to its own log file and state file:
+1. **Launch everything under supervision** — one command:
 
    ```bash
    mkdir -p logs
-   for ds in <dataset_key_1> <dataset_key_2>; do
-     nohup python3 -u coupa_bulk_import.py \
-       --dataset $ds \
-       --username <rossum_email> \
-       --password <rossum_password> \
-       >> logs/${ds}.log 2>&1 &
-   done
+   nohup caffeinate -is python3 -u coupa_bulk_import.py --supervise --dataset all \
+     >> logs/supervisor.log 2>&1 &
    ```
 
-   With `--username` and `--password`, the script refreshes both Rossum and Coupa tokens automatically on 401 — no manual intervention needed for token expiry.
+   (Linux: `systemd-inhibit --what=sleep --why="coupa bulk replication" python3 -u coupa_bulk_import.py --supervise ...`.)
 
-2. **Monitor progress.** Each flush prints a line to the log:
+   The supervisor spawns one child process per dataset (own log `logs/<ds>.log`, own state file), sweeps every 60 s, and applies the decision table: state file has `"completed": true` → done; child alive → fine; child died without the flag → relaunch with `--resume` — max 3 attempts per dataset, then give up on that dataset so a permanently broken one cannot crash-loop or hold the run hostage. Exit code 0 only when every dataset completed. Subset via `--dataset a,b,c`; tune with `--poll-interval` / `--max-restarts`; add `--username`/`--password` (password-auth users) for in-process token refresh in every child.
+
+   **Keep-awake traps (laptop runs):**
+   - Wrap the **supervisor**, not the workers: per-pid assertions (`caffeinate -w <pid>`) drop the moment that pid dies — and resumed jobs are new pids nothing covers.
+   - Releasing an assertion on a machine idle for hours → sleep follows near-instantly (the idle timer counts from last input). There is no usable grace period.
+   - Lid-close sleeps regardless of caffeinate: keep the lid open on AC power, or `pmset -a disablesleep 1` (remember to undo it).
+
+2. **Monitor progress.** Supervisor decisions (launches, deaths with the dead job's last log line, give-ups) go to `logs/supervisor.log`; per-dataset flush lines to `logs/<ds>.log`:
 
    ```
-   flushed -> total      5000  offset      5000  last updated_at: 2024-03-15T10:23:45Z
+   flushed → total      5000  offset      5000  last updated_at: 2024-03-15T10:23:45Z
    ```
+
+3. **Resume after interruption.** The supervisor already resumes crashed children. If the supervisor itself stopped, relaunch it with `--resume` — completed datasets are skipped, incomplete ones continue from their state files:
 
    ```bash
-   tail -f logs/<dataset>.log
+   nohup caffeinate -is python3 -u coupa_bulk_import.py --supervise --dataset all --resume \
+     >> logs/supervisor.log 2>&1 &
    ```
 
-3. **Resume after interruption.** If a job stops, restart with `--resume` — the script reloads the anchor timestamp and offset from the state file and continues exactly where it stopped:
-
-   ```bash
-   nohup python3 -u coupa_bulk_import.py --dataset <name> --resume \
-     --username <email> --password <password> >> logs/<name>.log 2>&1 &
-   ```
+   A dataset the supervisor **gave up on** needs its failure investigated first (its last log line is in `logs/supervisor.log`) — typically an expired token (fix the config; see Phase 0 token strategy) or a Coupa-side error — then rerun the command above.
 
 4. **Understand log messages:**
 
    | Message | Meaning |
    |---------|---------|
    | `[Rossum token expired — refreshing]` | Auto-refreshed via `--username`/`--password`; no action needed |
+   | `[Rossum 401 — re-reading token from config]` | No credentials passed; retried once with the (possibly refreshed) config token |
    | `[Coupa token expired — refreshing]` | Auto-refreshed via client credentials; no action needed |
    | `[RETRY N/5] SSLError` | Transient connection error; retrying with exponential backoff |
-   | `[WARN] N document(s) skipped` | Document-level write failures; check payload size or field types |
+   | `N duplicate(s) skipped (expected after resume or smoke test)` | Deterministic `_id` dedup at work; healthy |
+   | `[NOTICE] >=90% of the first batch already exists…` | Fresh run over an already-loaded collection — see "Re-replicating a dataset" |
+   | `[WARN] N document(s) failed` | Real write failures; check payload size or field types |
+   | `[WARN] N record(s) missing 'id'` | Records without the id_key — inserted without dedup protection |
+   | `supervisor: <ds> died … resuming (attempt N/3)` | Child crashed; auto-resumed |
+   | `supervisor: <ds> exceeded 3 restarts — giving up` | Investigate that dataset's log, then relaunch the supervisor |
 
-5. **Verify no silent data loss.** After each dataset completes, compare `total_processed` from `coupa_import_state_<dataset>.json` with the actual DB count:
+5. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from `coupa_import_state_<dataset>.json` with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
 
-   ```python
-   data_storage_aggregate [{"$count": "total"}]
-   ```
-
-   A discrepancy larger than one batch (5,000 records) warrants investigation of the log for `[WARN]` lines.
-
-**Artifact:** All target collections populated. State files show `"completed": true` for each dataset. DB counts match `total_processed`.
+**Artifact:** All target collections populated. State files show `"completed": true` for each dataset. DB counts match `total_inserted`.
 
 ---
 
 ## Phase 4: Completion
 
-**Goal:** Datasets verified, collections registered with MDH if needed, import hooks re-enabled.
+**Goal:** Datasets verified and, where needed, registered with MDH.
+
+**Sizing estimates vs completion truth:** sibling-org (presale) collection counts are ESTIMATES for run-ordering only and can be wildly stale — a field run saw `lookup_values` estimated at 171k exceed 1.75M (10×+), while `users` came in under its estimate (differential sibling hooks only accumulate from whenever they were seeded). Completion is decided by Coupa returning an empty page, never by hitting the estimate. Frame progress % and ETA as lower bounds.
 
 **Steps:**
 
-1. **Final count check.** For each dataset, confirm `total_processed` in the state file equals the actual document count in Data Storage. If they differ by more than one batch, investigate `[WARN]` lines in the logs before proceeding.
+1. **Final count check.** For each dataset, confirm `total_inserted` in the state file equals the actual document count in Data Storage. If they differ by more than one batch (5,000 records), investigate `[WARN]` lines in the logs before proceeding.
 
 2. **Register collections with MDH** (if the collections need fuzzy search or UI visibility). A seed CSV with only the header row is sufficient — MDH manages the collection from then on:
 
@@ -264,11 +283,9 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
    See `mdh-reference` for full MDH dataset management details.
 
-3. **Re-enable import hooks.** Call `rossum_patch_hook` with `active: true` for each hook disabled in Phase 1. **Confirm with user before executing.**
+3. **Record the anchors, then clean up.** Phase 5's delta seeding needs each dataset's `anchor_updated_at` from its state file — copy them out BEFORE deleting state files. Then state files can be deleted and logs archived.
 
-4. **Clean up.** State files (`coupa_import_state_*.json`) can be deleted once replication is confirmed complete. Archive log files if needed.
-
-**Artifact:** Collections live in Data Storage with correct counts, MDH registered (if applicable), import hooks re-enabled.
+**Artifact:** Collections live in Data Storage with `total_inserted` == DB count, MDH registered (if applicable), anchors recorded for Phase 5.
 
 ---
 
