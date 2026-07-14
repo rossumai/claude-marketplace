@@ -10,14 +10,23 @@ every DS flush — safe to kill and resume at any time.
 Write strategy: insert_many (synchronous, 200 OK) in DS_BATCH_SIZE chunks.
 This is faster than async bulk_write and avoids async queue buildup after kill.
 
+Documents are inserted with _id = record[id_key], so re-inserts (smoke tests,
+resume overlap, fresh runs over partial loads) dedupe as duplicate-key skips.
+
 Usage:
     python coupa_bulk_import.py                      # all datasets, full load
     python coupa_bulk_import.py --dataset purchase_orders
+    python coupa_bulk_import.py --dataset users,suppliers
     python coupa_bulk_import.py --limit 1            # smoke test: 1 record each
     python coupa_bulk_import.py --resume             # continue from saved state
-    python coupa_bulk_import.py --resume --dataset purchase_orders
 
-    # With auto token refresh (runs unattended):
+    # Recommended for full runs — supervised, sleep-proof, self-healing:
+    caffeinate -is python coupa_bulk_import.py --supervise --dataset all
+    # (Linux: systemd-inhibit ... ; relaunch with --resume added to skip
+    #  completed datasets and continue the rest.)
+
+    # With auto token refresh (password-auth users only — SSO users must
+    # pre-stage a long-lived token in the config instead):
     python coupa_bulk_import.py --dataset purchase_orders \\
         --username user@example.com --password secret
 
