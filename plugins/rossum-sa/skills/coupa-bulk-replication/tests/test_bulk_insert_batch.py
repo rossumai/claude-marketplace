@@ -10,6 +10,10 @@ class StubResponse:
     def json(self):
         return self._body
 
+    @property
+    def text(self):
+        return str(self._body)
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise requests.HTTPError(response=self)
@@ -152,17 +156,51 @@ def test_bare_string_write_error_non_duplicate():
     assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1)
 
 
-# ── real 400 after dedupe (not a duplicate — a real failure) ────────────────
+# ── opaque batch 400 after dedupe → per-record poison-doc isolation ─────────
 
-def test_real_400_after_dedupe_raises():
-    s = StubSession([StubResponse({"code": "error", "message": "batch op errors occurred"},
-                                  status=400)],
-                    existing=set())
+def test_batch_400_isolates_poison_doc(capsys):
+    batch_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
+                             status=400)
+    poison = StubResponse({"code": "error", "message": "bad value for doc 2"}, status=400)
+    s = StubSession(
+        [batch_400, _resp([1]), poison, _resp([3])],
+        existing=set(),
+    )
+    r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}, {"_id": 3}])
+    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=1)
+    out = capsys.readouterr().out
+    assert "poison document skipped (_id=2)" in out
+    assert "[WARN] 1 document(s) failed in this batch (isolated per-record)" in out
+
+
+def test_batch_400_all_singles_succeed():
+    batch_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
+                             status=400)
+    s = StubSession([batch_400, _resp([1]), _resp([2]), _resp([3])], existing=set())
+    r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}, {"_id": 3}])
+    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0)
+
+
+def test_batch_400_fallback_401_raises():
+    batch_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
+                             status=400)
+    unauthorized = StubResponse({"code": "error", "message": "unauthorized"}, status=401)
+    s = StubSession([batch_400, unauthorized], existing=set())
     try:
         cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
         assert False, "expected HTTPError"
     except requests.HTTPError:
         pass
+
+
+def test_batch_400_with_duplicates_still_reports_them(capsys):
+    batch_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
+                             status=400)
+    s = StubSession([batch_400, _resp([2])], existing={1})
+    r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+    out = capsys.readouterr().out
+    assert "1 duplicate(s) skipped" in out
 
 
 # ── retry wraps the whole check+insert flow ──────────────────────────────────
@@ -174,6 +212,27 @@ def test_transient_error_retries_then_succeeds(monkeypatch):
     r = cbi.insert_batch(s, "c", [{"_id": 1}])
     assert r.inserted == 1
     assert len(_insert_calls(s)) == 2
+
+
+def test_retry_recovers_partially_applied_insert(monkeypatch):
+    """A transient error strikes mid insert_many, but the server had already
+    persisted the first few documents. The re-run existence check on retry
+    sees them as 'existing' — they must be counted as inserted (recovered),
+    not misclassified as pre-existing duplicates."""
+    monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
+    find_none = StubResponse({"code": "ok", "result": []})
+    find_recovered = StubResponse({"code": "ok",
+                                   "result": [{"_id": i} for i in (1, 2, 3)]})
+    s = StubSession(
+        insert_queue=[requests.exceptions.ConnectionError("boom"), _resp([4, 5])],
+        find_queue=[find_none, find_recovered],
+    )
+    records = [{"_id": i} for i in range(1, 6)]
+    r = cbi.insert_batch(s, "c", records)
+    assert r == cbi.BatchResult(inserted=5, duplicates=0, failed=0)
+    inserts = _insert_calls(s)
+    assert len(inserts) == 2  # attempt 1 (raised) + attempt 2 (succeeded)
+    assert inserts[-1][1]["documents"] == [{"_id": 4}, {"_id": 5}]
 
 
 def test_transient_error_on_find_retries_whole_flow(monkeypatch):

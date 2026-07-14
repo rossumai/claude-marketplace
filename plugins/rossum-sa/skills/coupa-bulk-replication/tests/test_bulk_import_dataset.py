@@ -26,12 +26,36 @@ def test_resume_old_state_without_total_inserted(monkeypatch, tmp_path):
     old = {"users": {"offset": 2, "anchor_updated_at": "2026-07-10T00:00:00Z",
                      "last_updated_at": "x", "total_processed": 2}}
     saved, calls = run_import(monkeypatch, tmp_path, [make_records(3), []],
-                              resume=True, state=old)
+                              resume=True, state=old, db_count=5)
     st = saved["users"]
     assert calls["fetch_offsets"][0] == 2                     # offset honored
     assert st["total_processed"] == 3
-    assert st["total_inserted"] == 3   # initialized from old total_processed (2) + 1 new
+    assert st["total_inserted"] == 6   # seeded from live DB count (5) + 1 new, NOT
+                                        # from the inflated old total_processed (2)
     assert st["anchor_updated_at"] == "2026-07-10T00:00:00Z"  # anchor reused
+
+
+def test_fresh_run_on_nonempty_collection_warns(monkeypatch, tmp_path, capsys):
+    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=7)
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "already holds 7" in out
+
+
+def test_fresh_run_on_empty_collection_no_warning(monkeypatch, tmp_path, capsys):
+    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=0)
+    out = capsys.readouterr().out
+    assert "[WARN]" not in out
+
+
+def test_resume_run_never_warns_about_preexisting(monkeypatch, tmp_path, capsys):
+    old = {"users": {"offset": 0, "anchor_updated_at": "2026-07-10T00:00:00Z",
+                     "last_updated_at": "x", "total_processed": 0,
+                     "total_inserted": 0}}
+    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []],
+               resume=True, state=old, db_count=7)
+    out = capsys.readouterr().out
+    assert "[WARN]" not in out
 
 
 def test_fresh_run_first_batch_all_dups_prints_notice(monkeypatch, tmp_path, capsys):

@@ -17,3 +17,12 @@ def test_missing_id_left_without_underscore_id():
 
 def test_empty_page():
     assert cbi.assign_ids([], "id") == ([], 0)
+
+
+def test_falsy_ids_treated_as_missing():
+    recs, missing = cbi.assign_ids(
+        [{"id": "", "v": "empty-id"}, {"id": 0, "v": "zero-id"}], "id"
+    )
+    assert "_id" not in recs[0]          # "" must NOT become _id: ""
+    assert "_id" not in recs[1]          # 0 must NOT become _id: 0
+    assert missing == 2

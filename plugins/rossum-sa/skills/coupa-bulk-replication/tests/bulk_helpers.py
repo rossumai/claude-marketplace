@@ -32,7 +32,8 @@ def make_records(*ids):
 
 
 def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
-               state=None, username=None, password=None, insert_stub=None):
+               state=None, username=None, password=None, insert_stub=None,
+               db_count=0):
     """Drive import_dataset with canned Coupa pages and stubbed DS inserts.
 
     pages: list of record-lists; MUST end with [] (Coupa's empty page).
@@ -62,6 +63,7 @@ def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
 
     monkeypatch.setattr(cbi, "fetch_page", fake_fetch)
     monkeypatch.setattr(cbi, "insert_batch", insert_stub or fake_insert)
+    monkeypatch.setattr(cbi, "_collection_count", lambda session, collection: db_count)
 
     ds_session = type("S", (), {"headers": {}})()
     state = dict(state or {})

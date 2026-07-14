@@ -273,6 +273,37 @@ def _existing_ids(session: requests.Session, collection: str, ids: list) -> set:
     return {doc["_id"] for doc in resp.json().get("result") or []}
 
 
+def _collection_count(session: requests.Session, collection: str) -> int:
+    """Total documents in a collection (DS aggregate $count; 0 when empty)."""
+    resp = session.post(
+        f"{ROSSUM_DS_URL}/data/aggregate",
+        json={"collectionName": collection, "pipeline": [{"$count": "total"}]},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    result = resp.json().get("result") or []
+    return int(result[0]["total"]) if result else 0
+
+
+def _insert_singly(session: requests.Session, collection: str, docs: list) -> tuple[int, int]:
+    """Fallback for an opaque batch 400: insert per record, skipping poison docs."""
+    inserted = failed = 0
+    for doc in docs:
+        resp = session.post(
+            f"{ROSSUM_DS_URL}/data/insert_many",
+            json={"collectionName": collection, "documents": [doc], "ordered": False},
+            timeout=120,
+        )
+        if resp.status_code == 400:
+            failed += 1
+            print(f"   [WARN] poison document skipped (_id={doc.get('_id', 'n/a')}): "
+                  f"{resp.text[:200]}")
+            continue
+        resp.raise_for_status()
+        inserted += len((resp.json().get("result") or {}).get("inserted_ids") or [])
+    return inserted, failed
+
+
 def insert_batch(session: requests.Session, collection: str, records: list,
                  _retries: int = 5) -> BatchResult:
     """Check-then-insert — returns BatchResult(inserted, duplicates, failed).
@@ -283,12 +314,22 @@ def insert_batch(session: requests.Session, collection: str, records: list,
     check BEFORE inserting.  The 200-with-write_errors parsing is kept as
     a belt for servers/races that do return per-document errors.
     Retries the whole check+insert on transient SSL/connection errors;
-    the re-run existence check absorbs partially-applied batches.
+    the re-run existence check absorbs partially-applied batches.  A record
+    that shows up as "existing" only on a retry (not on the first attempt)
+    was persisted by the interrupted earlier attempt itself — it is counted
+    as "recovered" and added to inserted, not misclassified as a duplicate.
+    An opaque batch 400 on the (already-deduped) insert call means one or
+    more poison documents, not a duplicate — it falls back to _insert_singly
+    so the rest of the batch still lands instead of crash-looping the batch.
     """
+    existing_first: set | None = None
     for attempt in range(1, _retries + 1):
         try:
             ids = [r["_id"] for r in records if "_id" in r]
             existing = _existing_ids(session, collection, ids) if ids else set()
+            if existing_first is None:
+                existing_first = existing
+            recovered = len(existing - existing_first)  # persisted by an interrupted earlier attempt
             seen: set = set()
             to_insert = []
             for r in records:
@@ -298,18 +339,27 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 elif rid not in existing and rid not in seen:
                     seen.add(rid)
                     to_insert.append(r)
-            duplicates = len(records) - len(to_insert)
+            duplicates = len(records) - len(to_insert) - recovered
             if not to_insert:
                 if duplicates:
                     print(f"   {duplicates} duplicate(s) skipped "
                           "(expected after resume or smoke test)")
-                return BatchResult(0, duplicates, 0)
+                return BatchResult(recovered, duplicates, 0)
             resp = session.post(
                 f"{ROSSUM_DS_URL}/data/insert_many",
                 json={"collectionName": collection, "documents": to_insert,
                       "ordered": False},
                 timeout=120,
             )
+            if resp.status_code == 400:
+                # duplicates are already filtered — an opaque batch 400 means poison doc(s)
+                ins, failed = _insert_singly(session, collection, to_insert)
+                if duplicates:
+                    print(f"   {duplicates} duplicate(s) skipped "
+                          "(expected after resume or smoke test)")
+                if failed:
+                    print(f"   [WARN] {failed} document(s) failed in this batch (isolated per-record)")
+                return BatchResult(ins + recovered, duplicates, failed)
             resp.raise_for_status()
             body         = resp.json().get("result", {}) or {}
             inserted     = len(body.get("inserted_ids") or [])
@@ -324,7 +374,7 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 non_dup = [e for e in write_errors if not _is_duplicate_error(e)]
                 print(f"   [WARN] {failed} document(s) failed in this batch. "
                       f"First error: {non_dup[0] if non_dup else 'n/a'}")
-            return BatchResult(inserted, duplicates, failed)
+            return BatchResult(inserted + recovered, duplicates, failed)
         except _RETRYABLE as exc:
             if attempt == _retries:
                 raise
@@ -345,12 +395,14 @@ def assign_ids(records: list, id_key: str) -> tuple[list, int]:
     existence check (duplicate-key parsing retained as fallback) instead
     of creating a second copy.  Records missing the id keep an
     auto-generated _id — never _id: null, because two nulls would
-    silently dedupe against each other.
+    silently dedupe against each other.  Falsy ids (None, "", 0) are all
+    treated as missing — a shared falsy value would otherwise collapse
+    distinct records onto the same _id just like two nulls would.
     """
     missing = 0
     for rec in records:
         rid = rec.get(id_key)
-        if rid is None:
+        if not rid:
             missing += 1
         else:
             rec["_id"] = rid
@@ -382,7 +434,15 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     anchor_ts    = ds_st.get("anchor_updated_at") if resume else None
     start_offset = ds_st.get("offset", 0)         if resume else 0
     total        = ds_st.get("total_processed", 0) if resume else 0
-    total_ins    = ds_st.get("total_inserted", ds_st.get("total_processed", 0)) if resume else 0
+
+    if resume and ds_st and "total_inserted" not in ds_st:
+        # Legacy state file predates total_inserted tracking. total_processed
+        # is inflated by duplicates/failures from earlier runs, so seed from
+        # a live DB count instead of trusting it.
+        total_ins = _collection_count(ds_session, cfg["collection"])
+        print(f"   legacy state file (no total_inserted) — seeded from DB count: {total_ins}")
+    else:
+        total_ins = ds_st.get("total_inserted", 0) if resume else 0
 
     if anchor_ts is None:
         anchor_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -392,6 +452,13 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         print(f"   resuming at offset {start_offset}  (anchor: {anchor_ts})")
     else:
         print(f"   fresh run, anchor: {anchor_ts}")
+
+    if not resume:
+        preexisting = _collection_count(ds_session, cfg["collection"])
+        if preexisting:
+            print(f"   [WARN] collection '{cfg['collection']}' already holds {preexisting} "
+                  "document(s). Records loaded by a pre-deterministic-_id script version "
+                  "will NOT dedupe — wipe or blue-green swap before re-replicating (see SKILL.md).")
 
     token         = get_coupa_token(cfg["scope"])
     coupa_session = requests.Session()
