@@ -62,12 +62,16 @@ DS_BATCH_SIZE = 5000                              # records per insert_many call
 
 DATASETS: dict[str, dict] = {}
 
+CONFIG_PATH: Path | None = None  # set by load_config(); re-read on DS 401
+
 
 def load_config(path: Path) -> None:
     """Populate module-level configuration from a JSON file."""
     global COUPA_CLIENT_ID, COUPA_CLIENT_SECRET, COUPA_BASE_URL
     global ROSSUM_TOKEN, ROSSUM_DS_URL, ROSSUM_API_URL
-    global DS_BATCH_SIZE, DATASETS
+    global DS_BATCH_SIZE, DATASETS, CONFIG_PATH
+
+    CONFIG_PATH = path
 
     if not path.exists():
         raise SystemExit(
@@ -79,14 +83,14 @@ def load_config(path: Path) -> None:
     cfg = json.loads(path.read_text())
 
     coupa = cfg.get("coupa") or {}
-    COUPA_CLIENT_ID     = coupa.get("client_id", "")
-    COUPA_CLIENT_SECRET = coupa.get("client_secret", "")
-    COUPA_BASE_URL      = (coupa.get("base_url") or "").rstrip("/")
+    COUPA_CLIENT_ID     = (coupa.get("client_id") or "").strip()
+    COUPA_CLIENT_SECRET = (coupa.get("client_secret") or "").strip()
+    COUPA_BASE_URL      = (coupa.get("base_url") or "").strip().rstrip("/")
 
     rossum = cfg.get("rossum") or {}
-    ROSSUM_TOKEN   = rossum.get("token", "")
-    ROSSUM_DS_URL  = (rossum.get("ds_url") or "").rstrip("/")
-    ROSSUM_API_URL = (rossum.get("api_url") or "").rstrip("/")
+    ROSSUM_TOKEN   = (rossum.get("token") or "").strip()
+    ROSSUM_DS_URL  = (rossum.get("ds_url") or "").strip().rstrip("/")
+    ROSSUM_API_URL = (rossum.get("api_url") or "").strip().rstrip("/")
 
     DS_BATCH_SIZE = int(cfg.get("ds_batch_size", 5000))
     DATASETS      = cfg.get("datasets") or {}
@@ -103,6 +107,17 @@ def load_config(path: Path) -> None:
         raise SystemExit(f"Missing required config keys: {', '.join(missing)}")
     if not DATASETS:
         raise SystemExit(f"Config file {path} defines no datasets")
+
+    seen: dict[str, str] = {}
+    for ds_key, ds_cfg in DATASETS.items():
+        coll = ds_cfg.get("collection", "")
+        if coll in seen:
+            raise SystemExit(
+                f"Config error: datasets '{seen[coll]}' and '{ds_key}' both target "
+                f"collection '{coll}'. Deterministic _id dedup requires one "
+                "collection per dataset."
+            )
+        seen[coll] = ds_key
 
 
 # ── Rossum auth ──────────────────────────────────────────────────────────────────
