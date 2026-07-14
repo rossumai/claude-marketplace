@@ -67,6 +67,20 @@ def test_real_failures_keep_warn(capsys):
     assert "too large" in out
 
 
+def test_bare_string_write_error_duplicate():
+    errs = ["E11000 duplicate key error"]
+    s = StubSession([_resp([1], errs)])
+    r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+
+
+def test_bare_string_write_error_non_duplicate():
+    errs = ["boom"]
+    s = StubSession([_resp([1], errs)])
+    r = cbi.insert_batch(s, "c", [{"_id": 1}, {"_id": 2}])
+    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1)
+
+
 def test_transient_error_retries_then_succeeds(monkeypatch):
     monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
     s = StubSession([requests.exceptions.ConnectionError("boom"), _resp([1])])

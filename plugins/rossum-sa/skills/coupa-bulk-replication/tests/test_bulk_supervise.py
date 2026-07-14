@@ -1,3 +1,5 @@
+import pytest
+
 import coupa_bulk_import as cbi
 
 
@@ -159,6 +161,34 @@ def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypat
     monkeypatch.setattr(cbi.subprocess, "Popen", capturing_popen)
     code = cbi.supervise(["users", "suppliers"], _args())
     assert code == 130
+    # the first child must have been terminated, not orphaned
+    assert len(spawned) == 1
+    spawned[0].wait(timeout=5)          # deterministic: SIGTERM must land
+    assert spawned[0].poll() is not None
+
+
+def test_supervise_unexpected_exception_terminates_children_and_reraises(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    slow_child = [sys.executable, "-c", "import time; time.sleep(60)"]
+    calls = []
+    spawned = []
+    real_popen = cbi.subprocess.Popen
+
+    def capturing_popen(*a, **kw):
+        p = real_popen(*a, **kw)
+        spawned.append(p)
+        return p
+
+    def fake_build(dataset, config, *, resume, username, password, limit):
+        calls.append(dataset)
+        if len(calls) == 2:
+            raise OSError("boom")
+        return slow_child
+
+    monkeypatch.setattr(cbi, "build_child_cmd", fake_build)
+    monkeypatch.setattr(cbi.subprocess, "Popen", capturing_popen)
+    with pytest.raises(OSError):
+        cbi.supervise(["users", "suppliers"], _args())
     # the first child must have been terminated, not orphaned
     assert len(spawned) == 1
     spawned[0].wait(timeout=5)          # deterministic: SIGTERM must land

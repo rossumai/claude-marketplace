@@ -133,7 +133,11 @@ def load_config(path: Path) -> None:
 
     seen: dict[str, str] = {}
     for ds_key, ds_cfg in DATASETS.items():
-        coll = ds_cfg.get("collection", "")
+        if not ds_cfg.get("collection"):
+            raise SystemExit(
+                f"Config error: dataset '{ds_key}' has no collection set"
+            )
+        coll = ds_cfg["collection"]
         if coll in seen:
             raise SystemExit(
                 f"Config error: datasets '{seen[coll]}' and '{ds_key}' both target "
@@ -247,8 +251,10 @@ BatchResult = namedtuple("BatchResult", "inserted duplicates failed")
 _DUPLICATE_KEY_CODE = 11000
 
 
-def _is_duplicate_error(err: dict) -> bool:
+def _is_duplicate_error(err) -> bool:
     """Mongo duplicate-key: code 11000, or E11000 in the message (shape varies)."""
+    if not isinstance(err, dict):
+        return "E11000" in str(err)
     return err.get("code") == _DUPLICATE_KEY_CODE or "E11000" in str(err.get("errmsg", ""))
 
 
@@ -580,6 +586,12 @@ def supervise(keys: list[str], args) -> int:
             if child is not None and child.poll() is None:
                 child.terminate()
         return 130
+    except Exception:
+        slog("unexpected error — terminating children before propagating")
+        for child in children.values():
+            if child is not None and child.poll() is None:
+                child.terminate()
+        raise
     finally:
         signal.signal(signal.SIGTERM, prev_sigterm)
 
