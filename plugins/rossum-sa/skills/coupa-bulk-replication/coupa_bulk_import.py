@@ -170,6 +170,22 @@ def refresh_rossum_token(username: str, password: str) -> str:
     return token
 
 
+def reload_config_token() -> str:
+    """Re-read rossum.token from the config file.
+
+    A --resume relaunch always picks up a refreshed config token; this lets a
+    RUNNING job do the same on a DS 401 instead of dying (supervisor restart
+    stays the backstop).  Returns "" when the config is unreadable.
+    """
+    if CONFIG_PATH is None or not CONFIG_PATH.exists():
+        return ""
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return ((cfg.get("rossum") or {}).get("token") or "").strip()
+
+
 # ── Coupa auth ───────────────────────────────────────────────────────────────────
 
 def get_coupa_token(scope: str) -> str:
@@ -343,13 +359,18 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         try:
             result = insert_batch(ds_session, cfg["collection"], buffer)
         except requests.HTTPError as exc:
-            if exc.response.status_code == 401 and username and password:
+            if exc.response.status_code != 401:
+                raise
+            if username and password:
                 print("   [Rossum token expired — refreshing]")
                 new_token = refresh_rossum_token(username, password)
-                ds_session.headers["Authorization"] = f"Bearer {new_token}"
-                result = insert_batch(ds_session, cfg["collection"], buffer)  # retry once
             else:
-                raise
+                print("   [Rossum 401 — re-reading token from config]")
+                new_token = reload_config_token()
+                if not new_token:
+                    raise
+            ds_session.headers["Authorization"] = f"Bearer {new_token}"
+            result = insert_batch(ds_session, cfg["collection"], buffer)  # retry once
         batch_size = len(buffer)
         total     += batch_size
         total_ins += result.inserted
