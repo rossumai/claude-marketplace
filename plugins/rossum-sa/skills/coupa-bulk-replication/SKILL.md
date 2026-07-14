@@ -33,7 +33,7 @@ If in doubt, confirm. The cost of asking is low; the cost of unwanted changes to
 
 ## How to Use This Skill
 
-This skill has 5 phases. Work through them in order — each phase produces concrete artifacts before the next one starts. Use tasks to track progress across phases so work can resume if interrupted.
+This skill has 6 phases. Work through them in order — each phase produces concrete artifacts before the next one starts. Use tasks to track progress across phases so work can resume if interrupted.
 
 | Phase | What it covers |
 |-------|----------------|
@@ -289,7 +289,64 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
 ---
 
+## Phase 5: Handoff to Continuous Sync
+
+**Goal:** Delta sync running via "Coupa Webhook Import" hooks — without triggering the full import this skill exists to avoid.
+
+Prerequisite from Phase 4: each dataset's `anchor_updated_at` (the delta boundary below).
+
+### Path A — the org already has import hooks (disabled in Phase 1)
+
+Per dataset: confirm `total_inserted` == DB count, then re-enable with `rossum_patch_hook` `active: true`. **Confirm with user before executing.**
+
+### Path B — fresh org: build the hooks from a reference org
+
+Mirror settings from any org with working Coupa Webhook Import hooks — the CIB template org, a presale org derived from it, or the customer's existing org. Read the reference hook's JSON and copy it; per dataset, change only:
+
+| Setting | Value for the new org |
+|---------|----------------------|
+| Service URL | `https://<cluster>.rossum.app/svc/scheduled-imports/api/coupa/v1/import` — resolve the new org's cluster via its DNS CNAME |
+| `active` | `false` — activate only after verification (step 2) |
+| Schedule / crons | Same cadence as the reference org |
+| `token_owner` | The integration user (Phase 0) |
+| `dataset_name` | The bulk-loaded collection name |
+| `fields` | **Exactly the bulk config's `fields` list** — record shapes then match (both sides store Coupa's hyphenated-key JSON) |
+| Coupa credentials | The new org's `coupa_base_url` / `client_id` / scope; `client_secret` via secrets (step 4) |
+| `"updated-at[gt_or_eq]"` | The delta seeding value — step 1 |
+
+1. **Dodge the epoch-fallback trap (delta seeding).** `${last_modified_date}` resolves to the start of the last successful operation per (org, `dataset_name`) in the scheduled-imports service's own operation log. A brand-new hook has **no history → epoch → the first activation attempts a FULL import.** Field-verified fix: where the reference hook has `${last_modified_date}` (the `"updated-at[gt_or_eq]"` query value), put the dataset's **literal** `anchor_updated_at` instead. The first activation then pulls only the post-anchor delta AND establishes operation history. After the first successful run, flip the value back to `${last_modified_date}`.
+
+2. **Verify-then-activate.** Per dataset: `total_inserted` == DB count, then `rossum_patch_hook` `active: true`. **Confirm with user before executing.**
+
+3. **Canary the first hook.** Fire it manually: `POST /hooks/{id}/invoke` (`invocation.manual`; returns 202 — an async long-running job). Detection subtlety: in `method: update` mode the service UPSERTS — the record count does not change and updates carry no `__digest_md5` stamp. The reliable check: query Coupa directly for records updated since the anchor, then confirm those exact ids carry the new `updated-at` in Data Storage.
+
+4. **Secrets.** Hook `secrets` are write-only (GET returns null) — set via `PATCH {"secrets": {"client_secret": "..."}}`. ALWAYS set `secrets_schema` too (typed properties, `additionalProperties: false`); without it the UI shows no secret field at all. A hook with secrets but no `secrets_schema` is a defect.
+
+5. **Coupa OAuth gotchas.** Probe every dataset's scope before activating anything — a scope not granted to the OAuth client fails the token endpoint with 400 `invalid_scope` (field case: the contracts scope was missing). Whitespace in a pasted `client_secret` → 401 `'client_secret' missing` (the bulk script strips config credentials; the hook PATCH is on you).
+
+**Artifact:** Hooks active for every dataset, first delta canary verified, `${last_modified_date}` placeholders restored.
+
+---
+
 ## Key Technical Reference
+
+### Re-replicating a dataset (e.g. the field list changed)
+
+Insert-dedup is **not** upsert: a re-run over a loaded collection skips every existing record and updates nothing — the script flags this loudly (`[NOTICE]`) when a fresh run's first batch is ≥90% duplicates. To re-replicate with a changed `fields` list:
+
+- **Dev/UAT:** drop the collection (Phase 1 flow), then run fresh.
+- **Live production collection:** blue-green — load into a temp collection (indexes build instantly on empty), swap via `data_storage_rename_collection`, then drop the old one. Avoids hours of empty/partial data under live MDH matching.
+
+DS REST quirk while cleaning up: `find`/`aggregate` take `query`/`pipeline`, but `delete_one`/`delete_many` take `filter` — a 422 usually means the wrong key.
+
+### Deterministic `_id` and dedup
+
+Documents are inserted with `_id = record[<id_key>]` (raw Coupa id, no type coercion). With `ordered=False`, re-inserting an existing record is a duplicate-key skip, not a second copy — smoke tests, resume overlap, and fresh runs over partial loads are all self-healing. Consequences:
+
+- `total_inserted` (state file) counts actual inserts and must match the DB count; `total_processed` includes duplicate-skips.
+- Records missing the id are inserted with an auto `_id` and warned about — never `_id: null` (two nulls would dedupe against each other).
+- Two datasets must not share a collection — the config loader rejects it.
+- Mixed `_id` types are fine: hook-written records carry ObjectIds, bulk records carry Coupa ids; the sync service matches on business keys, not `_id`.
 
 ### Why `insert_many` instead of `bulk_write`
 
@@ -307,11 +364,11 @@ This skill has 5 phases. Work through them in order — each phase produces conc
 
 ```
 POST <org_url>/api/v1/auth/login
-{"username": "...", "password": "..."}
+{"username": "...", "password": "...", "max_token_lifetime_s": 583200}
 -> {"key": "<token>", ...}
 ```
 
-Tokens expire roughly every 24 hours. Passing `--username`/`--password` enables fully unattended operation.
+583200 s (162 h) is the platform maximum lifetime. SSO users cannot call this endpoint — use a password-auth integration user (see Phase 0). Passing `--username`/`--password` enables fully unattended refresh; without credentials the script re-reads the config token once on a DS 401, and supervised relaunches re-read the whole config.
 
 ### Token refresh — Coupa
 
