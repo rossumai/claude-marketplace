@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -152,7 +153,9 @@ def resolve_dataset_keys(arg: str, datasets: dict) -> list[str]:
     """Resolve --dataset: 'all', a single key, or a comma-separated list."""
     if arg == "all":
         return list(datasets)
-    keys = [k.strip() for k in arg.split(",") if k.strip()]
+    # dedupe order-preserving — a repeated key must not spawn two racing
+    # children (--supervise) or double-process the same dataset unsupervised
+    keys = list(dict.fromkeys(k.strip() for k in arg.split(",") if k.strip()))
     unknown = [k for k in keys if k not in datasets]
     if unknown:
         raise SystemExit(
@@ -412,11 +415,21 @@ def assign_ids(records: list, id_key: str) -> tuple[list, int]:
 # ── State file ───────────────────────────────────────────────────────────────────
 
 def load_state(path: Path) -> dict:
-    return json.loads(path.read_text()) if path.exists() else {}
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"State file {path} is corrupt ({exc}). "
+            "Inspect/restore it, or delete it to start the dataset fresh."
+        ) from exc
 
 
 def save_state(state: dict, path: Path) -> None:
-    path.write_text(json.dumps(state, indent=2))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(tmp, path)  # atomic — a kill mid-write can't truncate the state file
 
 
 # ── Per-dataset import ───────────────────────────────────────────────────────────
@@ -580,6 +593,13 @@ def decide(completed: bool, child_alive: bool, restarts: int, max_restarts: int)
     return "give_up"
 
 
+def _terminate_children(children: dict) -> None:
+    """Best-effort SIGTERM to every still-alive child (interrupt/crash cleanup)."""
+    for child in children.values():
+        if child.poll() is None:
+            child.terminate()
+
+
 def state_is_completed(state_path: Path, key: str) -> bool:
     """True iff the dataset's state file carries "completed": true."""
     try:
@@ -598,9 +618,12 @@ def read_last_log_line(path: Path) -> str:
 
 
 def build_child_cmd(dataset: str, config: str, *, resume: bool,
-                    username: str | None, password: str | None,
-                    limit: int | None) -> list[str]:
-    """Command line for one supervised child (single dataset, own state file)."""
+                    username: str | None, password: str | None) -> list[str]:
+    """Command line for one supervised child (single dataset, own state file).
+
+    No --limit: --supervise + --limit is refused in main() (a limit-stopped
+    child never writes the completed flag).
+    """
     cmd = [sys.executable, "-u", str(Path(__file__).resolve()),
            "--dataset", dataset, "--config", config]
     if resume:
@@ -609,8 +632,6 @@ def build_child_cmd(dataset: str, config: str, *, resume: bool,
         cmd += ["--username", username]
     if password:
         cmd += ["--password", password]
-    if limit is not None:
-        cmd += ["--limit", str(limit)]
     return cmd
 
 
@@ -623,7 +644,10 @@ def supervise(keys: list[str], args) -> int:
     """
     Path("logs").mkdir(exist_ok=True)
     logs        = {k: Path(f"logs/{k}.log") for k in keys}
-    state_paths = {k: Path(f"coupa_import_state_{k}.json") for k in keys}
+    # Single source of truth for the naming convention: children are always
+    # launched with an explicit single --dataset, so they resolve the same
+    # per-dataset default as default_state_path(k, [k], None) below.
+    state_paths = {k: default_state_path(k, [k], None) for k in keys}
     children: dict = {}
     restarts    = {k: 0 for k in keys}
     status      = {}   # 'running' | 'done' | 'given_up'
@@ -634,8 +658,7 @@ def supervise(keys: list[str], args) -> int:
 
     def launch(key: str, resume: bool) -> None:
         cmd = build_child_cmd(key, args.config, resume=resume,
-                              username=args.username, password=args.password,
-                              limit=args.limit)
+                              username=args.username, password=args.password)
         with open(logs[key], "ab") as log_f:      # Popen keeps its own fd
             children[key] = subprocess.Popen(cmd, stdout=log_f,
                                              stderr=subprocess.STDOUT)
@@ -686,15 +709,11 @@ def supervise(keys: list[str], args) -> int:
                     status[key] = "given_up"
     except KeyboardInterrupt:
         slog("interrupted — terminating children")
-        for child in children.values():
-            if child is not None and child.poll() is None:
-                child.terminate()
+        _terminate_children(children)
         return 130
     except Exception:
         slog("unexpected error — terminating children before propagating")
-        for child in children.values():
-            if child is not None and child.poll() is None:
-                child.terminate()
+        _terminate_children(children)
         raise
     finally:
         signal.signal(signal.SIGTERM, prev_sigterm)
@@ -778,14 +797,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.supervise and args.limit is not None:
+        raise SystemExit("--limit cannot be combined with --supervise "
+                         "(a limit-stopped child never writes the completed flag; "
+                         "run smoke tests unsupervised)")
+    if args.supervise and args.state_file:
+        raise SystemExit("--state-file cannot be combined with --supervise "
+                         "(children always use per-dataset state files)")
+
     load_config(Path(args.config))
 
     keys = resolve_dataset_keys(args.dataset, DATASETS)
 
     if args.supervise:
-        if args.state_file:
-            raise SystemExit("--state-file cannot be combined with --supervise "
-                             "(children always use per-dataset state files)")
         raise SystemExit(supervise(keys, args))
 
     state_path = default_state_path(args.dataset, keys, args.state_file)

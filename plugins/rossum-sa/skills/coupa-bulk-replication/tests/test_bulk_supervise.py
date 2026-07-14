@@ -44,7 +44,7 @@ def test_read_last_log_line(tmp_path):
 
 def test_build_child_cmd_minimal():
     cmd = cbi.build_child_cmd("users", "cfg.json", resume=False,
-                              username=None, password=None, limit=None)
+                              username=None, password=None)
     assert cmd[0] == sys.executable
     assert cmd[1] == "-u"
     assert cmd[2].endswith("coupa_bulk_import.py")
@@ -53,11 +53,11 @@ def test_build_child_cmd_minimal():
 
 def test_build_child_cmd_full():
     cmd = cbi.build_child_cmd("users", "cfg.json", resume=True,
-                              username="u@x.com", password="pw", limit=5)
+                              username="u@x.com", password="pw")
     assert "--resume" in cmd
     assert cmd[cmd.index("--username") + 1] == "u@x.com"
     assert cmd[cmd.index("--password") + 1] == "pw"
-    assert cmd[cmd.index("--limit") + 1] == "5"
+    assert "--limit" not in cmd
 
 
 import argparse
@@ -88,7 +88,7 @@ def _run_supervise(monkeypatch, tmp_path, cmd_plan, keys, **argkw):
     monkeypatch.chdir(tmp_path)
     launches = []
 
-    def fake_build(dataset, config, *, resume, username, password, limit):
+    def fake_build(dataset, config, *, resume, username, password):
         n = sum(1 for d, _ in launches if d == dataset)
         launches.append((dataset, resume))
         plan = cmd_plan[dataset]
@@ -151,7 +151,7 @@ def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypat
         spawned.append(p)
         return p
 
-    def fake_build(dataset, config, *, resume, username, password, limit):
+    def fake_build(dataset, config, *, resume, username, password):
         calls.append(dataset)
         if len(calls) == 2:
             raise KeyboardInterrupt   # simulates SIGINT arriving mid-startup
@@ -167,6 +167,24 @@ def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypat
     assert spawned[0].poll() is not None
 
 
+def test_main_rejects_supervise_with_limit(monkeypatch):
+    monkeypatch.setattr(sys, "argv",
+                        ["coupa_bulk_import.py", "--supervise", "--limit", "1"])
+    with pytest.raises(SystemExit) as exc:
+        cbi.main()
+    assert "--limit" in str(exc.value)
+    assert "--supervise" in str(exc.value)
+
+
+def test_main_rejects_supervise_with_state_file(monkeypatch):
+    monkeypatch.setattr(sys, "argv",
+                        ["coupa_bulk_import.py", "--supervise", "--state-file", "x.json"])
+    with pytest.raises(SystemExit) as exc:
+        cbi.main()
+    assert "--state-file" in str(exc.value)
+    assert "--supervise" in str(exc.value)
+
+
 def test_supervise_unexpected_exception_terminates_children_and_reraises(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     slow_child = [sys.executable, "-c", "import time; time.sleep(60)"]
@@ -179,7 +197,7 @@ def test_supervise_unexpected_exception_terminates_children_and_reraises(monkeyp
         spawned.append(p)
         return p
 
-    def fake_build(dataset, config, *, resume, username, password, limit):
+    def fake_build(dataset, config, *, resume, username, password):
         calls.append(dataset)
         if len(calls) == 2:
             raise OSError("boom")

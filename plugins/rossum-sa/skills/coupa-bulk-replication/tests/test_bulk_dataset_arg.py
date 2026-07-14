@@ -19,6 +19,10 @@ def test_comma_list_with_spaces():
     assert cbi.resolve_dataset_keys("users, suppliers", DATASETS) == ["users", "suppliers"]
 
 
+def test_duplicate_keys_are_deduped_order_preserving():
+    assert cbi.resolve_dataset_keys("users,users,suppliers", DATASETS) == ["users", "suppliers"]
+
+
 def test_unknown_key_exits_with_available_list():
     with pytest.raises(SystemExit) as exc:
         cbi.resolve_dataset_keys("users,bogus", DATASETS)

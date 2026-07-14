@@ -198,7 +198,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
    If the config path is non-standard, pass `--config <path>`.
 
-   Smoke records are harmless: documents are inserted with `_id` set to the Coupa id, so the full run skips them as duplicates (logged as `duplicate(s) skipped`). Exception: collections loaded by pre-supervision script versions hold auto-`_id` records the current script cannot dedupe against — wipe those collections before a full re-run.
+   Smoke records are harmless: documents are inserted with `_id` set to the Coupa id, so the full run skips them as duplicates (logged as `duplicate(s) skipped`). Exception: collections loaded by pre-supervision script versions hold auto-`_id` records the current script cannot dedupe against — wipe those collections before a full re-run. Never combine `--limit` with `--supervise` (the script refuses: a limit-stopped child never writes the completed flag).
 
 **Artifact:** `coupa_bulk_import.py` + `coupa_bulk_import.config.json` present, gitignored, and smoke-tested.
 
@@ -240,7 +240,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
      >> logs/supervisor.log 2>&1 &
    ```
 
-   A dataset the supervisor **gave up on** needs its failure investigated first (its last log line is in `logs/supervisor.log`) — typically an expired token (fix the config; see Phase 0 token strategy) or a Coupa-side error — then rerun the command above.
+   A dataset the supervisor **gave up on** needs its failure investigated first (its last log line is in `logs/supervisor.log`) — typically an expired token (fix the config; see Phase 0 token strategy) or a Coupa-side error — then rerun the command above. Always resume a supervised run with `--supervise` again: supervised state is per-dataset, and an unsupervised comma-list resume reads the shared state file and will not see it.
 
 4. **Understand log messages:**
 
@@ -256,6 +256,8 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `[WARN] N record(s) missing 'id'` | Records without the id_key — inserted without dedup protection |
    | `supervisor: <ds> died … resuming (attempt N/3)` | Child crashed; auto-resumed |
    | `supervisor: <ds> exceeded 3 restarts — giving up` | Investigate that dataset's log, then relaunch the supervisor |
+   | `[WARN] poison document skipped (_id=…)` | A document DS rejects even alone; skipped after per-record isolation, run continues |
+   | `[WARN] collection '…' already holds N document(s)` | Fresh run over a non-empty collection — pre-deterministic-`_id` records will not dedupe; see 'Re-replicating a dataset' |
 
 5. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from `coupa_import_state_<dataset>.json` with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
 
