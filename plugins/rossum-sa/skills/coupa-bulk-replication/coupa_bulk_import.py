@@ -10,8 +10,9 @@ every DS flush — safe to kill and resume at any time.
 Write strategy: insert_many (synchronous, 200 OK) in DS_BATCH_SIZE chunks.
 This is faster than async bulk_write and avoids async queue buildup after kill.
 
-Documents are inserted with _id = record[id_key], so re-inserts (smoke tests,
-resume overlap, fresh runs over partial loads) dedupe as duplicate-key skips.
+Documents are inserted with _id = record[id_key]; re-inserts (smoke tests,
+resume overlap, fresh runs over partial loads) are skipped by insert_batch's
+_id existence check (duplicate-key parsing retained as fallback).
 
 Usage:
     python coupa_bulk_import.py                      # all datasets, full load
@@ -288,8 +289,15 @@ def insert_batch(session: requests.Session, collection: str, records: list,
         try:
             ids = [r["_id"] for r in records if "_id" in r]
             existing = _existing_ids(session, collection, ids) if ids else set()
-            to_insert = [r for r in records
-                         if "_id" not in r or r["_id"] not in existing]
+            seen: set = set()
+            to_insert = []
+            for r in records:
+                rid = r.get("_id")
+                if "_id" not in r:
+                    to_insert.append(r)
+                elif rid not in existing and rid not in seen:
+                    seen.add(rid)
+                    to_insert.append(r)
             duplicates = len(records) - len(to_insert)
             if not to_insert:
                 if duplicates:
@@ -333,10 +341,11 @@ def _updated_at(record: dict) -> str:
 def assign_ids(records: list, id_key: str) -> tuple[list, int]:
     """Set each document's Mongo _id deterministically from its Coupa id.
 
-    Re-inserting the same record then dedupes via duplicate-key skip
-    (ordered=False) instead of creating a second copy.  Records missing
-    the id keep an auto-generated _id — never _id: null, because two
-    nulls would silently dedupe against each other.
+    Re-inserting the same record is then skipped by insert_batch's _id
+    existence check (duplicate-key parsing retained as fallback) instead
+    of creating a second copy.  Records missing the id keep an
+    auto-generated _id — never _id: null, because two nulls would
+    silently dedupe against each other.
     """
     missing = 0
     for rec in records:

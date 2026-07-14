@@ -100,6 +100,15 @@ def test_records_without_id_are_never_filtered():
     assert inserts[0][1]["documents"] == records
 
 
+def test_repeated_id_within_batch_counts_as_duplicate():
+    s = StubSession([_resp([1])], existing=set())
+    r = cbi.insert_batch(s, "c", [{"_id": 1, "v": "a"}, {"_id": 1, "v": "b"}])
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+    inserts = _insert_calls(s)
+    assert len(inserts) == 1
+    assert inserts[0][1]["documents"] == [{"_id": 1, "v": "a"}]
+
+
 # ── belt: 200-with-write_errors still handled ────────────────────────────────
 
 def test_duplicates_by_code_are_informational(capsys):
