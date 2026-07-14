@@ -128,3 +128,38 @@ def test_supervise_resume_skips_completed(monkeypatch, tmp_path):
         ["users", "suppliers"], resume=True)
     assert code == 0
     assert launches == [("suppliers", True)]                  # users never launched
+
+
+def test_supervise_restores_sigterm_handler(monkeypatch, tmp_path):
+    import signal
+    before = signal.getsignal(signal.SIGTERM)
+    _run_supervise(monkeypatch, tmp_path, {"users": [_stub_completes("users")]}, ["users"])
+    assert signal.getsignal(signal.SIGTERM) is before
+
+
+def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    slow_child = [sys.executable, "-c", "import time; time.sleep(60)"]
+    calls = []
+    spawned = []
+    real_popen = cbi.subprocess.Popen
+
+    def capturing_popen(*a, **kw):
+        p = real_popen(*a, **kw)
+        spawned.append(p)
+        return p
+
+    def fake_build(dataset, config, *, resume, username, password, limit):
+        calls.append(dataset)
+        if len(calls) == 2:
+            raise KeyboardInterrupt   # simulates SIGINT arriving mid-startup
+        return slow_child
+
+    monkeypatch.setattr(cbi, "build_child_cmd", fake_build)
+    monkeypatch.setattr(cbi.subprocess, "Popen", capturing_popen)
+    code = cbi.supervise(["users", "suppliers"], _args())
+    assert code == 130
+    # the first child must have been terminated, not orphaned
+    assert len(spawned) == 1
+    spawned[0].wait(timeout=5)          # deterministic: SIGTERM must land
+    assert spawned[0].poll() is not None

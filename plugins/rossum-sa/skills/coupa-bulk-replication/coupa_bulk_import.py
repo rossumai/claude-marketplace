@@ -525,25 +525,31 @@ def supervise(keys: list[str], args) -> int:
     def _sigterm(*_):
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _sigterm)
-
-    for key in keys:
-        if args.resume and state_is_completed(state_paths[key], key):
-            slog(f"{key}: already complete — skipping")
-            status[key] = "done"
-        else:
-            slog(f"{key}: launching{' (--resume)' if args.resume else ''}")
-            launch(key, resume=args.resume)
+    prev_sigterm = signal.signal(signal.SIGTERM, _sigterm)
 
     try:
+        # Initial launches live inside the try: an interrupt at any point after
+        # handler registration must terminate already-spawned children (not
+        # orphan them) and exit 130.
+        for key in keys:
+            if args.resume and state_is_completed(state_paths[key], key):
+                slog(f"{key}: already complete — skipping")
+                status[key] = "done"
+            else:
+                slog(f"{key}: launching{' (--resume)' if args.resume else ''}")
+                launch(key, resume=args.resume)
+
         while any(s == "running" for s in status.values()):
             time.sleep(args.poll_interval)
             for key in keys:
                 if status[key] != "running":
                     continue
                 child     = children[key]
-                completed = state_is_completed(state_paths[key], key)
+                # poll() BEFORE the state read: a child seen dead has already
+                # done its final state write, so completion is never misread
+                # as a death (which would burn a restart slot).
                 alive     = child.poll() is None
+                completed = state_is_completed(state_paths[key], key)
                 action    = decide(completed, alive, restarts[key], args.max_restarts)
                 if action == "done":
                     slog(f"{key}: completed ({restarts[key]} restart(s))")
@@ -565,6 +571,8 @@ def supervise(keys: list[str], args) -> int:
             if child is not None and child.poll() is None:
                 child.terminate()
         return 130
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
 
     given_up = [k for k, s in status.items() if s == "given_up"]
     if given_up:
