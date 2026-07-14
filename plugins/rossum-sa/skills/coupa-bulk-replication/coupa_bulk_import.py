@@ -441,6 +441,23 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             break
 
 
+# ── Supervision (--supervise) ────────────────────────────────────────────────────
+
+def decide(completed: bool, child_alive: bool, restarts: int, max_restarts: int) -> str:
+    """Per-dataset supervision decision: done | wait | relaunch | give_up.
+
+    The state file's completed flag — not the child's exit code — is the
+    source of truth for completion.
+    """
+    if completed:
+        return "done"
+    if child_alive:
+        return "wait"
+    if restarts < max_restarts:
+        return "relaunch"
+    return "give_up"
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
