@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import signal
 import subprocess
 import sys
@@ -247,6 +248,74 @@ def make_coupa_session(scope: str) -> requests.Session:
     return session
 
 
+# ── Coupa rate limiting + backoff ────────────────────────────────────────────────
+
+_RETRYABLE = (
+    requests.exceptions.SSLError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+)
+
+
+class RateLimiter:
+    """Min-interval throttle for Coupa requests (rate=None disables).
+
+    Per-process only (spec §4.5): the supervisor splits the aggregate cap
+    statically across children — no cross-process coordination.
+    """
+
+    def __init__(self, rate: float | None):
+        self.min_interval = 1.0 / rate if rate else 0.0
+        self._last = 0.0
+
+    def wait(self) -> None:
+        if not self.min_interval:
+            return
+        now = time.monotonic()
+        wait_for = self._last + self.min_interval - now
+        if wait_for > 0:
+            time.sleep(wait_for)
+        self._last = time.monotonic()
+
+
+LIMITER = RateLimiter(None)   # configured in main() from --rate / config cap
+
+_BACKOFF_STATUSES = (429, 503)
+
+
+def coupa_call(fn, *, _attempts: int = 8, _base: float = 5.0, _cap: float = 240.0):
+    """Run a zero-arg callable returning a Response, throttled and retried.
+
+    Retries 429/503 and connection-level errors with BLIND exponential
+    backoff — Coupa sends no rate-limit headers and no Retry-After.
+    Any other HTTP error (401 token expiry, 400 bad query) propagates
+    immediately: token refresh and hard failures belong to the caller.
+    A 429 under our self-imposed cap means another consumer is draining
+    this OAuth client's budget — worth a loud line.
+    """
+    for attempt in range(1, _attempts + 1):
+        LIMITER.wait()
+        try:
+            resp = fn()
+            if resp.status_code in _BACKOFF_STATUSES:
+                raise requests.HTTPError(response=resp)
+            resp.raise_for_status()
+            return resp
+        except (*_RETRYABLE, requests.HTTPError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if isinstance(exc, requests.HTTPError) and status not in _BACKOFF_STATUSES:
+                raise
+            if attempt == _attempts:
+                raise
+            wait = min(_base * 2 ** (attempt - 1), _cap) * random.uniform(0.5, 1.0)
+            if status == 429:
+                print("   [WARN] Coupa 429 under the self-imposed cap — another "
+                      "consumer is draining this OAuth client's rate budget")
+            what = f"HTTP {status}" if status else type(exc).__name__
+            print(f"   [RETRY {attempt}/{_attempts}] Coupa {what} — backing off {wait:.0f}s")
+            time.sleep(wait)
+
+
 def ds_call_with_heal(call, ds_session: requests.Session,
                       username: str | None = None,
                       password: str | None = None):
@@ -319,12 +388,6 @@ def _bisect_count(probe) -> int:
 
 
 # ── Data Storage insert ──────────────────────────────────────────────────────────
-
-_RETRYABLE = (
-    requests.exceptions.SSLError,
-    requests.exceptions.ConnectionError,
-    requests.exceptions.Timeout,
-)
 
 class BatchResult(namedtuple("BatchResult",
                              "inserted duplicates failed inserted_values")):
