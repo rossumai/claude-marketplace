@@ -158,6 +158,48 @@ def test_partition_range_crawls_only_its_slice(monkeypatch, tmp_path):
     assert st["partition"]["id_gt"] == 3           # partition block persisted
 
 
+def test_id_range_crawls_only_the_requested_slice(monkeypatch, tmp_path):
+    ids = [1, 2, 3, 10, 11, 12, 20, 21, 22]
+    ds = FakeDS()
+    saved, _ = run_import(monkeypatch, tmp_path,
+                          fake_coupa=FakeCoupa(ids, page_size=2),
+                          ds_session=ds, id_range=(10, 12))
+    assert ds.value_counts() == {10: 1, 11: 1, 12: 1}
+    st = saved["users"]
+    assert st["completed"] is True
+    assert st["partition"] == {"id_gt": 9, "id_lte": 12}   # range recorded
+
+
+def test_id_range_refuses_resume_against_rangeless_state(monkeypatch, tmp_path):
+    # a state with progress but NO recorded range is a mismatch too —
+    # proceeding would silently drop the requested range
+    old = {"users": {"last_id": 50, "anchor_updated_at": "t",
+                     "total_processed": 5, "total_inserted": 5}}
+    with pytest.raises(SystemExit) as exc:
+        run_import(monkeypatch, tmp_path, [[]], resume=True, state=old,
+                   id_range=(10, 12))
+    assert "--id-range" in str(exc.value)
+
+
+def test_id_range_gets_scoped_state_file(monkeypatch, tmp_path):
+    """--id-range must NEVER write the dataset's default state file — a
+    range run marking it completed would make a later plain --resume skip
+    the rest of the dataset silently."""
+    import sys
+    seen = {}
+
+    def fake_import(key, limit, resume, state, ds_session, state_path, **kw):
+        seen["path"] = str(state_path)
+
+    monkeypatch.setattr(cbi, "import_dataset", fake_import)
+    monkeypatch.chdir(tmp_path)
+    argv = ["coupa_bulk_import.py", "--dataset", "users", "--id-range", "10:12",
+            "--config", str(write_config(tmp_path))]
+    monkeypatch.setattr(sys, "argv", argv)
+    cbi.main()
+    assert seen["path"] == "coupa_import_state_users_range_10_12.json"
+
+
 def test_custom_id_key_dedupes_end_to_end(monkeypatch, tmp_path):
     """The dataset's configured id_key — not the pagination id — drives dedup."""
     datasets = {"users": {"endpoint": "api/users", "collection": "users",

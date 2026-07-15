@@ -246,7 +246,9 @@ def reload_config_token() -> str:
 # ── Coupa auth ───────────────────────────────────────────────────────────────────
 
 def get_coupa_token(scope: str) -> str:
-    resp = requests.post(
+    # through coupa_call: a 429/503 on a MID-RUN token refresh must back off,
+    # not kill the child and burn supervisor restart budget on a transient
+    resp = coupa_call(lambda: requests.post(
         f"{COUPA_BASE_URL}/oauth2/token",
         data={
             "grant_type":    "client_credentials",
@@ -256,8 +258,7 @@ def get_coupa_token(scope: str) -> str:
         },
         verify=False,
         timeout=30,
-    )
-    resp.raise_for_status()
+    ))
     return resp.json()["access_token"]
 
 
@@ -797,7 +798,9 @@ def import_dataset(key: str, limit: int | None, resume: bool,
 
     if id_range is not None:
         wanted = {"id_gt": id_range[0] - 1, "id_lte": id_range[1]}
-        if resume and part and (part.get("id_gt"), part.get("id_lte")) != \
+        # an absent recorded range on a state with progress is a mismatch
+        # too — proceeding would drop the requested range on the floor
+        if resume and ds_st and (part.get("id_gt"), part.get("id_lte")) != \
                 (wanted["id_gt"], wanted["id_lte"]):
             raise SystemExit(
                 f"Dataset '{key}': --id-range {id_range[0]}:{id_range[1]} does "
@@ -909,9 +912,10 @@ def import_dataset(key: str, limit: int | None, resume: bool,
 
         if not page:
             flush(final=True)
-            if not buffer:  # flush already saved; ensure completed flag is set
-                state[key] = {**state.get(key, {}), "completed": True}
-                save_state(state, state_path)
+            # a non-empty final flush already wrote completed; this covers the
+            # nothing-buffered case (flush returned early without saving)
+            state[key] = {**state.get(key, {}), "completed": True}
+            save_state(state, state_path)
             print(f"   complete — {total} records total")
             break
 
@@ -1139,6 +1143,42 @@ def find_partition_states(dataset: str) -> list[Path]:
     return sorted(Path(".").glob(f"coupa_import_state_{dataset}_p*of*.json"))
 
 
+def validate_partition_set(dataset: str, paths: list[Path]) -> list[tuple[dict, Path]]:
+    """Recovered partition plan must be complete and consistent.
+
+    A supervisor killed between seeding SOME partition files and seeding the
+    rest must refuse on restart — resuming a partial plan would silently
+    never crawl the missing id ranges, and the Phase 4 count check could not
+    see it (both sides exclude the missing ranges).  Same for a mixed set
+    left over from runs with different worker counts (p1of2 + p1of4 both
+    match the glob).  Returns [(partition, path)] sorted by index.
+    """
+    recover = (f"Delete the coupa_import_state_{dataset}_p*of*.json files to "
+               "re-plan (already-loaded records dedupe).")
+    parts: list[tuple[dict, Path]] = []
+    for path in paths:
+        part = load_state(path).get(dataset, {}).get("partition") or {}
+        if not {"index", "of", "id_gt", "id_lte"} <= part.keys():
+            raise SystemExit(f"Dataset '{dataset}': partition state file {path} "
+                             f"carries no valid partition block. {recover}")
+        parts.append((part, path))
+    ofs = {p["of"] for p, _ in parts}
+    if len(ofs) != 1:
+        raise SystemExit(f"Dataset '{dataset}': partition state files mix "
+                         f"worker counts {sorted(ofs)}. {recover}")
+    of = ofs.pop()
+    parts.sort(key=lambda pp: pp[0]["index"])
+    if [p["index"] for p, _ in parts] != list(range(1, of + 1)):
+        raise SystemExit(f"Dataset '{dataset}': partition plan incomplete — "
+                         f"found {len(parts)} of {of} state files (supervisor "
+                         f"likely killed mid-planning). {recover}")
+    for (a, _), (b, _) in zip(parts, parts[1:]):
+        if a["id_lte"] != b["id_gt"]:
+            raise SystemExit(f"Dataset '{dataset}': partition ranges are not "
+                             f"contiguous ({a['id_lte']} != {b['id_gt']}). {recover}")
+    return parts
+
+
 def plan_partitions(key: str, cfg: dict, workers: int) -> tuple[str, list[dict]]:
     """Count-balanced id-range partitions for one dataset, computed ONCE.
 
@@ -1153,15 +1193,34 @@ def plan_partitions(key: str, cfg: dict, workers: int) -> tuple[str, list[dict]]
         lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off)))
     w = min(workers, max(1, -(-count // MIN_PARTITION)))   # ceil clamp
     if w <= 1:
+        if workers > 1:
+            print(f"   {key}: workers clamped to 1 — {count} records is under "
+                  f"the {MIN_PARTITION}-per-worker floor; running unpartitioned")
         return anchor, []
     print(f"   {key}: planning {w} partition(s) over {count} records")
+    # Top edge via ONE keyset page (desc, limit=1) — exact and race-free.
+    # A rank probe at count-1 would crash whenever the anchored set shrinks
+    # during the minutes-long bisection (any record updated mid-planning
+    # leaves the set), which is the normal case on a live tenant.
+    top = fetch_page(session, cfg["endpoint"], ["id"], anchor, limit=1)
+    if not top:
+        raise SystemExit(f"Dataset '{key}': no records under the planning "
+                         "anchor — nothing to partition")
     edges = [0]
     for k in range(1, w):
         rank = k * count // w
         rec = fetch_at_rank(session, cfg["endpoint"], anchor, rank)
+        if not rec:
+            raise SystemExit(
+                f"Dataset '{key}': the dataset shrank while planning "
+                f"partitions (rank {rank} of {count} vanished) — re-run "
+                "to re-plan against a fresh anchor")
         edges.append(rec[0]["id"])
-    top = fetch_at_rank(session, cfg["endpoint"], anchor, count - 1)
     edges.append(top[0]["id"])
+    if any(a >= b for a, b in zip(edges, edges[1:])):
+        raise SystemExit(
+            f"Dataset '{key}': partition boundaries collapsed (the dataset "
+            "changed during planning) — re-run to re-plan against a fresh anchor")
     return anchor, [
         {"index": k, "of": w, "id_gt": edges[k - 1], "id_lte": edges[k]}
         for k in range(1, w + 1)
@@ -1270,15 +1329,14 @@ def build_units(keys: list[str], args) -> list[dict]:
         workers = effective_workers(key, getattr(args, "workers", None))
         existing = find_partition_states(key)
         if existing:
-            recorded_of = load_state(existing[0]).get(key, {}) \
-                .get("partition", {}).get("of")
-            if recorded_of and recorded_of != workers and workers > 1:
+            validated = validate_partition_set(key, existing)
+            recorded_of = validated[0][0]["of"]
+            if recorded_of != workers and workers > 1:
                 print(f"   [WARN] {key}: existing partition files use "
                       f"of={recorded_of}; requested workers={workers} ignored — "
                       "delete the partition state files to re-plan")
-            for path in existing:
-                part = load_state(path).get(key, {}).get("partition", {})
-                units.append({"label": f"{key}[p{part.get('index')}/{part.get('of')}]",
+            for part, path in validated:
+                units.append({"label": f"{key}[p{part['index']}/{part['of']}]",
                               "dataset": key, "state_path": path, "resume": True})
             continue
         if workers > 1:
@@ -1321,9 +1379,12 @@ def supervise(keys: list[str], args) -> int:
     """
     units = build_units(keys, args)
     Path("logs").mkdir(exist_ok=True)
-    per_child = (COUPA_MAX_RPS / len(units)) if units else COUPA_MAX_RPS
+    # --rate overrides the config cap as the AGGREGATE for the whole run
+    # (e.g. "--rate 15" when webhooks share the OAuth client)
+    aggregate = getattr(args, "rate", None) or COUPA_MAX_RPS
+    per_child = (aggregate / len(units)) if units else aggregate
     print(f"supervisor: {len(units)} child(ren), per-child cap "
-          f"{per_child:.2f} req/s (aggregate {COUPA_MAX_RPS})")
+          f"{per_child:.2f} req/s (aggregate {aggregate})")
     if per_child < 0.5:
         print("   [WARN] per-child rate under 0.5 req/s — more workers than "
               "the aggregate cap can feed; reduce workers or raise "
@@ -1579,6 +1640,10 @@ def main() -> None:
         if args.supervise:
             raise SystemExit("--id-range cannot be combined with --supervise "
                              "(the supervisor plans partitions itself)")
+        if args.probe:
+            raise SystemExit("--id-range cannot be combined with --probe")
+        if args.smoke is not None:
+            raise SystemExit("--id-range cannot be combined with --smoke")
         try:
             lo, hi = (int(x) for x in args.id_range.split(":", 1))
         except ValueError:
@@ -1600,6 +1665,11 @@ def main() -> None:
                              "see SKILL.md Phase 3)")
         if args.workers < 1:
             raise SystemExit("--workers must be >= 1")
+
+    if args.rate is not None and args.rate <= 0:
+        raise SystemExit("--rate must be > 0")
+    if args.probe and args.limit is not None:
+        raise SystemExit("--limit cannot be combined with --probe")
 
     load_config(Path(args.config))
 
@@ -1636,6 +1706,12 @@ def main() -> None:
         raise SystemExit(supervise(keys, args))
 
     state_path = default_state_path(args.dataset, keys, args.state_file)
+    if id_range is not None and not args.state_file:
+        # NEVER the dataset's default state file: a range run recording its
+        # partition block (and eventually "completed") there would make a
+        # later plain --resume skip the rest of the dataset silently
+        state_path = Path(f"coupa_import_state_{keys[0]}"
+                          f"_range_{id_range[0]}_{id_range[1]}.json")
 
     if args.probe:
         state = load_state(state_path)

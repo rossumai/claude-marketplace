@@ -257,6 +257,23 @@ def test_supervise_reuses_existing_partition_files_without_replanning(
     assert launched == ["coupa_import_state_users_p2of2.json"]  # p1 skipped
 
 
+def test_supervise_rate_override_splits_that_aggregate(monkeypatch, tmp_path):
+    # --rate 10 must become the AGGREGATE for the run (config cap ignored):
+    # an operator lowering the cap for live webhooks must actually lower it
+    _partitioned_env(monkeypatch, tmp_path, workers=2)
+    rates = []
+
+    def fake_build(dataset, config, *, resume, username, password,
+                   no_unique_index_ok=False, state_file=None, rate=None):
+        rates.append(rate)
+        return _stub_completes_partition(dataset, state_file)
+
+    monkeypatch.setattr(cbi, "build_child_cmd", fake_build)
+    code = cbi.supervise(["users"], _args(rate=10.0))
+    assert code == 0
+    assert rates == [pytest.approx(5.0)] * 2
+
+
 def test_supervise_refuses_partitioning_over_unpartitioned_progress(
         monkeypatch, tmp_path):
     _partitioned_env(monkeypatch, tmp_path, workers=2)

@@ -27,7 +27,11 @@ GUARDS = [
     (["--workers", "2", "--probe"], None, ["--workers", "--probe"]),
     (["--workers", "2", "--smoke"], None, ["--workers", "--smoke"]),
     (["--id-range", "1:100", "--supervise"], None, ["--id-range", "--supervise"]),
+    (["--id-range", "1:100", "--probe"], None, ["--id-range", "--probe"]),
+    (["--id-range", "1:100", "--smoke"], None, ["--id-range", "--smoke"]),
     (["--id-range", "100:1"], None, ["--id-range"]),           # LO > HI
+    (["--rate", "0"], None, ["--rate"]),
+    (["--probe", "--limit", "5"], None, ["--limit", "--probe"]),
     # multi-dataset --id-range fires AFTER load_config -> needs a real config
     # with two datasets so keys resolves to more than one
     (["--id-range", "1:100"],
