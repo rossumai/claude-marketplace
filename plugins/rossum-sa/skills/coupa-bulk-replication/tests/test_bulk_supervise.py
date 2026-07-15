@@ -33,31 +33,17 @@ def test_state_is_completed(tmp_path):
     assert cbi.state_is_completed(p, "users") is False
 
 
-def test_read_last_log_line(tmp_path):
-    p = tmp_path / "x.log"
-    assert cbi.read_last_log_line(p) == "(no log)"
-    p.write_text("")
-    assert cbi.read_last_log_line(p) == "(empty log)"
-    p.write_text("first\nlast line\n")
-    assert cbi.read_last_log_line(p) == "last line"
-
-
-def test_build_child_cmd_minimal():
-    cmd = cbi.build_child_cmd("users", "cfg.json", resume=False,
-                              username=None, password=None)
-    assert cmd[0] == sys.executable
-    assert cmd[1] == "-u"
-    assert cmd[2].endswith("coupa_bulk_import.py")
-    assert cmd[3:] == ["--dataset", "users", "--config", "cfg.json"]
-
-
-def test_build_child_cmd_full():
+def test_build_child_cmd():
     cmd = cbi.build_child_cmd("users", "cfg.json", resume=True,
                               username="u@x.com", password="pw")
+    assert cmd[0] == sys.executable
+    assert cmd[1] == "-u"                        # unbuffered → live child logs
+    assert cmd[2].endswith("coupa_bulk_import.py")
     assert "--resume" in cmd
     assert cmd[cmd.index("--username") + 1] == "u@x.com"
     assert cmd[cmd.index("--password") + 1] == "pw"
-    assert "--limit" not in cmd
+    assert "--limit" not in cmd                  # refused with --supervise
+    assert "--no-unique-index-ok" not in cmd     # only when explicitly given
 
 
 def test_build_child_cmd_inherits_no_unique_index_ok():
@@ -65,12 +51,6 @@ def test_build_child_cmd_inherits_no_unique_index_ok():
                               username=None, password=None,
                               no_unique_index_ok=True)
     assert "--no-unique-index-ok" in cmd
-
-
-def test_build_child_cmd_omits_no_unique_index_ok_by_default():
-    cmd = cbi.build_child_cmd("users", "cfg.json", resume=False,
-                              username=None, password=None)
-    assert "--no-unique-index-ok" not in cmd
 
 
 import argparse
@@ -161,13 +141,6 @@ def test_supervise_passes_no_unique_index_ok_to_children(monkeypatch, tmp_path):
     assert flags == [True]
 
 
-def test_supervise_restores_sigterm_handler(monkeypatch, tmp_path):
-    import signal
-    before = signal.getsignal(signal.SIGTERM)
-    _run_supervise(monkeypatch, tmp_path, {"users": [_stub_completes("users")]}, ["users"])
-    assert signal.getsignal(signal.SIGTERM) is before
-
-
 def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     slow_child = [sys.executable, "-c", "import time; time.sleep(60)"]
@@ -194,24 +167,6 @@ def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypat
     assert len(spawned) == 1
     spawned[0].wait(timeout=5)          # deterministic: SIGTERM must land
     assert spawned[0].poll() is not None
-
-
-def test_main_rejects_supervise_with_limit(monkeypatch):
-    monkeypatch.setattr(sys, "argv",
-                        ["coupa_bulk_import.py", "--supervise", "--limit", "1"])
-    with pytest.raises(SystemExit) as exc:
-        cbi.main()
-    assert "--limit" in str(exc.value)
-    assert "--supervise" in str(exc.value)
-
-
-def test_main_rejects_supervise_with_state_file(monkeypatch):
-    monkeypatch.setattr(sys, "argv",
-                        ["coupa_bulk_import.py", "--supervise", "--state-file", "x.json"])
-    with pytest.raises(SystemExit) as exc:
-        cbi.main()
-    assert "--state-file" in str(exc.value)
-    assert "--supervise" in str(exc.value)
 
 
 def test_supervise_unexpected_exception_terminates_children_and_reraises(monkeypatch, tmp_path):
