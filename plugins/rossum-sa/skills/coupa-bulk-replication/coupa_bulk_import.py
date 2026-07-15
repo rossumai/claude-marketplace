@@ -348,21 +348,56 @@ def ds_call_with_heal(call, ds_session: requests.Session,
 
 # ── Coupa pagination ─────────────────────────────────────────────────────────────
 
+def ensure_id_field(fields: list) -> list:
+    """Cursor pagination needs the id column even when id_key != 'id'."""
+    return fields if "id" in fields else ["id", *fields]
+
+
 def fetch_page(session: requests.Session, endpoint: str, fields: list,
-               offset: int, anchor_ts: str, limit: int | None = None) -> list:
-    """Fetch one page of records sorted newest-first, anchored to anchor_ts."""
+               anchor_ts: str, *, before_id: int | None = None,
+               id_gt: int | None = None, limit: int | None = None) -> list:
+    """One keyset page: newest-by-id first, anchored, every page an indexed seek.
+
+    before_id: moving upper bound (exclusive) — the cursor.
+    id_gt:     static lower bound (exclusive) — partition floor (spec §4.3).
+    """
     params = {
         "fields":               json.dumps(fields),
-        "order_by":             "updated_at",
+        "order_by":             "id",
         "dir":                  "desc",
-        "offset":               offset,
+        "offset":               0,
         "updated-at[lt_or_eq]": anchor_ts,
     }
+    if before_id is not None:
+        params["id[lt]"] = before_id
+    if id_gt is not None:
+        params["id[gt]"] = id_gt
     if limit is not None:
         params["limit"] = limit
-    resp = session.get(f"{COUPA_BASE_URL}/{endpoint}", params=params,
-                       verify=False, timeout=120)
-    resp.raise_for_status()
+    resp = coupa_call(lambda: session.get(f"{COUPA_BASE_URL}/{endpoint}",
+                                          params=params, verify=False, timeout=120))
+    return resp.json() or []
+
+
+def fetch_at_rank(session: requests.Session, endpoint: str, anchor_ts: str,
+                  rank: int) -> list:
+    """The record at ascending-id rank N, or [] past the end.
+
+    limit=1&offset=N — Coupa's only counting primitive (no count endpoint):
+    a record exists at rank N iff count > N. Also the boundary-rank probe
+    for partition planning (spec §4.3). Deep offsets are slow per call but
+    each plan needs only ~2*log2(C) + W-1 of them.
+    """
+    params = {
+        "fields":               json.dumps(["id"]),
+        "order_by":             "id",
+        "dir":                  "asc",
+        "offset":               rank,
+        "limit":                1,
+        "updated-at[lt_or_eq]": anchor_ts,
+    }
+    resp = coupa_call(lambda: session.get(f"{COUPA_BASE_URL}/{endpoint}",
+                                          params=params, verify=False, timeout=120))
     return resp.json() or []
 
 
