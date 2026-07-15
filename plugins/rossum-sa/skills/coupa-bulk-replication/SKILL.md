@@ -197,12 +197,12 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 4. **Smoke-test the configuration** before starting the full load:
 
    ```bash
-   python3 -u coupa_bulk_import.py --dataset <key> --limit 1
+   python3 -u coupa_bulk_import.py --dataset <key> --smoke
    ```
 
    If the config path is non-standard, pass `--config <path>`.
 
-   Smoke records are harmless: documents are inserted with `_id` set to the Coupa id, so the full run skips them as duplicates (logged as `duplicate(s) skipped`). Exception: collections loaded by pre-supervision script versions hold auto-`_id` records the current script cannot dedupe against — wipe those collections before a full re-run. Never combine `--limit` with `--supervise` (the script refuses: a limit-stopped child never writes the completed flag).
+   `--smoke [N]` (default N=1) is self-cleaning: it inserts the newest N records, verifies them, then deletes exactly the records it added and prints the collection's remaining doc count — no manual cleanup step, and no state file is written or overwritten. N must fit in one DS batch (`ds_batch_size`); the script refuses larger values, which is what guarantees a later full run's first-flush existence check can absorb the leftovers of a hard-killed smoke run (a re-run smoke absorbs them too). `--smoke` cannot be combined with `--supervise` or `--resume` (the script refuses), and `--limit` similarly refuses `--supervise` (a limit-stopped child never writes the completed flag).
 
 **Artifact:** `coupa_bulk_import.py` + `coupa_bulk_import.config.json` present, gitignored, and smoke-tested.
 
@@ -254,14 +254,13 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `[Rossum 401 — re-reading token from config]` | No credentials passed; retried once with the (possibly refreshed) config token |
    | `[Coupa token expired — refreshing]` | Auto-refreshed via client credentials; no action needed |
    | `[RETRY N/5] SSLError` | Transient connection error; retrying with exponential backoff |
-   | `N duplicate(s) skipped (expected after resume or smoke test)` | Deterministic `_id` dedup at work; healthy |
-   | `[NOTICE] >=90% of the first batch already exists…` | Fresh run over an already-loaded collection — see "Re-replicating a dataset" |
+   | `N duplicate(s) skipped (expected after resume or smoke test)` | The first-flush/retry existence check at work; healthy |
+   | `[NOTICE] >=90% of the first batch already exists…` | Fresh run over an already-loaded collection — STOP the run; see "Re-replicating a dataset" |
    | `[WARN] N document(s) failed` | Real write failures; check payload size or field types |
-   | `[WARN] N record(s) missing 'id'` | Records without the id_key — inserted without dedup protection |
    | `supervisor: <ds> died … resuming (attempt N/3)` | Child crashed; auto-resumed |
    | `supervisor: <ds> exceeded 3 restarts — giving up` | Investigate that dataset's log, then relaunch the supervisor |
-   | `[WARN] poison document skipped (_id=…)` | A document DS rejects even alone; skipped after per-record isolation, run continues |
-   | `[WARN] collection '…' already holds N document(s)` | Fresh run over a non-empty collection — pre-deterministic-`_id` records will not dedupe; see 'Re-replicating a dataset' |
+   | `[WARN] poison document skipped (id=…)` | A document DS rejects even alone; skipped after per-record isolation, run continues |
+   | `[WARN] collection '…' already holds N document(s)` | Fresh run over a non-empty collection — everything after the first batch will duplicate; see 'Re-replicating a dataset' |
 
 5. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from `coupa_import_state_<dataset>.json` with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
 
@@ -279,9 +278,17 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
 1. **Final count check.** For each dataset, confirm `total_inserted` in the state file equals the actual document count in Data Storage. If they differ by more than one batch (5,000 records), investigate `[WARN]` lines in the logs before proceeding.
 
-   If the run logged `[WARN] … record(s) missing 'id'`, this check is blind to those records — a resume overlap re-inserts them and inflates both sides equally, so a resumed run may hold duplicate copies of exactly those records.
+2. **Duplicate audit.** Per collection, run a DS aggregate grouping on the dataset's `id_key`:
 
-2. **Register collections with MDH** (if the collections need fuzzy search or UI visibility). A seed CSV with only the header row is sufficient — MDH manages the collection from then on:
+   ```json
+   [{"$group": {"_id": "$<id_key>", "n": {"$sum": 1}}},
+    {"$match": {"n": {"$gt": 1}}},
+    {"$count": "dups"}]
+   ```
+
+   Expected result: empty (0 duplicates). A non-zero count means some records were double-inserted (e.g. a full run over a partially loaded collection) — investigate before handing off to continuous sync. Caveat: this audit is blind to records with a missing/falsy `id_key` value (they group under one bucket or none and are never dedup-protected); the existence check skips them by design, so a resume overlap can legitimately hold duplicate copies of exactly those records.
+
+3. **Register collections with MDH** (if the collections need fuzzy search or UI visibility). A seed CSV with only the header row is sufficient — MDH manages the collection from then on:
 
    ```bash
    curl -X POST "<org_url>/svc/master-data-hub/api/v1/dataset/<name>" \
@@ -291,9 +298,9 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
    See `mdh-reference` for full MDH dataset management details.
 
-3. **Record the anchors, then clean up.** Phase 5's delta seeding needs each dataset's `anchor_updated_at` from its state file — copy them out BEFORE deleting state files. Then state files can be deleted and logs archived.
+4. **Record the anchors, then clean up.** Phase 5's delta seeding needs each dataset's `anchor_updated_at` from its state file — copy them out BEFORE deleting state files. Then state files can be deleted and logs archived.
 
-**Artifact:** Collections live in Data Storage with `total_inserted` == DB count, MDH registered (if applicable), anchors recorded for Phase 5.
+**Artifact:** Collections live in Data Storage with `total_inserted` == DB count and a clean duplicate audit, MDH registered (if applicable), anchors recorded for Phase 5.
 
 ---
 
@@ -340,21 +347,28 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 
 ### Re-replicating a dataset (e.g. the field list changed)
 
-Insert-dedup is **not** upsert: a re-run over a loaded collection skips every existing record and updates nothing — the script flags this loudly (`[NOTICE]`) when a fresh run's first batch is ≥90% duplicates. To re-replicate with a changed `fields` list:
+Only the FIRST batch of a run is existence-checked: a fresh full run into an already-loaded collection **duplicates everything except the first batch**. The supported path is therefore **clear-and-reload** — never rerun over loaded data. The script flags the mistake loudly (`[NOTICE]`) when a fresh run's first batch is ≥90% duplicates, and warns up front when the target collection is non-empty: stop the run, then:
 
 - **Dev/UAT:** drop the collection (Phase 1 flow), then run fresh.
 - **Live production collection:** blue-green — load into a temp collection (indexes build instantly on empty), swap via `data_storage_rename_collection`, then drop the old one. Avoids hours of empty/partial data under live MDH matching.
 
 DS REST quirk while cleaning up: `find`/`aggregate` take `query`/`pipeline`, but `delete_one`/`delete_many` take `filter` — a 422 usually means the wrong key.
 
-### Deterministic `_id` and dedup
+### Record identity and dedup
 
-Documents are inserted with `_id = record[<id_key>]` (raw Coupa id, no type coercion). Before every batch insert the script checks which `_id`s already exist and skips them — necessary because the DS REST layer reports duplicate-key write errors as an opaque HTTP 400 ("batch op errors occurred") with no per-document detail (live-verified 2026-07). The effect: re-inserting an existing record is a skip, not a second copy — smoke tests, resume overlap, and fresh runs over partial loads are all self-healing. Consequences:
+Records are inserted **exactly as received from Coupa**, with auto-generated Mongo `_id`s — structurally identical to records written by the Coupa import extension, which upserts by the `id` FIELD and never touches `_id`. (An earlier design wrote `_id = record[id_key]`; it was rejected in review for breaking that structural consistency — and DS's opaque-400 duplicate reporting made `_id`-based dup handling fragile anyway.)
+
+Dedup is a pre-insert existence check on the id field (config `id_key`, default `id`), run only where ambiguity exists:
+
+- the **first flush of a run** (fresh or resumed) — it absorbs the resume-boundary re-fetch and any leftovers of a hard-killed smoke run (smoke never exceeds one batch);
+- every **transient-error retry** — an interrupted attempt may have persisted server-side with the response lost.
+
+Steady-state batches are provably fresh (the offset walks forward under a frozen anchor) and skip the check — checking them would buy nothing. Necessary rather than optional because the DS REST layer reports duplicate-key write errors as an opaque HTTP 400 ("batch op errors occurred") with no per-document detail (live-verified 2026-07) — and without a unique index on the id field, double-inserts would not even error. Consequences:
 
 - `total_inserted` (state file) counts actual inserts and must match the DB count; `total_processed` includes duplicate-skips.
-- Records missing the id are inserted with an auto `_id` and warned about — never `_id: null` (two nulls would dedupe against each other).
+- Records with a missing/falsy `id_key` value never enter dedup queries (a shared falsy id would collapse distinct records) — they always insert, are excluded from smoke-delete filters, and the Phase 4 duplicate audit is blind to them.
 - Two datasets must not share a collection — the config loader rejects it.
-- Mixed `_id` types are fine: hook-written records carry ObjectIds, bulk records carry Coupa ids; the sync service matches on business keys, not `_id`.
+- A fresh full run over a loaded collection is NOT self-healing — see "Re-replicating a dataset".
 
 ### Why `insert_many` instead of `bulk_write`
 
