@@ -33,7 +33,7 @@ def make_records(*ids):
 
 def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
                state=None, username=None, password=None, insert_stub=None,
-               db_count=0):
+               db_count=0, datasets=None, ds_batch_size=None):
     """Drive import_dataset with canned Coupa pages and stubbed DS inserts.
 
     pages: list of record-lists; MUST end with [] (Coupa's empty page).
@@ -45,18 +45,27 @@ def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
     import coupa_bulk_import as cbi
 
     monkeypatch.chdir(tmp_path)
-    cbi.load_config(write_config(tmp_path))
+    kw = {}
+    if datasets is not None:
+        kw["datasets"] = datasets
+    if ds_batch_size is not None:
+        kw["ds_batch_size"] = ds_batch_size
+    cbi.load_config(write_config(tmp_path, **kw))
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "coupa-token")
 
-    calls = {"fetch_offsets": [], "inserted_batches": []}
+    calls = {"fetch_offsets": [], "inserted_batches": [],
+             "check_flags": [], "id_keys": []}
     pages_iter = iter(pages)
 
     def fake_fetch(session, endpoint, fields, offset, anchor_ts):
         calls["fetch_offsets"].append(offset)
         return next(pages_iter)
 
-    def fake_insert(session, collection, records, _retries=5):
+    def fake_insert(session, collection, records, id_key="id",
+                    check_existing=True, _retries=5):
         calls["inserted_batches"].append(list(records))
+        calls["check_flags"].append(check_existing)
+        calls["id_keys"].append(id_key)
         if batch_results:
             return batch_results.pop(0)
         return cbi.BatchResult(len(records), 0, 0)

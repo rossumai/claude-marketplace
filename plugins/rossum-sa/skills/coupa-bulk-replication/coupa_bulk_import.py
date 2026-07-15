@@ -10,9 +10,11 @@ every DS flush — safe to kill and resume at any time.
 Write strategy: insert_many (synchronous, 200 OK) in DS_BATCH_SIZE chunks.
 This is faster than async bulk_write and avoids async queue buildup after kill.
 
-Documents are inserted with _id = record[id_key]; re-inserts (smoke tests,
-resume overlap, fresh runs over partial loads) are skipped by insert_batch's
-_id existence check (duplicate-key parsing retained as fallback).
+Records are inserted exactly as received from Coupa, with auto-generated
+Mongo _ids — structurally identical to records written by the Coupa import
+extension (which upserts by the id FIELD and never touches _id).  Dedup is
+a pre-insert existence check on that id field (config id_key), so re-inserts
+(smoke leftovers, resume overlap) are skipped instead of duplicated.
 
 Usage:
     python coupa_bulk_import.py                      # all datasets, full load
@@ -78,11 +80,10 @@ DS_BATCH_SIZE = 5000                              # records per insert_many call
 RE_REPLICATION_NOTICE = """
    ================================================================
    [NOTICE] >=90% of the first batch already exists in this
-   collection. insert-dedup does NOT update existing documents:
-   if you are re-replicating with a changed field list, stop this
-   run, drop (or blue-green swap) the collection, and start fresh.
-   A deliberate fresh run over a partially-loaded collection is
-   fine - duplicates are skipped, missing records are filled in.
+   collection. Only the FIRST batch of a run is existence-checked:
+   letting this run continue will DUPLICATE every later record
+   that already exists. Stop this run, clear (or blue-green swap)
+   the collection, and reload fresh (see SKILL.md).
    ================================================================"""
 
 DATASETS: dict[str, dict] = {}
@@ -143,8 +144,8 @@ def load_config(path: Path) -> None:
         if coll in seen:
             raise SystemExit(
                 f"Config error: datasets '{seen[coll]}' and '{ds_key}' both target "
-                f"collection '{coll}'. Deterministic _id dedup requires one "
-                "collection per dataset."
+                f"collection '{coll}'. Dedup and smoke cleanup key on the record "
+                "id per collection - one collection per dataset required."
             )
         seen[coll] = ds_key
 
@@ -285,18 +286,24 @@ def _is_duplicate_error(err) -> bool:
     return err.get("code") == _DUPLICATE_KEY_CODE or "E11000" in str(err.get("errmsg", ""))
 
 
-def _existing_ids(session: requests.Session, collection: str, ids: list) -> set:
-    """Return the subset of ids already present in the collection."""
+def _existing_ids(session: requests.Session, collection: str,
+                  id_key: str, values: list) -> set:
+    """Return the subset of `values` already present under the id_key field.
+
+    Callers must never pass falsy id values — a falsy id is treated as
+    missing and its record always inserts (and is excluded from smoke-delete
+    filters), because a shared falsy value would collapse distinct records.
+    """
     resp = session.post(
         f"{ROSSUM_DS_URL}/data/find",
         json={"collectionName": collection,
-              "query": {"_id": {"$in": ids}},
-              "projection": {"_id": 1},
-              "limit": len(ids)},
+              "query": {id_key: {"$in": values}},
+              "projection": {id_key: 1},
+              "limit": len(values)},
         timeout=120,
     )
     resp.raise_for_status()
-    return {doc["_id"] for doc in resp.json().get("result") or []}
+    return {doc.get(id_key) for doc in resp.json().get("result") or []}
 
 
 def _collection_count(session: requests.Session, collection: str) -> int:
@@ -311,7 +318,8 @@ def _collection_count(session: requests.Session, collection: str) -> int:
     return int(result[0]["total"]) if result else 0
 
 
-def _insert_singly(session: requests.Session, collection: str, docs: list) -> tuple[int, int]:
+def _insert_singly(session: requests.Session, collection: str, docs: list,
+                   id_key: str) -> tuple[int, int]:
     """Fallback for an opaque batch 400: insert per record, skipping poison docs."""
     inserted = failed = 0
     for doc in docs:
@@ -322,7 +330,7 @@ def _insert_singly(session: requests.Session, collection: str, docs: list) -> tu
         )
         if resp.status_code == 400:
             failed += 1
-            print(f"   [WARN] poison document skipped (_id={doc.get('_id', 'n/a')}): "
+            print(f"   [WARN] poison document skipped ({id_key}={doc.get(id_key, 'n/a')}): "
                   f"{resp.text[:200]}")
             continue
         resp.raise_for_status()
@@ -331,19 +339,33 @@ def _insert_singly(session: requests.Session, collection: str, docs: list) -> tu
 
 
 def insert_batch(session: requests.Session, collection: str, records: list,
+                 id_key: str = "id", check_existing: bool = True,
                  _retries: int = 5) -> BatchResult:
-    """Check-then-insert — returns BatchResult(inserted, duplicates, failed).
+    """Insert a batch — returns BatchResult(inserted, duplicates, failed).
 
-    The DS REST layer reports duplicate-key write errors as an opaque
-    HTTP 400 ("batch op errors occurred") with no write_errors detail
-    (live-verified), so duplicates are filtered out with an _id existence
+    Records keep their auto-generated Mongo _id (structurally identical to
+    records written by the Coupa import extension); dedup keys on the Coupa
+    id FIELD (id_key).  The DS REST layer reports duplicate-key write errors
+    as an opaque HTTP 400 ("batch op errors occurred") with no write_errors
+    detail (live-verified) — and without a unique index on id_key they would
+    not even error — so duplicates are filtered out with an id_key existence
     check BEFORE inserting.  The 200-with-write_errors parsing is kept as
     a belt for servers/races that do return per-document errors.
-    Retries the whole check+insert on transient SSL/connection errors;
-    the re-run existence check absorbs partially-applied batches.  A record
-    that shows up as "existing" only on a retry (not on the first attempt)
-    was persisted by the interrupted earlier attempt itself — it is counted
-    as "recovered" and added to inserted, not misclassified as a duplicate.
+
+    check_existing=False skips the pre-insert check on the first attempt —
+    steady-state batches are provably fresh (the offset walks forward under
+    a frozen anchor), so callers only pass True at ambiguity points (first
+    flush of a run, smoke tests).  A transient-error RETRY always re-checks:
+    an interrupted attempt may have persisted server-side with the response
+    lost.  A record that shows up as "existing" only on a retry (not in the
+    first-attempt check) was persisted by the interrupted earlier attempt
+    itself — it is counted as "recovered" and added to inserted, not
+    misclassified as a duplicate; with the first-attempt check skipped the
+    whole batch is by definition expected absent, so everything found on
+    retry counts as recovered.
+    Records whose id_key value is missing or falsy never enter dedup
+    queries — they always insert (a shared falsy id would collapse distinct
+    records).
     An opaque batch 400 on the (already-deduped) insert call means one or
     more poison documents, not a duplicate — it falls back to _insert_singly
     so the rest of the batch still lands instead of crash-looping the batch.
@@ -351,17 +373,20 @@ def insert_batch(session: requests.Session, collection: str, records: list,
     existing_first: set | None = None
     for attempt in range(1, _retries + 1):
         try:
-            ids = [r["_id"] for r in records if "_id" in r]
-            existing = _existing_ids(session, collection, ids) if ids else set()
+            values = [r[id_key] for r in records if r.get(id_key)]
+            if values and (check_existing or attempt > 1):
+                existing = _existing_ids(session, collection, id_key, values)
+            else:
+                existing = set()
             if existing_first is None:
-                existing_first = existing
+                existing_first = existing  # set() when the first check was skipped
             recovered = len(existing - existing_first)  # persisted by an interrupted earlier attempt
             seen: set = set()
             to_insert = []
             for r in records:
-                rid = r.get("_id")
-                if "_id" not in r:
-                    to_insert.append(r)
+                rid = r.get(id_key)
+                if not rid:
+                    to_insert.append(r)  # falsy/missing id — always insert
                 elif rid not in existing and rid not in seen:
                     seen.add(rid)
                     to_insert.append(r)
@@ -379,7 +404,7 @@ def insert_batch(session: requests.Session, collection: str, records: list,
             )
             if resp.status_code == 400:
                 # duplicates are already filtered — an opaque batch 400 means poison doc(s)
-                ins, failed = _insert_singly(session, collection, to_insert)
+                ins, failed = _insert_singly(session, collection, to_insert, id_key)
                 if duplicates:
                     print(f"   {duplicates} duplicate(s) skipped "
                           "(expected after resume or smoke test)")
@@ -412,27 +437,6 @@ def insert_batch(session: requests.Session, collection: str, records: list,
 def _updated_at(record: dict) -> str:
     """Return the updated_at value; Coupa uses both 'updated_at' and 'updated-at'."""
     return record.get("updated_at") or record.get("updated-at") or "n/a"
-
-
-def assign_ids(records: list, id_key: str) -> tuple[list, int]:
-    """Set each document's Mongo _id deterministically from its Coupa id.
-
-    Re-inserting the same record is then skipped by insert_batch's _id
-    existence check (duplicate-key parsing retained as fallback) instead
-    of creating a second copy.  Records missing the id keep an
-    auto-generated _id — never _id: null, because two nulls would
-    silently dedupe against each other.  Falsy ids (None, "", 0) are all
-    treated as missing — a shared falsy value would otherwise collapse
-    distinct records onto the same _id just like two nulls would.
-    """
-    missing = 0
-    for rec in records:
-        rid = rec.get(id_key)
-        if not rid:
-            missing += 1
-        else:
-            rec["_id"] = rid
-    return records, missing
 
 
 # ── State file ───────────────────────────────────────────────────────────────────
@@ -493,8 +497,9 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         preexisting = _collection_count(ds_session, cfg["collection"])
         if preexisting:
             print(f"   [WARN] collection '{cfg['collection']}' already holds {preexisting} "
-                  "document(s). Records loaded by a pre-deterministic-_id script version "
-                  "will NOT dedupe — wipe or blue-green swap before re-replicating (see SKILL.md).")
+                  "document(s). Only the FIRST batch of a fresh run is existence-checked — "
+                  "a full run over a loaded collection DUPLICATES everything after it. "
+                  "Clear (or blue-green swap) the collection before re-replicating (see SKILL.md).")
 
     token         = get_coupa_token(cfg["scope"])
     coupa_session = requests.Session()
@@ -507,15 +512,22 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     offset  = start_offset
     buffer: list = []
     last_ts = ds_st.get("last_updated_at", "n/a")
+    id_key  = cfg.get("id_key", "id")
+    # Only the FIRST flush of a run (fresh or resumed) is existence-checked:
+    # it covers the resume-boundary re-fetch and leftovers of a hard-killed
+    # smoke run (smoke never exceeds one batch). Steady-state batches are
+    # provably fresh — the offset walks forward under a frozen anchor.
+    first_flush       = True
     first_fresh_flush = not resume
 
     def flush(*, final: bool = False) -> None:
         """Insert buffered records into Data Storage and save state."""
-        nonlocal total, total_ins, last_ts, buffer, first_fresh_flush
+        nonlocal total, total_ins, last_ts, buffer, first_flush, first_fresh_flush
         if not buffer:
             return
         try:
-            result = insert_batch(ds_session, cfg["collection"], buffer)
+            result = insert_batch(ds_session, cfg["collection"], buffer,
+                                  id_key, check_existing=first_flush)
         except requests.HTTPError as exc:
             if exc.response.status_code != 401:
                 raise
@@ -528,7 +540,8 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 if not new_token:
                     raise
             ds_session.headers["Authorization"] = f"Bearer {new_token}"
-            result = insert_batch(ds_session, cfg["collection"], buffer)  # retry once
+            result = insert_batch(ds_session, cfg["collection"], buffer,  # retry once
+                                  id_key, check_existing=first_flush)
         batch_size = len(buffer)
         total     += batch_size
         total_ins += result.inserted
@@ -536,6 +549,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             first_fresh_flush = False
             if batch_size and result.duplicates / batch_size >= 0.9:
                 print(RE_REPLICATION_NOTICE)
+        first_flush = False
         last_ts    = _updated_at(buffer[-1])
         buffer     = []
         state[key] = {
@@ -581,11 +595,6 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 print(f"   limit {limit} reached — stopping")
                 break
             page = page[:remaining]
-
-        page, missing_ids = assign_ids(page, cfg.get("id_key", "id"))
-        if missing_ids:
-            print(f"   [WARN] {missing_ids} record(s) missing '{cfg.get('id_key', 'id')}' "
-                  "— inserted without deterministic _id (will not dedupe)")
 
         buffer.extend(page)
         offset += len(page)

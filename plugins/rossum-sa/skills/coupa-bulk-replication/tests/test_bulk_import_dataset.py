@@ -87,3 +87,33 @@ def test_notice_only_checked_on_first_flush(monkeypatch, tmp_path, capsys):
     run_import(monkeypatch, tmp_path, [make_records(1, 2), make_records(3, 4), []],
                batch_results=results)
     assert "[NOTICE]" not in capsys.readouterr().out
+
+
+# ── existence check scoped to the first flush of a run ──────────────────────
+
+def test_fresh_run_checks_only_first_flush(monkeypatch, tmp_path):
+    _, calls = run_import(monkeypatch, tmp_path,
+                          [make_records(1, 2), make_records(3, 4),
+                           make_records(5), []],
+                          ds_batch_size=2)
+    assert calls["check_flags"] == [True, False, False]
+
+
+def test_resumed_run_checks_only_first_flush(monkeypatch, tmp_path):
+    # The first flush of a RESUMED run is also checked — it absorbs the
+    # resume-boundary re-fetch overlap.
+    old = {"users": {"offset": 2, "anchor_updated_at": "2026-07-10T00:00:00Z",
+                     "last_updated_at": "x", "total_processed": 2,
+                     "total_inserted": 2}}
+    _, calls = run_import(monkeypatch, tmp_path,
+                          [make_records(3, 4), make_records(5, 6), []],
+                          resume=True, state=old, ds_batch_size=2)
+    assert calls["check_flags"] == [True, False]
+
+
+def test_id_key_from_config_threaded_to_insert_batch(monkeypatch, tmp_path):
+    datasets = {"users": {"endpoint": "api/users", "collection": "users",
+                          "id_key": "number", "scope": "s", "fields": ["number"]}}
+    _, calls = run_import(monkeypatch, tmp_path, [make_records(1), []],
+                          datasets=datasets)
+    assert calls["id_keys"] == ["number"]

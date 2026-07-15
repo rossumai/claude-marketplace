@@ -25,7 +25,8 @@ def test_reload_config_token_reads_current_file(tmp_path):
 def test_401_without_creds_rereads_config_and_retries(monkeypatch, tmp_path):
     attempts = []
 
-    def insert_stub(session, collection, records, _retries=5):
+    def insert_stub(session, collection, records, id_key="id",
+                    check_existing=True, _retries=5):
         attempts.append(session.headers.get("Authorization"))
         if len(attempts) == 1:
             raise _http_401()
@@ -38,7 +39,8 @@ def test_401_without_creds_rereads_config_and_retries(monkeypatch, tmp_path):
 
 
 def test_401_with_stale_config_token_raises(monkeypatch, tmp_path):
-    def insert_stub(session, collection, records, _retries=5):
+    def insert_stub(session, collection, records, id_key="id",
+                    check_existing=True, _retries=5):
         raise _http_401()
 
     with pytest.raises(requests.HTTPError):
