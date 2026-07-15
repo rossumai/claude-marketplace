@@ -1,50 +1,42 @@
 import requests
 
+from bulk_helpers import StubResponse
+
 import coupa_bulk_import as cbi
 
 
-class StubResponse:
-    def __init__(self, body, status=200):
-        self._body, self.status_code = body, status
-
-    def json(self):
-        return self._body
-
-    @property
-    def text(self):
-        return str(self._body)
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise requests.HTTPError(response=self)
-
-
 class StubSession:
-    """Routes POSTs by URL: /data/find answered from `existing` (or a
-    dedicated find_queue for exercising retries/exceptions on the find
-    call itself); /data/insert_many answered from the insert queue.
-    Yields queued responses; raises queued exceptions."""
+    """Routes POSTs by URL: the existence check (/data/aggregate) is
+    answered from `existing` (or a dedicated check_queue for exercising
+    retries/exceptions on the check itself); /data/insert_many is answered
+    from the insert queue. Yields queued responses; raises queued
+    exceptions."""
 
-    def __init__(self, insert_queue=(), existing=None, find_queue=None):
+    def __init__(self, insert_queue=(), existing=None, check_queue=None):
         self.insert_queue = list(insert_queue)
-        self.find_queue = list(find_queue) if find_queue is not None else None
+        self.check_queue = list(check_queue) if check_queue is not None else None
         self.existing = existing or set()
         self.calls = []  # list of (url, json) for every POST made
 
     def post(self, url, json=None, timeout=None):
         self.calls.append((url, json))
-        if url.endswith("/data/find"):
-            if self.find_queue is not None:
-                item = self.find_queue.pop(0)
+        if url.endswith("/data/aggregate"):
+            if self.check_queue is not None:
+                item = self.check_queue.pop(0)
                 if isinstance(item, Exception):
                     raise item
                 return item
             return StubResponse({"code": "ok",
-                                 "result": [{"id": i} for i in self.existing]})
+                                 "result": [{"_id": i} for i in self.existing]})
         item = self.insert_queue.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
+
+
+def _check_found(*ids):
+    """Existence-check response: these id values are present."""
+    return StubResponse({"code": "ok", "result": [{"_id": i} for i in ids]})
 
 
 def _resp(inserted_ids, write_errors=()):
@@ -60,8 +52,8 @@ def _insert_calls(session):
     return [c for c in session.calls if c[0].endswith("/data/insert_many")]
 
 
-def _find_calls(session):
-    return [c for c in session.calls if c[0].endswith("/data/find")]
+def _check_calls(session):
+    return [c for c in session.calls if c[0].endswith("/data/aggregate")]
 
 
 # ── check-then-insert dedup keyed on the Coupa id FIELD ──────────────────────
@@ -75,20 +67,31 @@ def test_all_new_batch_inserts_everything():
     assert len(inserts[0][1]["documents"]) == 3
 
 
-def test_existence_check_queries_the_id_field():
+def test_existence_check_uses_distinct_aggregate_on_id_field():
+    # aggregate $match+$group (distinct values), NOT find+limit — duplicate
+    # copies of one id must not truncate the answer.
     s = StubSession([_resp([2])], existing={1})
     cbi.insert_batch(s, "c", _recs(1, 2))
-    find = _find_calls(s)[0][1]
-    assert find["query"] == {"id": {"$in": [1, 2]}}
-    assert find["projection"] == {"id": 1}
+    pipeline = _check_calls(s)[0][1]["pipeline"]
+    assert pipeline == [{"$match": {"id": {"$in": [1, 2]}}},
+                        {"$group": {"_id": "$id"}}]
 
 
 def test_custom_id_key_used_in_query():
     s = StubSession([_resp([7])], existing=set())
     cbi.insert_batch(s, "c", [{"number": 7}], id_key="number")
-    find = _find_calls(s)[0][1]
-    assert find["query"] == {"number": {"$in": [7]}}
-    assert find["projection"] == {"number": 1}
+    pipeline = _check_calls(s)[0][1]["pipeline"]
+    assert pipeline == [{"$match": {"number": {"$in": [7]}}},
+                        {"$group": {"_id": "$number"}}]
+
+
+def test_existence_check_runs_on_every_batch_call():
+    # The check is unconditional — no caller can opt out (a boundary-scoped
+    # variant was rejected in review: mid-run anchor-window entries and
+    # 401-heal retries land in "provably fresh" batches).
+    s = StubSession([_resp([1])], existing=set())
+    cbi.insert_batch(s, "c", _recs(1))
+    assert len(_check_calls(s)) == 1
 
 
 def test_documents_inserted_without_underscore_id():
@@ -116,7 +119,7 @@ def test_all_duplicate_skips_insert_entirely(capsys):
     s = StubSession([], existing={1, 2, 3})
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
     assert r == cbi.BatchResult(inserted=0, duplicates=3, failed=0)
-    assert len(s.calls) == 1  # only the find call — no insert_many at all
+    assert len(s.calls) == 1  # only the check call — no insert_many at all
     out = capsys.readouterr().out
     assert "duplicate(s) skipped" in out
 
@@ -126,9 +129,9 @@ def test_records_without_id_are_never_filtered():
     records = [{"id": 1}, {"no_id": True}]
     r = cbi.insert_batch(s, "c", records)
     assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=0)
-    find_calls = _find_calls(s)
-    assert len(find_calls) == 1
-    assert find_calls[0][1]["query"]["id"]["$in"] == [1]
+    checks = _check_calls(s)
+    assert len(checks) == 1
+    assert checks[0][1]["pipeline"][0]["$match"]["id"]["$in"] == [1]
     inserts = _insert_calls(s)
     assert inserts[0][1]["documents"] == records
 
@@ -140,8 +143,16 @@ def test_falsy_ids_never_enter_dedup_queries():
     records = [{"id": 1}, {"id": None}, {"id": ""}, {"id": 0}]
     r = cbi.insert_batch(s, "c", records)
     assert r == cbi.BatchResult(inserted=4, duplicates=0, failed=0)
-    assert _find_calls(s)[0][1]["query"]["id"]["$in"] == [1]
+    assert _check_calls(s)[0][1]["pipeline"][0]["$match"]["id"]["$in"] == [1]
     assert _insert_calls(s)[0][1]["documents"] == records
+
+
+def test_all_falsy_batch_skips_check_entirely():
+    s = StubSession([_resp([1, 2])], existing=set())
+    records = [{"id": None}, {"id": 0}]
+    r = cbi.insert_batch(s, "c", records)
+    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=0)
+    assert _check_calls(s) == []      # nothing usable to query on
 
 
 def test_repeated_id_within_batch_counts_as_duplicate():
@@ -151,59 +162,6 @@ def test_repeated_id_within_batch_counts_as_duplicate():
     inserts = _insert_calls(s)
     assert len(inserts) == 1
     assert inserts[0][1]["documents"] == [{"id": 1, "v": "a"}]
-
-
-# ── check_existing=False: steady-state batches skip the pre-insert find ─────
-
-def test_check_existing_false_skips_find_on_first_attempt():
-    s = StubSession([_resp([1, 2, 3])], existing={1, 2, 3})
-    r = cbi.insert_batch(s, "c", _recs(1, 2, 3), check_existing=False)
-    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0)
-    assert _find_calls(s) == []          # no existence query at all
-    assert len(_insert_calls(s)) == 1
-
-
-def test_check_existing_false_still_dedupes_within_batch():
-    s = StubSession([_resp([1])], existing=set())
-    r = cbi.insert_batch(s, "c", [{"id": 1, "v": "a"}, {"id": 1, "v": "b"}],
-                         check_existing=False)
-    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
-    assert _find_calls(s) == []
-    assert _insert_calls(s)[0][1]["documents"] == [{"id": 1, "v": "a"}]
-
-
-def test_check_existing_false_retry_always_checks(monkeypatch):
-    """A transient error means the interrupted attempt may have persisted
-    server-side — the retry must run the existence check even when the
-    first attempt skipped it."""
-    monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
-    find_recovered = StubResponse({"code": "ok",
-                                   "result": [{"id": i} for i in (1, 2)]})
-    s = StubSession(
-        insert_queue=[requests.exceptions.ConnectionError("boom"), _resp([3])],
-        find_queue=[find_recovered],
-    )
-    r = cbi.insert_batch(s, "c", _recs(1, 2, 3), check_existing=False)
-    # 1 and 2 were persisted by the interrupted attempt: recovered, not
-    # duplicates — an unchecked batch is by definition expected absent.
-    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0)
-    assert len(_find_calls(s)) == 1      # attempt 1 skipped, attempt 2 checked
-    inserts = _insert_calls(s)
-    assert len(inserts) == 2
-    assert inserts[-1][1]["documents"] == [{"id": 3}]
-
-
-def test_check_existing_false_retry_whole_batch_recovered(monkeypatch):
-    monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
-    find_all = StubResponse({"code": "ok",
-                             "result": [{"id": i} for i in (1, 2, 3)]})
-    s = StubSession(
-        insert_queue=[requests.exceptions.ConnectionError("boom")],
-        find_queue=[find_all],
-    )
-    r = cbi.insert_batch(s, "c", _recs(1, 2, 3), check_existing=False)
-    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0)
-    assert len(_insert_calls(s)) == 1    # nothing left to insert on retry
 
 
 # ── belt: 200-with-write_errors still handled ────────────────────────────────
@@ -313,12 +271,9 @@ def test_retry_recovers_partially_applied_insert(monkeypatch):
     sees them as 'existing' — they must be counted as inserted (recovered),
     not misclassified as pre-existing duplicates."""
     monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
-    find_none = StubResponse({"code": "ok", "result": []})
-    find_recovered = StubResponse({"code": "ok",
-                                   "result": [{"id": i} for i in (1, 2, 3)]})
     s = StubSession(
         insert_queue=[requests.exceptions.ConnectionError("boom"), _resp([4, 5])],
-        find_queue=[find_none, find_recovered],
+        check_queue=[_check_found(), _check_found(1, 2, 3)],
     )
     records = _recs(1, 2, 3, 4, 5)
     r = cbi.insert_batch(s, "c", records)
@@ -328,12 +283,25 @@ def test_retry_recovers_partially_applied_insert(monkeypatch):
     assert inserts[-1][1]["documents"] == [{"id": 4}, {"id": 5}]
 
 
-def test_transient_error_on_find_retries_whole_flow(monkeypatch):
+def test_retry_does_not_miscount_preexisting_as_recovered(monkeypatch):
+    """Records already present on attempt 1 stay duplicates on the retry —
+    only records that APPEARED between attempts count as recovered."""
     monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
-    find_ok = StubResponse({"code": "ok", "result": []})
+    s = StubSession(
+        insert_queue=[requests.exceptions.ConnectionError("boom"), _resp([3])],
+        check_queue=[_check_found(1), _check_found(1, 2)],
+    )
+    r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
+    # 1 = pre-existing duplicate; 2 = recovered (persisted by attempt 1); 3 = inserted
+    assert r == cbi.BatchResult(inserted=2, duplicates=1, failed=0)
+
+
+def test_transient_error_on_check_retries_whole_flow(monkeypatch):
+    monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
     s = StubSession([_resp([1])],
-                    find_queue=[requests.exceptions.ConnectionError("boom"), find_ok])
+                    check_queue=[requests.exceptions.ConnectionError("boom"),
+                                 _check_found()])
     r = cbi.insert_batch(s, "c", _recs(1))
     assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=0)
-    assert len(_find_calls(s)) == 2
+    assert len(_check_calls(s)) == 2
     assert len(_insert_calls(s)) == 1

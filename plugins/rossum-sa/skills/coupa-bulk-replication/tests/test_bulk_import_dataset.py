@@ -1,4 +1,4 @@
-from bulk_helpers import make_records, run_import
+from bulk_helpers import FakeDS, make_records, run_import
 
 import coupa_bulk_import as cbi
 
@@ -82,33 +82,10 @@ def test_fresh_run_few_dups_no_notice(monkeypatch, tmp_path, capsys):
 
 
 def test_notice_only_checked_on_first_flush(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(cbi, "DS_BATCH_SIZE", 2)
     results = [cbi.BatchResult(2, 0, 0), cbi.BatchResult(0, 2, 0)]
     run_import(monkeypatch, tmp_path, [make_records(1, 2), make_records(3, 4), []],
-               batch_results=results)
+               batch_results=results, ds_batch_size=2)
     assert "[NOTICE]" not in capsys.readouterr().out
-
-
-# ── existence check scoped to the first flush of a run ──────────────────────
-
-def test_fresh_run_checks_only_first_flush(monkeypatch, tmp_path):
-    _, calls = run_import(monkeypatch, tmp_path,
-                          [make_records(1, 2), make_records(3, 4),
-                           make_records(5), []],
-                          ds_batch_size=2)
-    assert calls["check_flags"] == [True, False, False]
-
-
-def test_resumed_run_checks_only_first_flush(monkeypatch, tmp_path):
-    # The first flush of a RESUMED run is also checked — it absorbs the
-    # resume-boundary re-fetch overlap.
-    old = {"users": {"offset": 2, "anchor_updated_at": "2026-07-10T00:00:00Z",
-                     "last_updated_at": "x", "total_processed": 2,
-                     "total_inserted": 2}}
-    _, calls = run_import(monkeypatch, tmp_path,
-                          [make_records(3, 4), make_records(5, 6), []],
-                          resume=True, state=old, ds_batch_size=2)
-    assert calls["check_flags"] == [True, False]
 
 
 def test_id_key_from_config_threaded_to_insert_batch(monkeypatch, tmp_path):
@@ -117,3 +94,31 @@ def test_id_key_from_config_threaded_to_insert_batch(monkeypatch, tmp_path):
     _, calls = run_import(monkeypatch, tmp_path, [make_records(1), []],
                           datasets=datasets)
     assert calls["id_keys"] == ["number"]
+
+
+# ── end-to-end dedup pins (real insert_batch against a stateful DS stub) ────
+
+def test_resume_overlap_absorbed_end_to_end(monkeypatch, tmp_path):
+    """The resume-boundary re-fetch overlaps records the previous run already
+    inserted — they must dedupe, never double-insert."""
+    ds = FakeDS(preloaded=(1, 2))
+    old = {"users": {"offset": 1, "anchor_updated_at": "2026-07-10T00:00:00Z",
+                     "last_updated_at": "x", "total_processed": 2,
+                     "total_inserted": 2}}
+    saved, _ = run_import(monkeypatch, tmp_path, [make_records(2, 3), []],
+                          resume=True, state=old, ds_session=ds)
+    assert ds.value_counts() == {1: 1, 2: 1, 3: 1}
+    assert saved["users"]["total_inserted"] == 3
+
+
+def test_smoke_leftover_absorbed_by_full_run_any_batch(monkeypatch, tmp_path):
+    """Leftovers of a hard-killed smoke run dedupe no matter which batch of
+    a later full run re-fetches them — every batch is existence-checked
+    (Coupa churn can push leftovers past the first batch)."""
+    ds = FakeDS(preloaded=(7,))
+    saved, _ = run_import(monkeypatch, tmp_path,
+                          [make_records(1, 2), make_records(7, 3), []],
+                          ds_session=ds, ds_batch_size=2)
+    assert ds.value_counts() == {1: 1, 2: 1, 3: 1, 7: 1}
+    assert saved["users"]["total_inserted"] == 3
+    assert saved["users"]["completed"] is True

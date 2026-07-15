@@ -1,62 +1,10 @@
 import sys
 
 import pytest
-import requests
 
-from bulk_helpers import make_records, write_config
+from bulk_helpers import FakeDS, make_records, write_config
 
 import coupa_bulk_import as cbi
-
-
-class StubResponse:
-    def __init__(self, body, status=200):
-        self._body, self.status_code = body, status
-
-    def json(self):
-        return self._body
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise requests.HTTPError(response=self)
-
-
-class FakeDS:
-    """Stateful DS stub simulating one collection keyed by the id field."""
-
-    def __init__(self, id_key="id", preloaded=()):
-        self.id_key = id_key
-        self.ids = set(preloaded)   # truthy id values present in the collection
-        self.anon = 0               # documents without a usable id value
-        self.calls = []             # (url, payload) of every POST
-        self.headers = {}
-
-    def post(self, url, json=None, timeout=None):
-        self.calls.append((url, json))
-        if url.endswith("/data/find"):
-            key = next(iter(json["query"]))
-            wanted = json["query"][key]["$in"]
-            return StubResponse({"result": [{key: v} for v in wanted
-                                            if v in self.ids]})
-        if url.endswith("/data/insert_many"):
-            docs = json["documents"]
-            for d in docs:
-                v = d.get(self.id_key)
-                if v:
-                    self.ids.add(v)
-                else:
-                    self.anon += 1
-            return StubResponse({"result": {"inserted_ids": ["x"] * len(docs)}})
-        if url.endswith("/data/delete_many"):
-            flt = json["filter"]
-            key = next(iter(flt))
-            vals = set(flt[key]["$in"])
-            deleted = len(self.ids & vals)
-            self.ids -= vals
-            return StubResponse({"result": {"deleted_count": deleted}})
-        if url.endswith("/data/aggregate"):
-            total = len(self.ids) + self.anon
-            return StubResponse({"result": [{"total": total}] if total else []})
-        raise AssertionError(f"unexpected POST {url}")
 
 
 def _delete_calls(ds):
@@ -101,21 +49,6 @@ def test_smoke_never_touches_state_files(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, [make_records(1)])
     cbi.smoke_dataset("users", 1, FakeDS())
     assert list(tmp_path.glob("coupa_import_state*")) == []
-
-
-def test_smoke_insert_uses_check_existing_true(monkeypatch, tmp_path):
-    _setup(monkeypatch, tmp_path, [make_records(1, 2)])
-    ds = FakeDS()
-    seen = {}
-
-    def fake_insert(session, collection, records, id_key="id",
-                    check_existing=None, _retries=5):
-        seen["check_existing"] = check_existing
-        return cbi.BatchResult(len(records), 0, 0)
-
-    monkeypatch.setattr(cbi, "insert_batch", fake_insert)
-    cbi.smoke_dataset("users", 2, ds)
-    assert seen["check_existing"] is True
 
 
 def test_smoke_leaves_preexisting_records_alone(monkeypatch, tmp_path):

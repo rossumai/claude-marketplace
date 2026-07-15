@@ -13,11 +13,10 @@ This is faster than async bulk_write and avoids async queue buildup after kill.
 Records are inserted exactly as received from Coupa, with auto-generated
 Mongo _ids — structurally identical to records written by the Coupa import
 extension (which upserts by the id FIELD and never touches _id).  Dedup is
-a pre-insert existence check on that id field (config id_key), run only
-where ambiguity exists: the first flush of a run (resume-boundary re-fetch,
-leftovers of a hard-killed smoke run) and transient-error retries (a lost
-response may have persisted server-side).  Steady-state batches are provably
-fresh — the offset walks forward under a frozen anchor — and skip the check.
+a pre-insert existence check on that id field (config id_key) before EVERY
+batch — re-inserts (smoke leftovers, resume overlap, fresh runs over partial
+loads, records entering the frozen anchor window mid-run) are skipped
+instead of duplicated, regardless of which batch they land in.
 --smoke [N] is the supported config test: insert the newest N records
 (default 1), verify them, delete them again; no state file is written.
 
@@ -86,10 +85,11 @@ DS_BATCH_SIZE = 5000                              # records per insert_many call
 RE_REPLICATION_NOTICE = """
    ================================================================
    [NOTICE] >=90% of the first batch already exists in this
-   collection. Only the FIRST batch of a run is existence-checked:
-   letting this run continue will DUPLICATE every later record
-   that already exists. Stop this run, clear (or blue-green swap)
-   the collection, and reload fresh (see SKILL.md).
+   collection. insert-dedup does NOT update existing documents:
+   if you are re-replicating with a changed field list, stop this
+   run, drop (or blue-green swap) the collection, and start fresh.
+   A deliberate fresh run over a partially-loaded collection is
+   fine - duplicates are skipped, missing records are filled in.
    ================================================================"""
 
 DATASETS: dict[str, dict] = {}
@@ -296,20 +296,24 @@ def _existing_ids(session: requests.Session, collection: str,
                   id_key: str, values: list) -> set:
     """Return the subset of `values` already present under the id_key field.
 
+    Uses aggregate $match+$group (DISTINCT values) rather than find+limit:
+    pre-existing duplicate copies of one id could exhaust a find limit and
+    truncate the answer, which would let smoke cleanup delete records it
+    never inserted.  (DS REST quirk: find/aggregate take "query"/"pipeline";
+    the delete endpoints take "filter".)
     Callers must never pass falsy id values — a falsy id is treated as
     missing and its record always inserts (and is excluded from smoke-delete
     filters), because a shared falsy value would collapse distinct records.
     """
     resp = session.post(
-        f"{ROSSUM_DS_URL}/data/find",
+        f"{ROSSUM_DS_URL}/data/aggregate",
         json={"collectionName": collection,
-              "query": {id_key: {"$in": values}},
-              "projection": {id_key: 1},
-              "limit": len(values)},
+              "pipeline": [{"$match": {id_key: {"$in": values}}},
+                           {"$group": {"_id": f"${id_key}"}}]},
         timeout=120,
     )
     resp.raise_for_status()
-    return {doc.get(id_key) for doc in resp.json().get("result") or []}
+    return {doc["_id"] for doc in resp.json().get("result") or []}
 
 
 def _collection_count(session: requests.Session, collection: str) -> int:
@@ -345,30 +349,29 @@ def _insert_singly(session: requests.Session, collection: str, docs: list,
 
 
 def insert_batch(session: requests.Session, collection: str, records: list,
-                 id_key: str = "id", check_existing: bool = True,
-                 _retries: int = 5) -> BatchResult:
-    """Insert a batch — returns BatchResult(inserted, duplicates, failed).
+                 id_key: str = "id", _retries: int = 5) -> BatchResult:
+    """Check-then-insert — returns BatchResult(inserted, duplicates, failed).
 
     Records keep their auto-generated Mongo _id (structurally identical to
     records written by the Coupa import extension); dedup keys on the Coupa
-    id FIELD (id_key).  The DS REST layer reports duplicate-key write errors
-    as an opaque HTTP 400 ("batch op errors occurred") with no write_errors
-    detail (live-verified) — and without a unique index on id_key they would
-    not even error — so duplicates are filtered out with an id_key existence
-    check BEFORE inserting.  The 200-with-write_errors parsing is kept as
-    a belt for servers/races that do return per-document errors.
-
-    check_existing=False skips the pre-insert check on the first attempt —
-    steady-state batches are provably fresh (the offset walks forward under
-    a frozen anchor), so callers only pass True at ambiguity points (first
-    flush of a run, smoke tests).  A transient-error RETRY always re-checks:
-    an interrupted attempt may have persisted server-side with the response
-    lost.  A record that shows up as "existing" only on a retry (not in the
-    first-attempt check) was persisted by the interrupted earlier attempt
-    itself — it is counted as "recovered" and added to inserted, not
-    misclassified as a duplicate; with the first-attempt check skipped the
-    whole batch is by definition expected absent, so everything found on
-    retry counts as recovered.
+    id FIELD (id_key).  The existence check runs before EVERY batch — a
+    boundary-scoped variant (first flush only) was tried and rejected in
+    review: records entering the frozen anchor window mid-run (same-second
+    creations, backdated writes) shift the DESC stream into "provably
+    fresh" batches, and a 401 escaping mid-batch re-enters unchecked.  The
+    check costs ~one indexed query per 5k-record batch (~0.2% of wall
+    time); it also keeps accounting exact and avoids opaque-400 churn from
+    the unique-index layer (see SKILL.md Phase 1).
+    The DS REST layer reports duplicate-key write errors as an opaque
+    HTTP 400 ("batch op errors occurred") with no write_errors detail
+    (live-verified), so the check is what filters duplicates BEFORE
+    inserting; the 200-with-write_errors parsing is kept as a belt for
+    servers/races that do return per-document errors.
+    Retries the whole check+insert on transient SSL/connection errors;
+    the re-run existence check absorbs partially-applied batches.  A record
+    that shows up as "existing" only on a retry (not on the first attempt)
+    was persisted by the interrupted earlier attempt itself — it is counted
+    as "recovered" and added to inserted, not misclassified as a duplicate.
     Records whose id_key value is missing or falsy never enter dedup
     queries — they always insert (a shared falsy id would collapse distinct
     records).
@@ -380,12 +383,10 @@ def insert_batch(session: requests.Session, collection: str, records: list,
     for attempt in range(1, _retries + 1):
         try:
             values = [r[id_key] for r in records if r.get(id_key)]
-            if values and (check_existing or attempt > 1):
-                existing = _existing_ids(session, collection, id_key, values)
-            else:
-                existing = set()
+            existing = (_existing_ids(session, collection, id_key, values)
+                        if values else set())
             if existing_first is None:
-                existing_first = existing  # set() when the first check was skipped
+                existing_first = existing
             recovered = len(existing - existing_first)  # persisted by an interrupted earlier attempt
             seen: set = set()
             to_insert = []
@@ -503,9 +504,9 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         preexisting = _collection_count(ds_session, cfg["collection"])
         if preexisting:
             print(f"   [WARN] collection '{cfg['collection']}' already holds {preexisting} "
-                  "document(s). Only the FIRST batch of a fresh run is existence-checked — "
-                  "a full run over a loaded collection DUPLICATES everything after it. "
-                  "Clear (or blue-green swap) the collection before re-replicating (see SKILL.md).")
+                  "document(s). Existing records are SKIPPED, never updated — if you are "
+                  "re-replicating (e.g. a changed field list), clear or blue-green swap "
+                  "the collection first (see SKILL.md).")
 
     token         = get_coupa_token(cfg["scope"])
     coupa_session = requests.Session()
@@ -519,21 +520,15 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     buffer: list = []
     last_ts = ds_st.get("last_updated_at", "n/a")
     id_key  = cfg.get("id_key", "id")
-    # Only the FIRST flush of a run (fresh or resumed) is existence-checked:
-    # it covers the resume-boundary re-fetch and leftovers of a hard-killed
-    # smoke run (smoke never exceeds one batch). Steady-state batches are
-    # provably fresh — the offset walks forward under a frozen anchor.
-    first_flush       = True
-    first_fresh_flush = not resume
+    first_fresh_flush = not resume  # gates the >=90%-duplicates NOTICE only
 
     def flush(*, final: bool = False) -> None:
         """Insert buffered records into Data Storage and save state."""
-        nonlocal total, total_ins, last_ts, buffer, first_flush, first_fresh_flush
+        nonlocal total, total_ins, last_ts, buffer, first_fresh_flush
         if not buffer:
             return
         try:
-            result = insert_batch(ds_session, cfg["collection"], buffer,
-                                  id_key, check_existing=first_flush)
+            result = insert_batch(ds_session, cfg["collection"], buffer, id_key)
         except requests.HTTPError as exc:
             if exc.response.status_code != 401:
                 raise
@@ -546,8 +541,9 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 if not new_token:
                     raise
             ds_session.headers["Authorization"] = f"Bearer {new_token}"
-            result = insert_batch(ds_session, cfg["collection"], buffer,  # retry once
-                                  id_key, check_existing=first_flush)
+            # retry once — insert_batch re-runs its existence check, so
+            # records persisted before the 401 dedupe instead of doubling
+            result = insert_batch(ds_session, cfg["collection"], buffer, id_key)
         batch_size = len(buffer)
         total     += batch_size
         total_ins += result.inserted
@@ -555,7 +551,6 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             first_fresh_flush = False
             if batch_size and result.duplicates / batch_size >= 0.9:
                 print(RE_REPLICATION_NOTICE)
-        first_flush = False
         last_ts    = _updated_at(buffer[-1])
         buffer     = []
         state[key] = {
@@ -617,12 +612,12 @@ def import_dataset(key: str, limit: int | None, resume: bool,
 def smoke_dataset(key: str, n: int, ds_session: requests.Session) -> None:
     """Self-cleaning smoke test: insert the newest n records, verify, delete.
 
-    Never reads or writes a state file.  The insert runs with
-    check_existing=True so a re-run after a hard-killed smoke does not
-    double-insert; the delete filter carries only the id values this run
-    actually added (pre-existing records are never deleted).  Records with
-    a missing/falsy id_key value are excluded from the delete filter — they
-    stay behind as residue and are warned about.
+    Never reads or writes a state file.  insert_batch's existence check
+    means a re-run after a hard-killed smoke does not double-insert; the
+    delete filter carries only the id values this run actually added
+    (pre-existing records are never deleted).  Records with a missing/falsy
+    id_key value are excluded from the delete filter — they stay behind as
+    residue and are warned about.
     """
     cfg        = DATASETS[key]
     id_key     = cfg.get("id_key", "id")
@@ -663,8 +658,7 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session) -> None:
     # smoke run and may be deleted afterwards.
     pre_existing = (_existing_ids(ds_session, collection, id_key, values)
                     if values else set())
-    result = insert_batch(ds_session, collection, records, id_key,
-                          check_existing=True)
+    result = insert_batch(ds_session, collection, records, id_key)
     print(f"   inserted {result.inserted}, duplicates {result.duplicates}, "
           f"failed {result.failed}")
 
@@ -977,8 +971,9 @@ def main() -> None:
     if args.smoke is not None and args.smoke > DS_BATCH_SIZE:
         raise SystemExit(
             f"--smoke {args.smoke} exceeds ds_batch_size ({DS_BATCH_SIZE}) — "
-            "a smoke run must fit in one batch so the first-flush check of a "
-            "later full run can absorb a hard-killed smoke's leftovers")
+            "a smoke run inserts a single batch (leftovers of a hard-killed "
+            "smoke are harmless: every batch of any later run is "
+            "existence-checked, so they dedupe automatically)")
 
     keys = resolve_dataset_keys(args.dataset, DATASETS)
 
