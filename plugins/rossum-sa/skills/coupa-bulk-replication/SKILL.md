@@ -114,13 +114,16 @@ This skill has 6 phases. Work through them in order — each phase produces conc
      - **Clear and start fresh** (recommended for initial load) — drop and recreate. **Confirm with user.** Note that `data_storage_drop_collection` is async; wait for completion before proceeding.
      - **Resume** a previous run — skip clearing and use the existing state file.
 
-3. **Create indexes on empty collections.** Create all three indexes before loading any data — indexes on empty collections build instantly, whereas indexes on millions of records cause slow background builds that can impact query performance during replication. **Confirm with user before executing each index creation.**
+3. **Create indexes on empty collections.** Create all four indexes before loading any data — indexes on empty collections build instantly, whereas indexes on millions of records cause slow background builds that can impact query performance during replication. **Confirm with user before executing each index creation.**
 
    | Index | Keys | Type |
    |-------|------|------|
+   | `__<id_key>_unique_idx` | `{"<id_key>": 1}` | Unique partial — options `{"unique": true, "partialFilterExpression": {"<id_key>": {"$exists": true}}}` |
    | `__digest_md5_idx` | `{"__digest_md5": 1}` | Regular |
    | `__dynamic_index` | `{"$**": 1}` | Wildcard |
    | `default` | dynamic mappings | Atlas Search |
+
+   The **unique partial index on the dataset's `id_key`** is the root-cause duplicate fix: duplicates become impossible at the DB layer, even across races the script's pre-insert check cannot see (mid-run anchor-window entries, backdated writes, concurrent writers). DS support is live-verified: `POST /indexes/create` with those options returns 202 and the index lists back with both properties intact; a duplicate `id` insert is then rejected (as the usual opaque HTTP 400), while id-less documents still insert freely thanks to the partial filter. The script verifies this index at the start of every full run and warns loudly if it is missing — it never auto-creates it, because a collection loaded before this guidance may already hold duplicates that would fail the build (run the Phase 4 duplicate audit first).
 
    The Atlas Search `default` index uses the `default_whitespace_lowercase` custom analyzer:
 
@@ -141,7 +144,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    ```
    If `requests` is missing: `pip install requests` (or `pipenv install requests` inside a pipenv project).
 
-**Artifact:** Target collections exist with all three standard indexes. Import hooks are disabled. Python environment is ready.
+**Artifact:** Target collections exist with all four standard indexes. Import hooks are disabled. Python environment is ready.
 
 ---
 

@@ -316,6 +316,55 @@ def _existing_ids(session: requests.Session, collection: str,
     return {doc["_id"] for doc in resp.json().get("result") or []}
 
 
+def _index_covers_unique_id(index: dict, id_key: str) -> bool:
+    """True if this index spec is a unique index keyed on id_key."""
+    keys = index.get("key") or index.get("keys") or {}
+    unique = index.get("unique") or (index.get("options") or {}).get("unique")
+    return bool(unique) and id_key in keys
+
+
+def verify_unique_index(session: requests.Session, collection: str,
+                        id_key: str) -> bool:
+    """Warn loudly when the collection lacks a unique index on id_key.
+
+    The unique partial index is the ROOT duplicate guarantee (SKILL.md
+    Phase 1; DS support live-verified): the per-batch existence check
+    cannot see races — concurrent writers, records entering the frozen
+    anchor window mid-run, backdated updates — but the DB layer rejects
+    them all.  Never auto-creates: a collection loaded before this
+    guidance may already hold duplicates that would fail the index build,
+    so creation is a deliberate operator step.  Returns True when a
+    unique index on id_key is present.
+    """
+    try:
+        resp = session.post(
+            f"{ROSSUM_DS_URL}/indexes/list",
+            json={"collectionName": collection, "nameOnly": False},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        indexes = resp.json().get("result") or []
+    except requests.RequestException as exc:
+        print(f"   [WARN] could not verify indexes on '{collection}' "
+              f"({type(exc).__name__}) — confirm the unique partial index "
+              "on the id field manually (see SKILL.md Phase 1)")
+        return False
+    if any(_index_covers_unique_id(ix, id_key)
+           for ix in indexes if isinstance(ix, dict)):
+        return True
+    print(f"   [WARN] collection '{collection}' has NO unique index on "
+          f"'{id_key}'. Strongly recommended — it makes duplicates "
+          "impossible at the DB layer, even across races the pre-insert "
+          "check cannot see (concurrent writers, mid-run anchor-window "
+          f"entries, backdated updates): create __{id_key}_unique_idx with "
+          f'keys {{"{id_key}": 1}} and options {{"unique": true, '
+          f'"partialFilterExpression": {{"{id_key}": {{"$exists": true}}}}}} '
+          "(see SKILL.md Phase 1). NOT auto-created: a collection loaded "
+          "before this guidance may hold duplicates that would fail the "
+          "index build — audit first (SKILL.md Phase 4).")
+    return False
+
+
 def _collection_count(session: requests.Session, collection: str) -> int:
     """Total documents in a collection (DS aggregate $count; 0 when empty)."""
     resp = session.post(
@@ -329,9 +378,17 @@ def _collection_count(session: requests.Session, collection: str) -> int:
 
 
 def _insert_singly(session: requests.Session, collection: str, docs: list,
-                   id_key: str) -> tuple[int, int]:
-    """Fallback for an opaque batch 400: insert per record, skipping poison docs."""
-    inserted = failed = 0
+                   id_key: str) -> tuple[int, int, int]:
+    """Fallback for an opaque batch 400: insert per record, classifying 400s.
+
+    Returns (inserted, duplicates, failed).  A single-record 400 is not
+    necessarily a poison document: the unique-index layer rejects a RACING
+    duplicate (written by a concurrent writer after the batch's existence
+    check) with the same opaque 400.  A post-hoc existence check on the
+    record's id decides — present → duplicate (skipped, accounting stays
+    correct), absent → poison (failed, warned).
+    """
+    inserted = duplicates = failed = 0
     for doc in docs:
         resp = session.post(
             f"{ROSSUM_DS_URL}/data/insert_many",
@@ -339,13 +396,17 @@ def _insert_singly(session: requests.Session, collection: str, docs: list,
             timeout=120,
         )
         if resp.status_code == 400:
+            rid = doc.get(id_key)
+            if rid and _existing_ids(session, collection, id_key, [rid]):
+                duplicates += 1  # unique index beat us to it — racing writer
+                continue
             failed += 1
             print(f"   [WARN] poison document skipped ({id_key}={doc.get(id_key, 'n/a')}): "
                   f"{resp.text[:200]}")
             continue
         resp.raise_for_status()
         inserted += len((resp.json().get("result") or {}).get("inserted_ids") or [])
-    return inserted, failed
+    return inserted, duplicates, failed
 
 
 def insert_batch(session: requests.Session, collection: str, records: list,
@@ -410,8 +471,12 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 timeout=120,
             )
             if resp.status_code == 400:
-                # duplicates are already filtered — an opaque batch 400 means poison doc(s)
-                ins, failed = _insert_singly(session, collection, to_insert, id_key)
+                # duplicates are pre-filtered — an opaque batch 400 means poison
+                # doc(s) or a racing duplicate rejected by the unique index;
+                # _insert_singly isolates and classifies per record
+                ins, late_dups, failed = _insert_singly(session, collection,
+                                                        to_insert, id_key)
+                duplicates += late_dups
                 if duplicates:
                     print(f"   {duplicates} duplicate(s) skipped "
                           "(expected after resume or smoke test)")
@@ -494,11 +559,15 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     if anchor_ts is None:
         anchor_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    id_key = cfg.get("id_key", "id")
+
     print(f"\n── {key}  →  {cfg['collection']} ──")
     if resume and start_offset:
         print(f"   resuming at offset {start_offset}  (anchor: {anchor_ts})")
     else:
         print(f"   fresh run, anchor: {anchor_ts}")
+
+    verify_unique_index(ds_session, cfg["collection"], id_key)
 
     if not resume:
         preexisting = _collection_count(ds_session, cfg["collection"])
@@ -519,7 +588,6 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     offset  = start_offset
     buffer: list = []
     last_ts = ds_st.get("last_updated_at", "n/a")
-    id_key  = cfg.get("id_key", "id")
     first_fresh_flush = not resume  # gates the >=90%-duplicates NOTICE only
 
     def flush(*, final: bool = False) -> None:

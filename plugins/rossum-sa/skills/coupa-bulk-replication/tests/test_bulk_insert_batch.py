@@ -244,6 +244,39 @@ def test_batch_400_fallback_401_raises():
         pass
 
 
+def test_batch_400_single_400_with_existing_id_is_racing_duplicate(capsys):
+    """The unique-index layer rejects a racing duplicate with the same
+    opaque 400 a poison doc gets — _insert_singly classifies via a post-hoc
+    existence check: present → duplicate, not failed."""
+    batch_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
+                             status=400)
+    dup_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
+                           status=400)
+    s = StubSession(
+        insert_queue=[batch_400, _resp([1]), dup_400, _resp([3])],
+        # initial check: nothing exists; post-400 classification: 2 exists
+        check_queue=[_check_found(), _check_found(2)],
+    )
+    r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
+    assert r == cbi.BatchResult(inserted=2, duplicates=1, failed=0)
+    out = capsys.readouterr().out
+    assert "poison" not in out
+    assert "1 duplicate(s) skipped" in out
+
+
+def test_batch_400_single_400_with_falsy_id_stays_poison(capsys):
+    batch_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
+                             status=400)
+    poison = StubResponse({"code": "error", "message": "bad doc"}, status=400)
+    s = StubSession(
+        insert_queue=[batch_400, _resp([1]), poison],
+        check_queue=[_check_found()],   # no classification check for a falsy id
+    )
+    r = cbi.insert_batch(s, "c", [{"id": 1}, {"id": None}])
+    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1)
+    assert "poison document skipped (id=None)" in capsys.readouterr().out
+
+
 def test_batch_400_with_duplicates_still_reports_them(capsys):
     batch_400 = StubResponse({"code": "error", "message": "batch op errors occurred"},
                              status=400)

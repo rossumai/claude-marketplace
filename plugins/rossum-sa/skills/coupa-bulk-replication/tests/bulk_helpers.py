@@ -158,6 +158,8 @@ def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
     if ds_session is None:
         monkeypatch.setattr(cbi, "insert_batch", insert_stub or fake_insert)
         monkeypatch.setattr(cbi, "_collection_count", lambda session, collection: db_count)
+        monkeypatch.setattr(cbi, "verify_unique_index",
+                            lambda session, collection, id_key: True)
         ds_session = type("S", (), {"headers": {}})()
 
     state = dict(state or {})
