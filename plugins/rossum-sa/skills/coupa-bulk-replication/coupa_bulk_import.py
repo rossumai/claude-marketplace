@@ -13,14 +13,20 @@ This is faster than async bulk_write and avoids async queue buildup after kill.
 Records are inserted exactly as received from Coupa, with auto-generated
 Mongo _ids — structurally identical to records written by the Coupa import
 extension (which upserts by the id FIELD and never touches _id).  Dedup is
-a pre-insert existence check on that id field (config id_key), so re-inserts
-(smoke leftovers, resume overlap) are skipped instead of duplicated.
+a pre-insert existence check on that id field (config id_key), run only
+where ambiguity exists: the first flush of a run (resume-boundary re-fetch,
+leftovers of a hard-killed smoke run) and transient-error retries (a lost
+response may have persisted server-side).  Steady-state batches are provably
+fresh — the offset walks forward under a frozen anchor — and skip the check.
+--smoke [N] is the supported config test: insert the newest N records
+(default 1), verify them, delete them again; no state file is written.
 
 Usage:
     python coupa_bulk_import.py                      # all datasets, full load
     python coupa_bulk_import.py --dataset purchase_orders
     python coupa_bulk_import.py --dataset users,suppliers
-    python coupa_bulk_import.py --limit 1            # smoke test: 1 record each
+    python coupa_bulk_import.py --smoke              # self-cleaning smoke test
+    python coupa_bulk_import.py --smoke 5 --dataset users
     python coupa_bulk_import.py --resume             # continue from saved state
 
     # Recommended for full runs — supervised, sleep-proof, self-healing:
@@ -608,6 +614,84 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             break
 
 
+def smoke_dataset(key: str, n: int, ds_session: requests.Session) -> None:
+    """Self-cleaning smoke test: insert the newest n records, verify, delete.
+
+    Never reads or writes a state file.  The insert runs with
+    check_existing=True so a re-run after a hard-killed smoke does not
+    double-insert; the delete filter carries only the id values this run
+    actually added (pre-existing records are never deleted).  Records with
+    a missing/falsy id_key value are excluded from the delete filter — they
+    stay behind as residue and are warned about.
+    """
+    cfg        = DATASETS[key]
+    id_key     = cfg.get("id_key", "id")
+    collection = cfg["collection"]
+    anchor_ts  = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    print(f"\n── smoke {key}  →  {collection} ──")
+
+    token         = get_coupa_token(cfg["scope"])
+    coupa_session = requests.Session()
+    coupa_session.verify = False
+    coupa_session.headers.update({
+        "Authorization": f"Bearer {token}",
+        "Accept":        "application/json",
+    })
+
+    records: list = []
+    offset = 0
+    while len(records) < n:
+        page = fetch_page(coupa_session, cfg["endpoint"], cfg["fields"],
+                          offset, anchor_ts, limit=n - len(records))
+        if not page:
+            break
+        offset += len(page)
+        records.extend(page)
+    records = records[:n]
+    if not records:
+        print("   Coupa returned no records — nothing to smoke-test")
+        return
+
+    values = [r[id_key] for r in records if r.get(id_key)]
+    if len(values) < len(records):
+        print(f"   [WARN] {len(records) - len(values)} record(s) have a "
+              f"missing/falsy '{id_key}' — inserted but excluded from the "
+              "smoke delete filter (residue stays behind)")
+
+    # Snapshot BEFORE inserting: only values absent now were added by this
+    # smoke run and may be deleted afterwards.
+    pre_existing = (_existing_ids(ds_session, collection, id_key, values)
+                    if values else set())
+    result = insert_batch(ds_session, collection, records, id_key,
+                          check_existing=True)
+    print(f"   inserted {result.inserted}, duplicates {result.duplicates}, "
+          f"failed {result.failed}")
+
+    to_delete = [v for v in values if v not in pre_existing]
+    if to_delete:
+        found   = _existing_ids(ds_session, collection, id_key, to_delete)
+        missing = len(to_delete) - len(found)
+        if missing:
+            print(f"   [WARN] {missing} inserted record(s) not found on verification")
+        resp = ds_session.post(
+            f"{ROSSUM_DS_URL}/data/delete_many",
+            # DS delete endpoints take "filter" — find/aggregate take "query"
+            # (live-verified asymmetry; a 422 usually means the wrong key).
+            json={"collectionName": collection,
+                  "filter": {id_key: {"$in": to_delete}}},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        deleted = (resp.json().get("result") or {}).get("deleted_count", "n/a")
+        print(f"   smoke cleanup: deleted {deleted} record(s)")
+    else:
+        print("   smoke cleanup: nothing to delete "
+              "(no records added by this run)")
+    remaining = _collection_count(ds_session, collection)
+    print(f"   collection '{collection}' now holds {remaining} document(s)")
+
+
 def count_datasets(keys: list[str], state: dict) -> None:
     """Print exact per-dataset counts (offset bisection, anchored like the job)."""
     for key in keys:
@@ -813,6 +897,17 @@ def main() -> None:
         help="Resume from state file",
     )
     parser.add_argument(
+        "--smoke",
+        nargs="?",
+        const=1,
+        type=int,
+        default=None,
+        metavar="N",
+        help="Self-cleaning smoke test: insert the newest N records per "
+             "dataset (default 1), verify them, then delete them again. "
+             "Writes no state file. N must fit in one DS batch",
+    )
+    parser.add_argument(
         "--state-file",
         default=None,
         metavar="PATH",
@@ -869,8 +964,21 @@ def main() -> None:
                          "(children always use per-dataset state files)")
     if args.count and args.supervise:
         raise SystemExit("--count cannot be combined with --supervise")
+    if args.smoke is not None and args.supervise:
+        raise SystemExit("--smoke cannot be combined with --supervise "
+                         "(smoke runs are single-batch and self-cleaning; "
+                         "run them unsupervised)")
+    if args.smoke is not None and args.resume:
+        raise SystemExit("--smoke cannot be combined with --resume "
+                         "(smoke runs never read or write state files)")
 
     load_config(Path(args.config))
+
+    if args.smoke is not None and args.smoke > DS_BATCH_SIZE:
+        raise SystemExit(
+            f"--smoke {args.smoke} exceeds ds_batch_size ({DS_BATCH_SIZE}) — "
+            "a smoke run must fit in one batch so the first-flush check of a "
+            "later full run can absorb a hard-killed smoke's leftovers")
 
     keys = resolve_dataset_keys(args.dataset, DATASETS)
 
@@ -882,6 +990,17 @@ def main() -> None:
     if args.count:
         state = load_state(state_path)
         count_datasets(keys, state)
+        return
+
+    if args.smoke is not None:
+        ds_session = requests.Session()
+        ds_session.headers.update({
+            "Authorization": f"Bearer {ROSSUM_TOKEN}",
+            "Content-Type":  "application/json",
+        })
+        for key in keys:
+            smoke_dataset(key, args.smoke, ds_session)
+        print("\nSmoke test done.")
         return
 
     state = load_state(state_path) if args.resume else {}
