@@ -80,6 +80,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 COUPA_CLIENT_ID:     str = ""
 COUPA_CLIENT_SECRET: str = ""
 COUPA_BASE_URL:      str = ""
+COUPA_MAX_RPS:       float = 20.0
 
 ROSSUM_TOKEN:   str = ""
 ROSSUM_DS_URL:  str = ""
@@ -105,7 +106,7 @@ CONFIG_PATH: Path | None = None  # set by load_config(); re-read on DS 401
 
 def load_config(path: Path) -> None:
     """Populate module-level configuration from a JSON file."""
-    global COUPA_CLIENT_ID, COUPA_CLIENT_SECRET, COUPA_BASE_URL
+    global COUPA_CLIENT_ID, COUPA_CLIENT_SECRET, COUPA_BASE_URL, COUPA_MAX_RPS
     global ROSSUM_TOKEN, ROSSUM_DS_URL, ROSSUM_API_URL
     global DS_BATCH_SIZE, DATASETS, CONFIG_PATH
 
@@ -124,6 +125,7 @@ def load_config(path: Path) -> None:
     COUPA_CLIENT_ID     = (coupa.get("client_id") or "").strip()
     COUPA_CLIENT_SECRET = (coupa.get("client_secret") or "").strip()
     COUPA_BASE_URL      = (coupa.get("base_url") or "").strip().rstrip("/")
+    COUPA_MAX_RPS       = float(coupa.get("max_requests_per_second", 20))
 
     rossum = cfg.get("rossum") or {}
     ROSSUM_TOKEN   = (rossum.get("token") or "").strip()
@@ -160,6 +162,11 @@ def load_config(path: Path) -> None:
                 "id per collection - one collection per dataset required."
             )
         seen[coll] = ds_key
+        workers = ds_cfg.get("workers", 1)
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+            raise SystemExit(
+                f"Config error: dataset '{ds_key}' workers must be an "
+                f"integer >= 1 (got {workers!r})")
 
 
 def resolve_dataset_keys(arg: str, datasets: dict) -> list[str]:

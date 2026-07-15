@@ -4,7 +4,9 @@
   "coupa": {
     "base_url":      "https://<customer>.coupahost.com",
     "client_id":     "<from Coupa Webhook Import hook settings>",
-    "client_secret": "<from Coupa Webhook Import hook settings>"
+    "client_secret": "<from Coupa Webhook Import hook settings>",
+    "_comment_max_requests_per_second": "self-imposed aggregate cap, split across supervised children. Coupa allows 25/s per OAuth client; keep headroom (default 20). Drop to ~15 when import webhooks are live on the same client",
+    "max_requests_per_second": 20
   },
 
   "rossum": {
@@ -21,6 +23,8 @@
       "collection": "purchase_orders",
       "id_key":     "id",
       "scope":      "core.purchase_order.read",
+      "_comment_workers": "optional (default 1): supervised children crawling disjoint id ranges in parallel. Size from the --probe report; requires --supervise",
+      "workers": 4,
       "fields": [
         "id", "created_at", "updated_at", "po_number", "status",
         {"supplier": ["id", "name", "display_name", "number"]}
