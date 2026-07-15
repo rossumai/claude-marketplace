@@ -947,14 +947,15 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
 
     coupa_session = make_coupa_session(cfg["scope"])
 
+    fields = ensure_id_field(cfg["fields"])
     records: list = []
-    offset = 0
+    cursor = None
     while len(records) < n:
-        page = fetch_page(coupa_session, cfg["endpoint"], cfg["fields"],
-                          offset, anchor_ts, limit=n - len(records))
+        page = fetch_page(coupa_session, cfg["endpoint"], fields,
+                          anchor_ts, before_id=cursor, limit=n - len(records))
         if not page:
             break
-        offset += len(page)
+        cursor = page[-1]["id"]
         records.extend(page)
     records = records[:n]
     if not records:
