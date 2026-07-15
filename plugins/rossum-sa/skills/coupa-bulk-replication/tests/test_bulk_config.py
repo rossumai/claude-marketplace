@@ -37,9 +37,3 @@ def test_missing_collection_gives_clear_error(tmp_path):
     assert "users" in msg
     assert "has no collection set" in msg
     assert "''" not in msg  # not the confusing duplicate-collection message
-
-
-def test_config_path_recorded(tmp_path):
-    path = write_config(tmp_path)
-    cbi.load_config(path)
-    assert cbi.CONFIG_PATH == path

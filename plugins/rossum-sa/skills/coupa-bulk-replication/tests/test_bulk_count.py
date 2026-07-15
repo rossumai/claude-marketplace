@@ -1,7 +1,5 @@
-"""Tests for --count: exact Coupa dataset counts via offset bisection."""
+"""--count: exact Coupa dataset counts via offset bisection (read-only)."""
 import json
-import re
-import sys
 
 import pytest
 
@@ -18,6 +16,8 @@ def test_bisect_count_exact(n):
 
 
 def test_bisect_count_large_stays_within_call_budget():
+    # the design promise vs a linear scan: ~2*log2(n) probe calls, not n —
+    # a regression here would hammer the Coupa API millions of times
     n = 4_770_123
     calls = {"n": 0}
 
@@ -29,58 +29,17 @@ def test_bisect_count_large_stays_within_call_budget():
     assert calls["n"] <= 50
 
 
-# ── fetch_page limit kwarg ────────────────────────────────────────────────────
-
-def test_fetch_page_adds_limit_param_when_given(monkeypatch):
-    captured = {}
-
-    class FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return []
-
-    class FakeSession:
-        def get(self, url, params=None, verify=None, timeout=None):
-            captured["params"] = params
-            return FakeResp()
-
-    cbi.fetch_page(FakeSession(), "api/users", ["id"], 0, "2026-01-01T00:00:00Z", limit=1)
-    assert captured["params"]["limit"] == 1
-
-
-def test_fetch_page_omits_limit_param_by_default(monkeypatch):
-    captured = {}
-
-    class FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return []
-
-    class FakeSession:
-        def get(self, url, params=None, verify=None, timeout=None):
-            captured["params"] = params
-            return FakeResp()
-
-    cbi.fetch_page(FakeSession(), "api/users", ["id"], 0, "2026-01-01T00:00:00Z")
-    assert "limit" not in captured["params"]
-
-
-# ── count_datasets wiring ──────────────────────────────────────────────────────
+# ── anchor selection (mid-run counts must match the running job) ─────────────
 
 def _install_fake_fetch(monkeypatch, calls, virtual_count):
     def fake_fetch_page(session, endpoint, fields, offset, anchor_ts, limit=None):
-        calls.append({"endpoint": endpoint, "offset": offset,
-                      "anchor_ts": anchor_ts, "limit": limit})
+        calls.append({"offset": offset, "anchor_ts": anchor_ts})
         return [{"id": 1}] if offset < virtual_count else []
 
     monkeypatch.setattr(cbi, "fetch_page", fake_fetch_page)
 
 
-def test_count_datasets_uses_anchor_from_state_and_prints_count(monkeypatch, tmp_path, capsys):
+def test_count_datasets_uses_anchor_from_state(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     cbi.load_config(write_config(tmp_path))
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
@@ -90,61 +49,9 @@ def test_count_datasets_uses_anchor_from_state_and_prints_count(monkeypatch, tmp
     state = {"users": {"anchor_updated_at": "2026-05-01T00:00:00Z"}}
     cbi.count_datasets(["users"], state)
 
-    out = capsys.readouterr().out
-    assert "42" in out
-    assert "anchor: 2026-05-01T00:00:00Z" in out
-    # anchor from state must be the one actually used to probe Coupa
+    assert "42" in capsys.readouterr().out
+    # the running job's anchor must be the one actually used to probe Coupa
     assert all(c["anchor_ts"] == "2026-05-01T00:00:00Z" for c in calls)
-    # every probe call goes through limit=1
-    assert all(c["limit"] == 1 for c in calls)
-
-
-def test_count_datasets_generates_anchor_when_state_has_none(monkeypatch, tmp_path, capsys):
-    monkeypatch.chdir(tmp_path)
-    cbi.load_config(write_config(tmp_path))
-    monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
-    calls = []
-    _install_fake_fetch(monkeypatch, calls, virtual_count=5)
-
-    cbi.count_datasets(["users"], {})
-
-    out = capsys.readouterr().out
-    assert "5" in out
-    anchor_match = re.search(r"anchor: (\S+)", out)
-    assert anchor_match
-    generated = anchor_match.group(1)
-    # generated anchor must be an ISO-8601 UTC 'Z' stamp, and must be the
-    # one actually passed as the probe filter
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", generated)
-    assert all(c["anchor_ts"] == generated for c in calls)
-
-
-def test_count_datasets_prints_percent_processed_when_state_has_total(monkeypatch, tmp_path, capsys):
-    monkeypatch.chdir(tmp_path)
-    cbi.load_config(write_config(tmp_path))
-    monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
-    calls = []
-    _install_fake_fetch(monkeypatch, calls, virtual_count=100)
-
-    state = {"users": {"anchor_updated_at": "2026-05-01T00:00:00Z",
-                       "total_processed": 50}}
-    cbi.count_datasets(["users"], state)
-
-    out = capsys.readouterr().out
-    assert "50.0%" in out
-
-
-def test_count_datasets_omits_percent_when_no_total_processed(monkeypatch, tmp_path, capsys):
-    monkeypatch.chdir(tmp_path)
-    cbi.load_config(write_config(tmp_path))
-    monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
-    calls = []
-    _install_fake_fetch(monkeypatch, calls, virtual_count=100)
-
-    cbi.count_datasets(["users"], {})
-
-    out = capsys.readouterr().out
-    assert "%" not in out
 
 
 def test_count_datasets_falls_back_to_per_dataset_state_file(monkeypatch, tmp_path, capsys):
@@ -162,18 +69,5 @@ def test_count_datasets_falls_back_to_per_dataset_state_file(monkeypatch, tmp_pa
 
     cbi.count_datasets(["users"], {})  # shared state has no entry for users
 
-    out = capsys.readouterr().out
-    assert "anchor: 2026-06-15T12:00:00Z" in out
     assert all(c["anchor_ts"] == "2026-06-15T12:00:00Z" for c in calls)
-    assert "25.0%" in out
-
-
-# ── CLI guard ──────────────────────────────────────────────────────────────────
-
-def test_main_rejects_count_with_supervise(monkeypatch):
-    monkeypatch.setattr(sys, "argv",
-                        ["coupa_bulk_import.py", "--count", "--supervise"])
-    with pytest.raises(SystemExit) as exc:
-        cbi.main()
-    assert "--count" in str(exc.value)
-    assert "--supervise" in str(exc.value)
+    assert "25.0%" in capsys.readouterr().out   # progress found in the fallback

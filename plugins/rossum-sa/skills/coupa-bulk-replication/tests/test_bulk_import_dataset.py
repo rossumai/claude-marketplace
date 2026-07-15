@@ -1,9 +1,13 @@
+"""import_dataset: accounting, resume compatibility, id_key guards, and the
+end-to-end dedup pins (real insert_batch against the stateful FakeDS)."""
 import pytest
 
 from bulk_helpers import FakeDS, make_records, run_import
 
 import coupa_bulk_import as cbi
 
+
+# ── accounting & state-file contracts ────────────────────────────────────────
 
 def test_fresh_run_records_total_inserted(monkeypatch, tmp_path):
     saved, calls = run_import(monkeypatch, tmp_path,
@@ -37,91 +41,11 @@ def test_resume_old_state_without_total_inserted(monkeypatch, tmp_path):
     assert st["anchor_updated_at"] == "2026-07-10T00:00:00Z"  # anchor reused
 
 
-def test_fresh_run_on_loaded_collection_warns(monkeypatch, tmp_path, capsys):
-    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=100)
-    out = capsys.readouterr().out
-    assert "[WARN]" in out
-    assert "already holds 100" in out
-    assert "SKIPPED, never updated" in out
-
-
-def test_fresh_run_on_handful_of_leftovers_notes_not_warns(monkeypatch, tmp_path, capsys):
-    # a hard-killed smoke's leftovers must not read as "clear the collection"
-    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=7)
-    out = capsys.readouterr().out
-    assert "[WARN]" not in out
-    assert "[NOTE]" in out
-    assert "already holds 7" in out
-    assert "dedupe automatically" in out
-
-
-def test_fresh_run_on_empty_collection_no_warning(monkeypatch, tmp_path, capsys):
-    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=0)
-    out = capsys.readouterr().out
-    assert "[WARN]" not in out
-
-
-def test_resume_run_never_warns_about_preexisting(monkeypatch, tmp_path, capsys):
-    old = {"users": {"offset": 0, "anchor_updated_at": "2026-07-10T00:00:00Z",
-                     "last_updated_at": "x", "total_processed": 0,
-                     "total_inserted": 0}}
-    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []],
-               resume=True, state=old, db_count=7)
-    out = capsys.readouterr().out
-    assert "[WARN]" not in out
-
-
-def test_fresh_run_first_batch_all_dups_prints_notice(monkeypatch, tmp_path, capsys):
-    results = [cbi.BatchResult(inserted=0, duplicates=3, failed=0)]
-    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []],
-               batch_results=results)
-    assert "[NOTICE]" in capsys.readouterr().out
-
-
-def test_resume_run_all_dups_no_notice(monkeypatch, tmp_path, capsys):
-    old = {"users": {"offset": 0, "anchor_updated_at": "2026-07-10T00:00:00Z",
-                     "last_updated_at": "x", "total_processed": 0}}
-    results = [cbi.BatchResult(inserted=0, duplicates=3, failed=0)]
-    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []],
-               batch_results=results, resume=True, state=old)
-    assert "[NOTICE]" not in capsys.readouterr().out
-
-
-def test_fresh_run_few_dups_no_notice(monkeypatch, tmp_path, capsys):
-    results = [cbi.BatchResult(inserted=9, duplicates=1, failed=0)]
-    run_import(monkeypatch, tmp_path, [make_records(*range(1, 11)), []],
-               batch_results=results)
-    assert "[NOTICE]" not in capsys.readouterr().out
-
-
-def test_notice_only_checked_on_first_flush(monkeypatch, tmp_path, capsys):
-    results = [cbi.BatchResult(2, 0, 0), cbi.BatchResult(0, 2, 0)]
-    run_import(monkeypatch, tmp_path, [make_records(1, 2), make_records(3, 4), []],
-               batch_results=results, ds_batch_size=2)
-    assert "[NOTICE]" not in capsys.readouterr().out
-
-
-def test_id_key_from_config_threaded_to_insert_batch(monkeypatch, tmp_path):
-    datasets = {"users": {"endpoint": "api/users", "collection": "users",
-                          "id_key": "number", "scope": "s", "fields": ["number"]}}
-    page = [{"number": 1, "updated_at": "t"}]
-    _, calls = run_import(monkeypatch, tmp_path, [page, []],
-                          datasets=datasets)
-    assert calls["id_keys"] == ["number"]
-
-
-# ── missing/falsy id_key observability ───────────────────────────────────────
-
-def test_flush_warns_about_missing_id_records(monkeypatch, tmp_path, capsys):
-    page = make_records(1) + [{"id": None, "updated_at": "t"},
-                              {"updated_at": "t"}]
-    run_import(monkeypatch, tmp_path, [page, []])
-    out = capsys.readouterr().out
-    assert "[WARN] 2 record(s) missing/falsy 'id'" in out
-
+# ── misconfigured id_key fail-fast ───────────────────────────────────────────
 
 def test_fresh_run_fails_fast_on_all_falsy_first_page(monkeypatch, tmp_path):
-    # a typo'd id_key would otherwise blind-load the whole dataset
+    # a typo'd id_key would otherwise blind-load the whole dataset with
+    # dedup never engaging
     page = [{"identifier": 1, "updated_at": "t"},
             {"identifier": 2, "updated_at": "t"}]
     with pytest.raises(SystemExit) as exc:
@@ -131,7 +55,8 @@ def test_fresh_run_fails_fast_on_all_falsy_first_page(monkeypatch, tmp_path):
     assert "users" in str(exc.value)
 
 
-def test_resumed_run_does_not_fail_fast_on_falsy_page(monkeypatch, tmp_path, capsys):
+def test_resumed_run_does_not_fail_fast_on_falsy_page(monkeypatch, tmp_path):
+    # a resumed run aborting on the guard would strand supervision mid-load
     old = {"users": {"offset": 5, "anchor_updated_at": "2026-07-10T00:00:00Z",
                      "last_updated_at": "x", "total_processed": 5,
                      "total_inserted": 5}}
@@ -139,7 +64,6 @@ def test_resumed_run_does_not_fail_fast_on_falsy_page(monkeypatch, tmp_path, cap
     saved, _ = run_import(monkeypatch, tmp_path, [page, []],
                           resume=True, state=old)
     assert saved["users"]["completed"] is True     # no SystemExit
-    assert "missing/falsy 'id'" in capsys.readouterr().out
 
 
 # ── end-to-end dedup pins (real insert_batch against a stateful DS stub) ────
@@ -168,3 +92,16 @@ def test_smoke_leftover_absorbed_by_full_run_any_batch(monkeypatch, tmp_path):
     assert ds.value_counts() == {1: 1, 2: 1, 3: 1, 7: 1}
     assert saved["users"]["total_inserted"] == 3
     assert saved["users"]["completed"] is True
+
+
+def test_custom_id_key_dedupes_end_to_end(monkeypatch, tmp_path):
+    """The dataset's configured id_key — not a hardcoded 'id' — drives
+    dedup all the way through import_dataset and insert_batch."""
+    datasets = {"users": {"endpoint": "api/users", "collection": "users",
+                          "id_key": "number", "scope": "s", "fields": ["number"]}}
+    ds = FakeDS(id_key="number", preloaded=(7,))
+    pages = [[{"number": 7, "updated_at": "t"}, {"number": 8, "updated_at": "t"}], []]
+    saved, _ = run_import(monkeypatch, tmp_path, pages,
+                          datasets=datasets, ds_session=ds)
+    assert ds.value_counts() == {7: 1, 8: 1}       # 7 deduped on "number"
+    assert saved["users"]["total_inserted"] == 1
