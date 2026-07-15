@@ -1106,6 +1106,62 @@ def probe_datasets(keys: list[str], state: dict) -> None:
         print("   (others: 1 — under the est-hours threshold)")
 
 
+# ── Partition planning (spec §4.3) ───────────────────────────────────────────────
+
+MIN_PARTITION = 50_000   # never split below this many records per worker
+
+
+def partition_state_path(dataset: str, index: int, of: int) -> Path:
+    return Path(f"coupa_import_state_{dataset}_p{index}of{of}.json")
+
+
+def find_partition_states(dataset: str) -> list[Path]:
+    return sorted(Path(".").glob(f"coupa_import_state_{dataset}_p*of*.json"))
+
+
+def plan_partitions(key: str, cfg: dict, workers: int) -> tuple[str, list[dict]]:
+    """Count-balanced id-range partitions for one dataset, computed ONCE.
+
+    Balancing by rank, not by equal id spans: the record at ascending-id
+    rank k*C/W is one request (limit=1&offset=rank), so slices come out
+    count-balanced regardless of id gaps. Returns (anchor, []) when the
+    min-partition clamp lands on a single worker.
+    """
+    anchor = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    session = make_coupa_session(cfg["scope"])
+    count = _bisect_count(
+        lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off)))
+    w = min(workers, max(1, -(-count // MIN_PARTITION)))   # ceil clamp
+    if w <= 1:
+        return anchor, []
+    print(f"   {key}: planning {w} partition(s) over {count} records")
+    edges = [0]
+    for k in range(1, w):
+        rank = k * count // w
+        rec = fetch_at_rank(session, cfg["endpoint"], anchor, rank)
+        edges.append(rec[0]["id"])
+    top = fetch_at_rank(session, cfg["endpoint"], anchor, count - 1)
+    edges.append(top[0]["id"])
+    return anchor, [
+        {"index": k, "of": w, "id_gt": edges[k - 1], "id_lte": edges[k]}
+        for k in range(1, w + 1)
+    ]
+
+
+def seed_partition_state(dataset: str, part: dict, anchor_ts: str,
+                         path: Path) -> None:
+    """Pre-seed a partition's state file BEFORE spawning (plan stability:
+    children and supervisor restarts read the plan back from state files,
+    never re-probe — re-probing would re-slice and orphan progress)."""
+    save_state({dataset: {
+        "anchor_updated_at": anchor_ts,
+        "last_id":           part["id_lte"] + 1,   # everything below unfetched
+        "partition":         part,
+        "total_processed":   0,
+        "total_inserted":    0,
+    }}, path)
+
+
 # ── Supervision (--supervise) ────────────────────────────────────────────────────
 
 def decide(completed: bool, child_alive: bool, restarts: int, max_restarts: int) -> str:
