@@ -710,11 +710,15 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 print(f"   [WARN] {failed} document(s) failed in this batch. "
                       f"First error: {non_dup[0] if non_dup else 'n/a'}")
             return BatchResult(inserted + recovered, duplicates, failed, ok_values)
-        except _RETRYABLE as exc:
+        except (*_RETRYABLE, requests.HTTPError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if isinstance(exc, requests.HTTPError) and status not in (429, 503):
+                raise               # 401 -> ds_call_with_heal; 400 handled above
             if attempt == _retries:
                 raise
             wait = 2 ** attempt
-            print(f"   [RETRY {attempt}/{_retries}] {type(exc).__name__}: {exc} — retrying in {wait}s")
+            print(f"   [RETRY {attempt}/{_retries}] {type(exc).__name__}"
+                  f"{f' (HTTP {status})' if status else ''}: retrying in {wait}s")
             time.sleep(wait)
 
 
