@@ -118,7 +118,8 @@ def make_records(*ids):
 
 def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
                state=None, username=None, password=None, insert_stub=None,
-               db_count=0, datasets=None, ds_batch_size=None, ds_session=None):
+               db_count=0, datasets=None, ds_batch_size=None, ds_session=None,
+               no_unique_index_ok=False):
     """Drive import_dataset with canned Coupa pages and stubbed DS inserts.
 
     pages: list of record-lists; MUST end with [] (Coupa's empty page).
@@ -159,11 +160,12 @@ def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
         monkeypatch.setattr(cbi, "insert_batch", insert_stub or fake_insert)
         monkeypatch.setattr(cbi, "_collection_count", lambda session, collection: db_count)
         monkeypatch.setattr(cbi, "verify_unique_index",
-                            lambda session, collection, id_key: True)
+                            lambda session, collection, id_key: "ok")
         ds_session = type("S", (), {"headers": {}})()
 
     state = dict(state or {})
     state_path = tmp_path / "state.json"
     cbi.import_dataset("users", None, resume, state, ds_session,
-                       state_path=state_path, username=username, password=password)
+                       state_path=state_path, username=username, password=password,
+                       no_unique_index_ok=no_unique_index_ok)
     return json.loads(state_path.read_text()), calls

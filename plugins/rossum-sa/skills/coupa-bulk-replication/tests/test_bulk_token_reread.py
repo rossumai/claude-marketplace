@@ -73,3 +73,15 @@ def test_401_heal_retry_goes_through_checked_path(monkeypatch, tmp_path):
     assert ds.failed_once
     assert ds.value_counts() == {1: 1, 2: 1}     # deduped on the healed retry
     assert saved["users"]["completed"] is True
+
+
+def test_heal_reraises_response_less_httperror(monkeypatch, tmp_path):
+    """A response-less HTTPError (adapter/middleware-constructed) must
+    propagate as-is — never AttributeError inside the heal."""
+
+    def insert_stub(session, collection, records, id_key="id", _retries=5):
+        raise requests.HTTPError("adapter blew up")   # exc.response is None
+
+    with pytest.raises(requests.HTTPError, match="adapter blew up"):
+        run_import(monkeypatch, tmp_path, [make_records(1), []],
+                   insert_stub=insert_stub)

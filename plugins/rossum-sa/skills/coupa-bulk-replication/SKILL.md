@@ -123,7 +123,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `__dynamic_index` | `{"$**": 1}` | Wildcard |
    | `default` | dynamic mappings | Atlas Search |
 
-   The **unique partial index on the dataset's `id_key`** is the root-cause duplicate fix: duplicates become impossible at the DB layer, even across races the script's pre-insert check cannot see (mid-run anchor-window entries, backdated writes, concurrent writers). DS support is live-verified: `POST /indexes/create` with those options returns 202 and the index lists back with both properties intact; a duplicate `id` insert is then rejected (as the usual opaque HTTP 400), while id-less documents still insert freely thanks to the partial filter. The script verifies this index at the start of every full run and warns loudly if it is missing — it never auto-creates it, because a collection loaded before this guidance may already hold duplicates that would fail the build (run the Phase 4 duplicate audit first).
+   The **unique partial index on the dataset's `id_key`** is the root-cause duplicate fix: duplicates become impossible at the DB layer, even across races the script's pre-insert check cannot see (mid-run anchor-window entries, backdated writes, concurrent writers). DS support is live-verified: `POST /indexes/create` with those options returns 202 and the index lists back with both properties intact; a duplicate `id` insert is then rejected (as the usual opaque HTTP 400), while id-less documents still insert freely thanks to the partial filter. The **partial filter is not optional**: a unique-but-non-partial index on `id_key` would reject the second id-less document as a duplicate null (surfacing as poison failures) — the script flags such an index distinctly and recommends dropping and recreating it as partial. The script verifies the index at the start of every full run and **aborts when it is confirmed missing or non-partial** — override with `--no-unique-index-ok` to proceed on the per-batch check alone (concurrent-writer races unprotected; the flag is inherited by supervised children). A failed index *listing* only warns. It never auto-creates the index, because a collection loaded before this guidance may already hold duplicates that would fail the build (run the Phase 4 duplicate audit first).
 
    The Atlas Search `default` index uses the `default_whitespace_lowercase` custom analyzer:
 
@@ -262,7 +262,8 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `[WARN] N document(s) failed` | Real write failures; check payload size or field types |
    | `[WARN] N record(s) missing/falsy '<id_key>'` | Records without a usable id in this batch — inserted without dedup protection |
    | `Dataset '…': every record on the first page is missing a usable '<id_key>'` | Fail-fast abort — the dataset's `id_key` is almost certainly misconfigured |
-   | `[WARN] collection '…' has NO unique index on '<id_key>'` | Create the Phase 1 unique partial index (audit for duplicates first on old collections) |
+   | `[WARN] collection '…' has NO unique index on '<id_key>'` (run aborts) | Create the Phase 1 unique partial index (audit old collections for duplicates first), or override with `--no-unique-index-ok` |
+   | `[WARN] collection '…' has a unique index on '<id_key>' WITHOUT a partial filter` (run aborts) | Drop and recreate the index as partial — non-partial would poison-fail the second id-less document |
    | `supervisor: <ds> died … resuming (attempt N/3)` | Child crashed; auto-resumed |
    | `supervisor: <ds> exceeded 3 restarts — giving up` | Investigate that dataset's log, then relaunch the supervisor |
    | `[WARN] poison document skipped (<id_key>=…)` | A document DS rejects even alone (and whose id is confirmed absent); skipped after per-record isolation, run continues |
@@ -284,6 +285,8 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 **Steps:**
 
 1. **Final count check.** For each dataset, confirm `total_inserted` in the state file equals the actual document count in Data Storage. If they differ by more than one batch (5,000 records), investigate `[WARN]` lines in the logs before proceeding.
+
+   Known benign skew: after a mid-batch token heal (a 401 struck while a batch was being written), `total_inserted` may **undercount by up to one batch** — records persisted just before the 401 are re-counted as duplicates by the healed retry. The DB count and the duplicate audit are authoritative; an up-to-one-batch shortfall next to a `[Rossum token expired / 401]` log line is expected, not data loss.
 
 2. **Duplicate audit.** Per collection, run a DS aggregate grouping on the dataset's `id_key`:
 
@@ -320,7 +323,7 @@ Prerequisite from Phase 4: each dataset's `anchor_updated_at` (the delta boundar
 
 ### Path A — the org already has import hooks (disabled in Phase 1)
 
-Per dataset: confirm `total_inserted` == DB count, then re-enable with `rossum_patch_hook` `active: true`. **Confirm with user before executing.**
+Per dataset: confirm `total_inserted` == DB count (an up-to-one-batch shortfall can be the Phase 4 token-heal caveat — the DB count and duplicate audit are authoritative), then re-enable with `rossum_patch_hook` `active: true`. **Confirm with user before executing.**
 
 ### Path B — fresh org: build the hooks from a reference org
 
@@ -368,7 +371,7 @@ Records are inserted **exactly as received from Coupa**, with auto-generated Mon
 
 Duplicate protection is **three layers**, keyed on the id field (config `id_key`, default `id`):
 
-1. **Unique partial index** (Phase 1) — the root guarantee: the DB rejects duplicates even across races the script cannot see (concurrent writers, records entering the frozen anchor window mid-run, backdated updates). The script verifies it at the start of every full run and warns when missing.
+1. **Unique partial index** (Phase 1) — the root guarantee: the DB rejects duplicates even across races the script cannot see (concurrent writers, records entering the frozen anchor window mid-run, backdated updates). The script verifies it at the start of every full run and aborts when it is confirmed missing or non-partial (`--no-unique-index-ok` overrides; a failed listing only warns).
 2. **Pre-insert existence check before EVERY batch** — keeps accounting exact (`total_inserted`, duplicate counts) and avoids opaque-400 churn from index rejections. Necessary in its own right because the DS REST layer reports duplicate-key write errors as an opaque HTTP 400 ("batch op errors occurred") with no per-document detail (live-verified 2026-07) — and on collections without the unique index, double-inserts would not even error. The check costs ~one indexed aggregate per 5,000-record batch (~0.2% of wall time). It uses `$match`+`$group` (distinct values), immune to truncation by pre-existing duplicate copies.
 3. **Phase 4 duplicate audit** — verification that the first two layers held.
 

@@ -60,6 +60,19 @@ def test_build_child_cmd_full():
     assert "--limit" not in cmd
 
 
+def test_build_child_cmd_inherits_no_unique_index_ok():
+    cmd = cbi.build_child_cmd("users", "cfg.json", resume=False,
+                              username=None, password=None,
+                              no_unique_index_ok=True)
+    assert "--no-unique-index-ok" in cmd
+
+
+def test_build_child_cmd_omits_no_unique_index_ok_by_default():
+    cmd = cbi.build_child_cmd("users", "cfg.json", resume=False,
+                              username=None, password=None)
+    assert "--no-unique-index-ok" not in cmd
+
+
 import argparse
 
 
@@ -69,6 +82,7 @@ def _args(**kw):
         username=None, password=None, limit=None,
         poll_interval=kw.get("poll_interval", 0.05),
         max_restarts=kw.get("max_restarts", 2),
+        no_unique_index_ok=kw.get("no_unique_index_ok", False),
     )
 
 
@@ -88,7 +102,7 @@ def _run_supervise(monkeypatch, tmp_path, cmd_plan, keys, **argkw):
     monkeypatch.chdir(tmp_path)
     launches = []
 
-    def fake_build(dataset, config, *, resume, username, password):
+    def fake_build(dataset, config, *, resume, username, password, **kw):
         n = sum(1 for d, _ in launches if d == dataset)
         launches.append((dataset, resume))
         plan = cmd_plan[dataset]
@@ -132,6 +146,21 @@ def test_supervise_resume_skips_completed(monkeypatch, tmp_path):
     assert launches == [("suppliers", True)]                  # users never launched
 
 
+def test_supervise_passes_no_unique_index_ok_to_children(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    flags = []
+
+    def fake_build(dataset, config, *, resume, username, password,
+                   no_unique_index_ok=False):
+        flags.append(no_unique_index_ok)
+        return _stub_completes(dataset)
+
+    monkeypatch.setattr(cbi, "build_child_cmd", fake_build)
+    code = cbi.supervise(["users"], _args(no_unique_index_ok=True))
+    assert code == 0
+    assert flags == [True]
+
+
 def test_supervise_restores_sigterm_handler(monkeypatch, tmp_path):
     import signal
     before = signal.getsignal(signal.SIGTERM)
@@ -151,7 +180,7 @@ def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypat
         spawned.append(p)
         return p
 
-    def fake_build(dataset, config, *, resume, username, password):
+    def fake_build(dataset, config, *, resume, username, password, **kw):
         calls.append(dataset)
         if len(calls) == 2:
             raise KeyboardInterrupt   # simulates SIGINT arriving mid-startup
@@ -197,7 +226,7 @@ def test_supervise_unexpected_exception_terminates_children_and_reraises(monkeyp
         spawned.append(p)
         return p
 
-    def fake_build(dataset, config, *, resume, username, password):
+    def fake_build(dataset, config, *, resume, username, password, **kw):
         calls.append(dataset)
         if len(calls) == 2:
             raise OSError("boom")

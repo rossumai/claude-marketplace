@@ -150,6 +150,26 @@ def test_smoke_returns_false_on_cleanup_shortfall(monkeypatch, tmp_path, capsys)
     assert "cleanup shortfall" in capsys.readouterr().out
 
 
+def test_smoke_missing_deleted_count_shows_na_and_fails(monkeypatch, tmp_path, capsys):
+    """A DS response without deleted_count displays n/a and counts as a
+    cleanup shortfall — unknown is not success."""
+    from bulk_helpers import StubResponse
+
+    class NoCountDS(FakeDS):
+        def post(self, url, json=None, timeout=None):
+            if url.endswith("/data/delete_many"):
+                self.calls.append((url, json))
+                return StubResponse({"result": {}})
+            return super().post(url, json=json, timeout=timeout)
+
+    _setup(monkeypatch, tmp_path, [make_records(1)])
+    assert cbi.smoke_dataset("users", 1, NoCountDS()) is False
+    out = capsys.readouterr().out
+    assert "deleted n/a record(s)" in out
+    assert "cleanup shortfall" in out
+    assert "deleted None" not in out
+
+
 # ── #7: smoke DS calls share the 401 heal ────────────────────────────────────
 
 def test_smoke_heals_ds_401_and_leaves_no_residue(monkeypatch, tmp_path):

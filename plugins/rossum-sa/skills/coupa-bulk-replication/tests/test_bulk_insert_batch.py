@@ -56,6 +56,22 @@ def _check_calls(session):
     return [c for c in session.calls if c[0].endswith("/data/aggregate")]
 
 
+# ── BatchResult hygiene ──────────────────────────────────────────────────────────
+
+def test_batchresult_default_inserted_values_not_shared():
+    r1 = cbi.BatchResult(1, 0, 0)
+    r2 = cbi.BatchResult(1, 0, 0)
+    r1.inserted_values.append(9)
+    assert r2.inserted_values == []      # fresh list per instance
+
+
+def test_batchresult_copies_caller_iterable():
+    src = [1]
+    r = cbi.BatchResult(1, 0, 0, src)
+    src.append(2)
+    assert r.inserted_values == [1]      # no aliasing of the caller's list
+
+
 # ── check-then-insert dedup keyed on the Coupa id FIELD ──────────────────────
 
 def test_all_new_batch_inserts_everything():

@@ -15,7 +15,8 @@ Mongo _ids — structurally identical to records written by the Coupa import
 extension (which upserts by the id FIELD and never touches _id).
 Duplicate protection is layered on that id field (config id_key):
 a unique partial index is the root guarantee (SKILL.md Phase 1 — verified
-at the start of every full run, loud warning when missing); a pre-insert
+at the start of every full run; a confirmed-missing or non-partial index
+ABORTS unless --no-unique-index-ok is passed); a pre-insert
 existence check before EVERY batch keeps accounting exact and avoids
 opaque-400 churn (re-inserts — smoke leftovers, resume overlap, mid-run
 anchor-window entries — are skipped, whichever batch they land in); the
@@ -259,7 +260,9 @@ def ds_call_with_heal(call, ds_session: requests.Session,
     try:
         return call()
     except requests.HTTPError as exc:
-        if exc.response.status_code != 401:
+        # response can be None (adapter/middleware-constructed errors) —
+        # re-raise as-is instead of AttributeError'ing inside the heal
+        if exc.response is None or exc.response.status_code != 401:
             raise
         if username and password:
             print("   [Rossum token expired — refreshing]")
@@ -323,13 +326,23 @@ _RETRYABLE = (
     requests.exceptions.Timeout,
 )
 
-# inserted_values: id_key values of records THIS call actually landed —
-# smoke cleanup deletes exactly these, never a concurrent writer's copy.
-# Conservative on ambiguity (unattributable write_errors → empty): smoke
-# residue is a better failure mode than deleting someone else's record.
-BatchResult = namedtuple("BatchResult",
-                         "inserted duplicates failed inserted_values",
-                         defaults=([],))
+class BatchResult(namedtuple("BatchResult",
+                             "inserted duplicates failed inserted_values")):
+    """One insert_batch outcome.
+
+    inserted_values: id_key values of records THIS call actually landed —
+    smoke cleanup deletes exactly these, never a concurrent writer's copy.
+    Conservative on ambiguity (unattributable write_errors → empty): smoke
+    residue is a better failure mode than deleting someone else's record.
+    Always normalized to a FRESH list per instance — never a shared
+    mutable default, never an alias of the caller's iterable.
+    """
+    __slots__ = ()
+
+    def __new__(cls, inserted, duplicates, failed, inserted_values=None):
+        return super().__new__(
+            cls, inserted, duplicates, failed,
+            [] if inserted_values is None else list(inserted_values))
 
 _DUPLICATE_KEY_CODE = 11000
 
@@ -365,16 +378,29 @@ def _existing_ids(session: requests.Session, collection: str,
     return {doc["_id"] for doc in resp.json().get("result") or []}
 
 
-def _index_covers_unique_id(index: dict, id_key: str) -> bool:
-    """True if this index spec is a unique index keyed on id_key."""
+def _index_status(index: dict, id_key: str) -> str | None:
+    """Classify one index spec against the id_key guarantee.
+
+    'ok'          — unique AND carries a partialFilterExpression covering
+                    id_key (the exact {"$exists": true} shape or any
+                    partial filter that mentions id_key);
+    'non_partial' — unique on id_key but WITHOUT a qualifying partial
+                    filter: the second id-less document would be rejected
+                    as a duplicate null;
+    None          — irrelevant to the guarantee.
+    """
     keys = index.get("key") or index.get("keys") or {}
-    unique = index.get("unique") or (index.get("options") or {}).get("unique")
-    return bool(unique) and id_key in keys
+    options = index.get("options") or {}
+    if not (index.get("unique") or options.get("unique")) or id_key not in keys:
+        return None
+    pfe = (index.get("partialFilterExpression")
+           or options.get("partialFilterExpression") or {})
+    return "ok" if id_key in pfe else "non_partial"
 
 
 def verify_unique_index(session: requests.Session, collection: str,
-                        id_key: str) -> bool:
-    """Warn loudly when the collection lacks a unique index on id_key.
+                        id_key: str) -> str:
+    """Check the collection for the unique partial index on id_key.
 
     The unique partial index is the ROOT duplicate guarantee (SKILL.md
     Phase 1; DS support live-verified): the per-batch existence check
@@ -382,8 +408,11 @@ def verify_unique_index(session: requests.Session, collection: str,
     anchor window mid-run, backdated updates — but the DB layer rejects
     them all.  Never auto-creates: a collection loaded before this
     guidance may already hold duplicates that would fail the index build,
-    so creation is a deliberate operator step.  Returns True when a
-    unique index on id_key is present.
+    so creation is a deliberate operator step.
+
+    Returns 'ok', 'missing', 'non_partial' (unique but would poison-fail
+    the second id-less document), or 'unknown' (listing failed — soft
+    warn only, never treated as confirmed-absent).
     """
     try:
         resp = session.post(
@@ -397,21 +426,30 @@ def verify_unique_index(session: requests.Session, collection: str,
         print(f"   [WARN] could not verify indexes on '{collection}' "
               f"({type(exc).__name__}) — confirm the unique partial index "
               "on the id field manually (see SKILL.md Phase 1)")
-        return False
-    if any(_index_covers_unique_id(ix, id_key)
-           for ix in indexes if isinstance(ix, dict)):
-        return True
+        return "unknown"
+    statuses = {_index_status(ix, id_key)
+                for ix in indexes if isinstance(ix, dict)}
+    if "ok" in statuses:
+        return "ok"
+    if "non_partial" in statuses:
+        print(f"   [WARN] collection '{collection}' has a unique index on "
+              f"'{id_key}' WITHOUT a partial filter. The second id-less "
+              "document inserted would be rejected as a duplicate null and "
+              "surface as a poison failure. Drop it and recreate with "
+              f'options {{"unique": true, "partialFilterExpression": '
+              f'{{"{id_key}": {{"$exists": true}}}}}} (see SKILL.md Phase 1).')
+        return "non_partial"
     print(f"   [WARN] collection '{collection}' has NO unique index on "
-          f"'{id_key}'. Strongly recommended — it makes duplicates "
-          "impossible at the DB layer, even across races the pre-insert "
-          "check cannot see (concurrent writers, mid-run anchor-window "
-          f"entries, backdated updates): create __{id_key}_unique_idx with "
-          f'keys {{"{id_key}": 1}} and options {{"unique": true, '
-          f'"partialFilterExpression": {{"{id_key}": {{"$exists": true}}}}}} '
-          "(see SKILL.md Phase 1). NOT auto-created: a collection loaded "
-          "before this guidance may hold duplicates that would fail the "
-          "index build — audit first (SKILL.md Phase 4).")
-    return False
+          f"'{id_key}'. It makes duplicates impossible at the DB layer, "
+          "even across races the pre-insert check cannot see (concurrent "
+          "writers, mid-run anchor-window entries, backdated updates): "
+          f'create __{id_key}_unique_idx with keys {{"{id_key}": 1}} and '
+          f'options {{"unique": true, "partialFilterExpression": '
+          f'{{"{id_key}": {{"$exists": true}}}}}} (see SKILL.md Phase 1). '
+          "NOT auto-created: a collection loaded before this guidance may "
+          "hold duplicates that would fail the index build — audit first "
+          "(SKILL.md Phase 4).")
+    return "missing"
 
 
 def _collection_count(session: requests.Session, collection: str) -> int:
@@ -605,7 +643,8 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                    state: dict, ds_session: requests.Session,
                    state_path: Path = STATE_FILE,
                    username: str | None = None,
-                   password: str | None = None) -> None:
+                   password: str | None = None,
+                   no_unique_index_ok: bool = False) -> None:
     cfg   = DATASETS[key]
     ds_st = state.get(key, {})
 
@@ -635,7 +674,16 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     else:
         print(f"   fresh run, anchor: {anchor_ts}")
 
-    verify_unique_index(ds_session, cfg["collection"], id_key)
+    index_status = verify_unique_index(ds_session, cfg["collection"], id_key)
+    if index_status in ("missing", "non_partial") and not no_unique_index_ok:
+        # abort only on a CONFIRMED bad index — 'unknown' (listing failed)
+        # already soft-warned and proceeds
+        raise SystemExit(
+            f"Dataset '{key}': collection '{cfg['collection']}' lacks a "
+            f"qualifying unique partial index on '{id_key}' (see the warning "
+            "above). Create it first (SKILL.md Phase 1), or re-run with "
+            "--no-unique-index-ok to proceed with the per-batch check only "
+            "(concurrent-writer races unprotected).")
 
     if not resume:
         preexisting = _collection_count(ds_session, cfg["collection"])
@@ -832,10 +880,13 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
 
         resp = heal(_delete)
         deleted = (resp.json().get("result") or {}).get("deleted_count")
-        print(f"   smoke cleanup: deleted {deleted} record(s)")
+        shown = deleted if deleted is not None else "n/a"
+        print(f"   smoke cleanup: deleted {shown} record(s)")
         if deleted != len(to_delete):
+            # a missing/unparseable count lands here too, by design:
+            # unknown is not success
             print(f"   [WARN] cleanup shortfall: expected to delete "
-                  f"{len(to_delete)}, deleted {deleted}")
+                  f"{len(to_delete)}, deleted {shown}")
             ok = False
     else:
         print("   smoke cleanup: nothing to delete "
@@ -908,7 +959,8 @@ def read_last_log_line(path: Path) -> str:
 
 
 def build_child_cmd(dataset: str, config: str, *, resume: bool,
-                    username: str | None, password: str | None) -> list[str]:
+                    username: str | None, password: str | None,
+                    no_unique_index_ok: bool = False) -> list[str]:
     """Command line for one supervised child (single dataset, own state file).
 
     No --limit: --supervise + --limit is refused in main() (a limit-stopped
@@ -922,6 +974,8 @@ def build_child_cmd(dataset: str, config: str, *, resume: bool,
         cmd += ["--username", username]
     if password:
         cmd += ["--password", password]
+    if no_unique_index_ok:
+        cmd.append("--no-unique-index-ok")
     return cmd
 
 
@@ -948,7 +1002,8 @@ def supervise(keys: list[str], args) -> int:
 
     def launch(key: str, resume: bool) -> None:
         cmd = build_child_cmd(key, args.config, resume=resume,
-                              username=args.username, password=args.password)
+                              username=args.username, password=args.password,
+                              no_unique_index_ok=args.no_unique_index_ok)
         with open(logs[key], "ab") as log_f:      # Popen keeps its own fd
             children[key] = subprocess.Popen(cmd, stdout=log_f,
                                              stderr=subprocess.STDOUT)
@@ -1108,6 +1163,13 @@ def main() -> None:
         help="Relaunch attempts per dataset before giving up on it (default: 3)",
     )
     parser.add_argument(
+        "--no-unique-index-ok",
+        action="store_true",
+        help="Proceed with a full run even when the collection lacks the "
+             "qualifying unique partial index on id_key (per-batch existence "
+             "check only; concurrent-writer races unprotected)",
+    )
+    parser.add_argument(
         "--count",
         action="store_true",
         help="Print exact per-dataset record counts via offset bisection (uses "
@@ -1197,7 +1259,8 @@ def main() -> None:
 
     for key in keys:
         import_dataset(key, args.limit, args.resume, state, ds_session, state_path,
-                       username=args.username, password=args.password)
+                       username=args.username, password=args.password,
+                       no_unique_index_ok=args.no_unique_index_ok)
 
     print("\nDone.")
 
