@@ -12,11 +12,11 @@ import coupa_bulk_import as cbi
 GUARDS = [
     (["--smoke", "--supervise"], None, ["--smoke", "--supervise"]),
     (["--smoke", "--resume"], None, ["--smoke", "--resume"]),
-    (["--smoke", "--count"], None, ["--smoke", "--count"]),
+    (["--smoke", "--probe"], None, ["--smoke", "--probe"]),
     (["--smoke", "2", "--limit", "5"], None, ["--smoke", "--limit"]),
     (["--supervise", "--limit", "1"], None, ["--limit", "--supervise"]),
     (["--supervise", "--state-file", "x.json"], None, ["--state-file", "--supervise"]),
-    (["--count", "--supervise"], None, ["--count", "--supervise"]),
+    (["--probe", "--supervise"], None, ["--probe", "--supervise"]),
     # a smoke run must fit in one DS batch
     (["--smoke", "5"], {"ds_batch_size": 2}, ["--smoke", "ds_batch_size"]),
     # DS writes need a token or credentials; --count (Coupa-only) is exempt

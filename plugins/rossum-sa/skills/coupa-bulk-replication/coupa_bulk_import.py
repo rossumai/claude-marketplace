@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import signal
@@ -1027,25 +1028,82 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
     return ok
 
 
-def count_datasets(keys: list[str], state: dict) -> None:
-    """Print exact per-dataset counts (offset bisection, anchored like the job)."""
+SAMPLE_PAGES = 3   # keyset pages fetched (real field list) to measure rec/s
+
+
+def suggest_workers(count: int, rate: float, target_hours: float = 4.0,
+                    max_workers: int = 8, min_partition: int = 50_000) -> int:
+    """Advisory only (spec §4.4): workers to bring one dataset under
+    target_hours, capped by max_workers and the min-partition clamp.
+    Printed by --probe; the run path never calls this."""
+    if not count or not rate:
+        return 1
+    by_time = math.ceil(count / rate / 3600 / target_hours)
+    by_size = max(1, math.ceil(count / min_partition))
+    return max(1, min(by_time, by_size, max_workers))
+
+
+def measure_rate(session, endpoint: str, fields: list, anchor_ts: str) -> float:
+    """Sampled single-worker throughput (rec/s) over SAMPLE_PAGES keyset
+    pages with the dataset's REAL field list — record width dominates
+    per-record cost (~10x between narrow and wide datasets), so counts
+    alone cannot size workers."""
+    fetched, cursor = 0, None
+    t0 = time.monotonic()
+    for _ in range(SAMPLE_PAGES):
+        page = fetch_page(session, endpoint, fields, anchor_ts, before_id=cursor)
+        if not page:
+            break
+        fetched += len(page)
+        cursor = page[-1]["id"]
+    secs = time.monotonic() - t0
+    return fetched / secs if secs > 0 and fetched else 0.0
+
+
+def _dataset_progress(key: str, state: dict) -> tuple[dict, int]:
+    """(state entry, total_processed incl. partition files) for display.
+
+    Supervised runs keep per-dataset state files — fall back to them so a
+    --probe over the shared state still reuses the run's anchor/progress;
+    partitioned runs spread progress over per-partition files."""
+    ds_st = state.get(key) or load_state(
+        default_state_path(key, [key], None)).get(key, {})
+    done = ds_st.get("total_processed", 0)
+    for p in sorted(Path(".").glob(f"coupa_import_state_{key}_p*of*.json")):
+        done += load_state(p).get(key, {}).get("total_processed", 0)
+    return ds_st, done
+
+
+def probe_datasets(keys: list[str], state: dict) -> None:
+    """Advisory sizing report: exact count (offset bisection), sampled
+    throughput, est duration at 1/2/4/8 workers, config-ready suggestion.
+    Writes nothing; also doubles as the keyset-query preflight."""
+    suggestions: dict[str, int] = {}
     for key in keys:
         cfg = DATASETS[key]
-        # Supervised runs keep per-dataset state files — fall back to them so
-        # a --count over the shared state still reuses the run's anchor/progress.
-        ds_st = state.get(key) or load_state(default_state_path(key, [key], None)).get(key, {})
+        ds_st, done = _dataset_progress(key, state)
         anchor = ds_st.get("anchor_updated_at") \
             or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         session = make_coupa_session(cfg["scope"])
-
-        def probe(offset: int) -> bool:
-            return bool(fetch_page(session, cfg["endpoint"], ["id"],
-                                   offset, anchor, limit=1))
-
-        n = _bisect_count(probe)
-        done = ds_st.get("total_processed")
+        n = _bisect_count(
+            lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off)))
+        rate = measure_rate(session, cfg["endpoint"],
+                            ensure_id_field(cfg["fields"]), anchor)
         pct = f"  ({done / n:.1%} processed)" if done and n else ""
         print(f"   {key:<28} {n:>9}  anchor: {anchor}{pct}")
+        if rate:
+            ests = "  ".join(
+                f"{w}w:{n / rate / 3600 / w:5.1f}h" for w in (1, 2, 4, 8))
+            print(f"   {'':<28} {rate:7.1f} rec/s   est {ests}")
+        w = suggest_workers(n, rate)
+        if w > 1:
+            suggestions[key] = w
+    if suggestions:
+        print("\n   suggested config (set datasets.<key>.workers, "
+              "then run --supervise --dataset all):")
+        for key, w in suggestions.items():
+            print(f'     "{key}": {w}')
+        print("   (others: 1 — under the est-hours threshold)")
 
 
 # ── Supervision (--supervise) ────────────────────────────────────────────────────
@@ -1301,10 +1359,13 @@ def main() -> None:
              "check only; concurrent-writer races unprotected)",
     )
     parser.add_argument(
-        "--count",
+        "--probe",
         action="store_true",
-        help="Print exact per-dataset record counts via offset bisection (uses "
-             "the run's anchor from the state file when one exists) and exit",
+        help="Sizing report per dataset (writes nothing): exact record count "
+             "via offset bisection, sampled throughput with the real field "
+             "list, estimated duration at 1/2/4/8 workers, and a config-ready "
+             "workers suggestion. Reuses a running job's anchor from its "
+             "state file",
     )
     args = parser.parse_args()
 
@@ -1315,8 +1376,8 @@ def main() -> None:
     if args.supervise and args.state_file:
         raise SystemExit("--state-file cannot be combined with --supervise "
                          "(children always use per-dataset state files)")
-    if args.count and args.supervise:
-        raise SystemExit("--count cannot be combined with --supervise")
+    if args.probe and args.supervise:
+        raise SystemExit("--probe cannot be combined with --supervise")
     if args.smoke is not None and args.supervise:
         raise SystemExit("--smoke cannot be combined with --supervise "
                          "(smoke runs are single-batch and self-cleaning; "
@@ -1324,8 +1385,8 @@ def main() -> None:
     if args.smoke is not None and args.resume:
         raise SystemExit("--smoke cannot be combined with --resume "
                          "(smoke runs never read or write state files)")
-    if args.smoke is not None and args.count:
-        raise SystemExit("--smoke cannot be combined with --count "
+    if args.smoke is not None and args.probe:
+        raise SystemExit("--smoke cannot be combined with --probe "
                          "(pick one mode)")
     if args.smoke is not None and args.limit is not None:
         raise SystemExit("--smoke cannot be combined with --limit "
@@ -1333,11 +1394,11 @@ def main() -> None:
 
     load_config(Path(args.config))
 
-    if not args.count and not ROSSUM_TOKEN and not (args.username and args.password):
+    if not args.probe and not ROSSUM_TOKEN and not (args.username and args.password):
         raise SystemExit(
             "rossum.token is empty in the config and no --username/--password "
             "given — DS writes need one of them (see SKILL.md Phase 0 token "
-            "strategy; --count is Coupa-only and exempt)")
+            "strategy; --probe is Coupa-only and exempt)")
 
     if args.smoke is not None and args.smoke > DS_BATCH_SIZE:
         raise SystemExit(
@@ -1353,9 +1414,9 @@ def main() -> None:
 
     state_path = default_state_path(args.dataset, keys, args.state_file)
 
-    if args.count:
+    if args.probe:
         state = load_state(state_path)
-        count_datasets(keys, state)
+        probe_datasets(keys, state)
         return
 
     if args.smoke is not None:
