@@ -116,19 +116,55 @@ def make_records(*ids):
     return [{"id": i, "updated_at": f"2026-07-01T00:00:{i % 60:02d}Z"} for i in ids]
 
 
-def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
+class FakeCoupa:
+    """Stateful Coupa stub over a fixed id set — serves keyset pages and
+    rank probes by actually interpreting the id filters, so tests assert
+    outcomes (which records landed) instead of request shapes."""
+
+    def __init__(self, ids, page_size=50):
+        self.ids = sorted(ids)
+        self.page_size = page_size
+        self.page_calls = 0
+        self.rank_calls = 0
+
+    def _rec(self, i):
+        return {"id": i, "updated_at": "2026-07-01T00:00:00Z"}
+
+    def fetch_page(self, session, endpoint, fields, anchor_ts, *,
+                   before_id=None, id_gt=None, limit=None):
+        self.page_calls += 1
+        sel = [i for i in self.ids
+               if (before_id is None or i < before_id)
+               and (id_gt is None or i > id_gt)]
+        sel = sorted(sel, reverse=True)[: (limit or self.page_size)]
+        return [self._rec(i) for i in sel]
+
+    def fetch_at_rank(self, session, endpoint, anchor_ts, rank):
+        self.rank_calls += 1
+        return [{"id": self.ids[rank]}] if rank < len(self.ids) else []
+
+    def install(self, monkeypatch):
+        import coupa_bulk_import as cbi
+        monkeypatch.setattr(cbi, "fetch_page", self.fetch_page)
+        monkeypatch.setattr(cbi, "fetch_at_rank", self.fetch_at_rank)
+
+
+def run_import(monkeypatch, tmp_path, pages=None, batch_results=None, resume=False,
                state=None, username=None, password=None, insert_stub=None,
                db_count=0, datasets=None, ds_batch_size=None, ds_session=None,
-               no_unique_index_ok=False):
-    """Drive import_dataset with canned Coupa pages and stubbed DS inserts.
+               no_unique_index_ok=False, fake_coupa=None, id_range=None):
+    """Drive import_dataset with canned keyset pages (or a FakeCoupa) and
+    stubbed DS inserts.
 
     pages: list of record-lists; MUST end with [] (Coupa's empty page).
+    fake_coupa: a FakeCoupa instance — overrides `pages` and serves real
+    keyset semantics (cursor/range filters honored).
     batch_results: optional queue of BatchResult returned per flush.
     insert_stub: full replacement for insert_batch (overrides batch_results).
     ds_session: a stateful DS stub (e.g. FakeDS) — when given, the REAL
     insert_batch/_collection_count run against it end-to-end.
-    Returns (saved_state_dict, calls) where calls records fetch offsets and
-    inserted batches.
+    Returns (saved_state_dict, calls) where calls records cursor values per
+    fetch and inserted batches.
     """
     import coupa_bulk_import as cbi
 
@@ -141,12 +177,19 @@ def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
     cbi.load_config(write_config(tmp_path, **kw))
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "coupa-token")
 
-    calls = {"fetch_offsets": [], "inserted_batches": [], "id_keys": []}
-    pages_iter = iter(pages)
+    calls = {"cursors": [], "inserted_batches": [], "id_keys": []}
 
-    def fake_fetch(session, endpoint, fields, offset, anchor_ts):
-        calls["fetch_offsets"].append(offset)
-        return next(pages_iter)
+    if fake_coupa is not None:
+        fake_coupa.install(monkeypatch)
+    else:
+        pages_iter = iter(pages)
+
+        def fake_fetch(session, endpoint, fields, anchor_ts, *,
+                       before_id=None, id_gt=None, limit=None):
+            calls["cursors"].append(before_id)
+            return next(pages_iter)
+
+        monkeypatch.setattr(cbi, "fetch_page", fake_fetch)
 
     def fake_insert(session, collection, records, id_key="id", _retries=5):
         calls["inserted_batches"].append(list(records))
@@ -155,7 +198,6 @@ def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
             return batch_results.pop(0)
         return cbi.BatchResult(len(records), 0, 0)
 
-    monkeypatch.setattr(cbi, "fetch_page", fake_fetch)
     if ds_session is None:
         monkeypatch.setattr(cbi, "insert_batch", insert_stub or fake_insert)
         monkeypatch.setattr(cbi, "_collection_count", lambda session, collection: db_count)
@@ -167,5 +209,6 @@ def run_import(monkeypatch, tmp_path, pages, batch_results=None, resume=False,
     state_path = tmp_path / "state.json"
     cbi.import_dataset("users", None, resume, state, ds_session,
                        state_path=state_path, username=username, password=password,
-                       no_unique_index_ok=no_unique_index_ok)
-    return json.loads(state_path.read_text()), calls
+                       no_unique_index_ok=no_unique_index_ok, id_range=id_range)
+    saved = json.loads(state_path.read_text()) if state_path.exists() else {}
+    return saved, calls

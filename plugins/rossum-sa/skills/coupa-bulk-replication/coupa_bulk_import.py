@@ -742,33 +742,57 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                    state_path: Path = STATE_FILE,
                    username: str | None = None,
                    password: str | None = None,
-                   no_unique_index_ok: bool = False) -> None:
+                   no_unique_index_ok: bool = False,
+                   id_range: tuple[int, int] | None = None) -> None:
     cfg   = DATASETS[key]
     ds_st = state.get(key, {})
 
-    # Anchor: set once at start of a fresh run; reused on every resume so pagination
-    # stays consistent even if new records arrive in Coupa mid-run.
-    anchor_ts    = ds_st.get("anchor_updated_at") if resume else None
-    start_offset = ds_st.get("offset", 0)         if resume else 0
-    total        = ds_st.get("total_processed", 0) if resume else 0
+    if resume and ds_st.get("completed"):
+        print(f"\n── {key}: already complete — skipping ──")
+        return
 
-    if resume and ds_st and "total_inserted" not in ds_st:
-        # Legacy state file predates total_inserted tracking. total_processed
-        # is inflated by duplicates/failures from earlier runs, so seed from
-        # a live DB count instead of trusting it.
-        total_ins = _collection_count(ds_session, cfg["collection"])
-        print(f"   legacy state file (no total_inserted) — seeded from DB count: {total_ins}")
-    else:
-        total_ins = ds_st.get("total_inserted", 0) if resume else 0
+    if resume and ds_st and "last_id" not in ds_st:
+        raise SystemExit(
+            f"Dataset '{key}': state file {state_path} predates keyset "
+            "pagination (no last_id) and cannot be resumed by this version. "
+            "Delete the state file to restart the dataset fresh — already-"
+            "loaded records are skipped by the per-batch existence check — "
+            "or finish the run with the previous script version.")
+
+    # Anchor: set once at start of a fresh run; reused on every resume so the
+    # run's target set stays frozen even as Coupa keeps changing.
+    anchor_ts = ds_st.get("anchor_updated_at") if resume else None
+    total     = ds_st.get("total_processed", 0) if resume else 0
+    total_ins = ds_st.get("total_inserted", 0)  if resume else 0
+    part      = dict(ds_st.get("partition") or {}) if resume else {}
+    cursor    = ds_st.get("last_id") if resume else None
+
+    if id_range is not None:
+        wanted = {"id_gt": id_range[0] - 1, "id_lte": id_range[1]}
+        if resume and part and (part.get("id_gt"), part.get("id_lte")) != \
+                (wanted["id_gt"], wanted["id_lte"]):
+            raise SystemExit(
+                f"Dataset '{key}': --id-range {id_range[0]}:{id_range[1]} does "
+                f"not match the range recorded in {state_path} "
+                f"(id_gt={part.get('id_gt')}, id_lte={part.get('id_lte')}). "
+                "Resume without --id-range, or use a different --state-file.")
+        if not resume:
+            part = wanted
+            cursor = id_range[1] + 1
+
+    id_gt = part.get("id_gt")
 
     if anchor_ts is None:
         anchor_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     id_key = cfg.get("id_key", "id")
+    fields = ensure_id_field(cfg["fields"])
 
     print(f"\n── {key}  →  {cfg['collection']} ──")
-    if resume and start_offset:
-        print(f"   resuming at offset {start_offset}  (anchor: {anchor_ts})")
+    if part:
+        print(f"   partition id ({part.get('id_gt')}, {part.get('id_lte')}]")
+    if resume and cursor is not None:
+        print(f"   resuming below id {cursor}  (anchor: {anchor_ts})")
     else:
         print(f"   fresh run, anchor: {anchor_ts}")
 
@@ -800,7 +824,6 @@ def import_dataset(key: str, limit: int | None, resume: bool,
 
     coupa_session = make_coupa_session(cfg["scope"])
 
-    offset  = start_offset
     buffer: list = []
     last_ts = ds_st.get("last_updated_at", "n/a")
     first_fresh_flush = not resume  # gates the >=90%-duplicates NOTICE only
@@ -828,29 +851,31 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         last_ts    = _updated_at(buffer[-1])
         buffer     = []
         state[key] = {
-            "offset":            offset,
             "anchor_updated_at": anchor_ts,
+            "last_id":           cursor,
+            **({"partition": part} if part else {}),
             "last_updated_at":   last_ts,
             "total_processed":   total,
             "total_inserted":    total_ins,
             **({"completed": True} if final else {}),
         }
         save_state(state, state_path)
-        print(f"   flushed → total {total:>7}  offset {offset:>7}  "
+        print(f"   flushed → total {total:>7}  last_id {cursor}  "
               f"last updated_at: {last_ts}")
 
     while True:
-        # Fetch one Coupa page; auto-refresh token on 401
+        # Fetch one keyset page; auto-refresh token on 401 (coupa_call already
+        # absorbed 429/503/conn blips before a 401 can reach here)
         try:
-            page = fetch_page(coupa_session, cfg["endpoint"], cfg["fields"],
-                              offset, anchor_ts)
+            page = fetch_page(coupa_session, cfg["endpoint"], fields,
+                              anchor_ts, before_id=cursor, id_gt=id_gt)
         except requests.HTTPError as exc:
-            if exc.response.status_code == 401:
+            if exc.response is not None and exc.response.status_code == 401:
                 print("   [Coupa token expired — refreshing]")
                 token = get_coupa_token(cfg["scope"])
                 coupa_session.headers["Authorization"] = f"Bearer {token}"
-                page = fetch_page(coupa_session, cfg["endpoint"], cfg["fields"],
-                                  offset, anchor_ts)
+                page = fetch_page(coupa_session, cfg["endpoint"], fields,
+                                  anchor_ts, before_id=cursor, id_gt=id_gt)
             else:
                 raise
 
@@ -881,7 +906,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             page = page[:remaining]
 
         buffer.extend(page)
-        offset += len(page)
+        cursor = page[-1]["id"]   # min id of the (possibly truncated) page
 
         if len(buffer) >= DS_BATCH_SIZE:
             flush()
