@@ -635,7 +635,14 @@ def import_dataset(key: str, limit: int | None, resume: bool,
 
     if not resume:
         preexisting = _collection_count(ds_session, cfg["collection"])
-        if preexisting:
+        if 0 < preexisting < 100:
+            # a handful of leftovers (e.g. a hard-killed smoke run) is not a
+            # loaded collection — don't scare the operator into a wipe
+            print(f"   [NOTE] collection '{cfg['collection']}' already holds {preexisting} "
+                  "document(s) — a few leftovers (e.g. from a hard-killed smoke run) "
+                  "are harmless: every batch is existence-checked, so they dedupe "
+                  "automatically.")
+        elif preexisting >= 100:
             print(f"   [WARN] collection '{cfg['collection']}' already holds {preexisting} "
                   "document(s). Existing records are SKIPPED, never updated — if you are "
                   "re-replicating (e.g. a changed field list), clear or blue-green swap "
@@ -647,12 +654,17 @@ def import_dataset(key: str, limit: int | None, resume: bool,
     buffer: list = []
     last_ts = ds_st.get("last_updated_at", "n/a")
     first_fresh_flush = not resume  # gates the >=90%-duplicates NOTICE only
+    first_page        = True        # gates the misconfigured-id_key fail-fast
 
     def flush(*, final: bool = False) -> None:
         """Insert buffered records into Data Storage and save state."""
         nonlocal total, total_ins, last_ts, buffer, first_fresh_flush
         if not buffer:
             return
+        missing_ids = sum(1 for r in buffer if not r.get(id_key))
+        if missing_ids:
+            print(f"   [WARN] {missing_ids} record(s) missing/falsy '{id_key}' "
+                  "in this batch — inserted without dedup protection")
         result = ds_call_with_heal(
             lambda: insert_batch(ds_session, cfg["collection"], buffer, id_key),
             ds_session, username, password)
@@ -699,6 +711,15 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 save_state(state, state_path)
             print(f"   complete — {total} records total")
             break
+
+        # Fail fast on a misconfigured id_key: a typo'd key would otherwise
+        # blind-load the whole dataset with dedup never engaging.
+        if first_page and not resume and all(not r.get(id_key) for r in page):
+            raise SystemExit(
+                f"Dataset '{key}': every record on the first page is missing a "
+                f"usable '{id_key}' value — id_key is likely misconfigured for "
+                "this dataset (check the config; dedup would never engage)")
+        first_page = False
 
         # Honour --limit
         if limit is not None:
@@ -993,6 +1014,17 @@ def supervise(keys: list[str], args) -> int:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────
 
+def _smoke_arg(value: str) -> int:
+    """--smoke N parser with a friendly hint for the '--smoke users' footgun
+    (nargs='?' would otherwise eat a dataset name as an invalid int)."""
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a record count, got {value!r} — to smoke-test a "
+            f"dataset use '--smoke --dataset {value}'") from None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bulk-import Coupa master data into Rossum Data Storage."
@@ -1024,7 +1056,7 @@ def main() -> None:
         "--smoke",
         nargs="?",
         const=1,
-        type=int,
+        type=_smoke_arg,
         default=None,
         metavar="N",
         help="Self-cleaning smoke test: insert the newest N records per "
@@ -1095,6 +1127,12 @@ def main() -> None:
     if args.smoke is not None and args.resume:
         raise SystemExit("--smoke cannot be combined with --resume "
                          "(smoke runs never read or write state files)")
+    if args.smoke is not None and args.count:
+        raise SystemExit("--smoke cannot be combined with --count "
+                         "(pick one mode)")
+    if args.smoke is not None and args.limit is not None:
+        raise SystemExit("--smoke cannot be combined with --limit "
+                         "(smoke carries its own record count: --smoke N)")
 
     load_config(Path(args.config))
 

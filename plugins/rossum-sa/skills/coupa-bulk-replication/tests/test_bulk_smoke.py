@@ -285,6 +285,33 @@ def test_main_rejects_smoke_with_resume(monkeypatch):
     assert "--resume" in str(exc.value)
 
 
+def test_main_rejects_smoke_with_count(monkeypatch):
+    monkeypatch.setattr(sys, "argv",
+                        ["coupa_bulk_import.py", "--smoke", "--count"])
+    with pytest.raises(SystemExit) as exc:
+        cbi.main()
+    assert "--smoke" in str(exc.value)
+    assert "--count" in str(exc.value)
+
+
+def test_main_rejects_smoke_with_limit(monkeypatch):
+    monkeypatch.setattr(sys, "argv",
+                        ["coupa_bulk_import.py", "--smoke", "2", "--limit", "5"])
+    with pytest.raises(SystemExit) as exc:
+        cbi.main()
+    assert "--smoke" in str(exc.value)
+    assert "--limit" in str(exc.value)
+
+
+def test_smoke_dataset_name_footgun_gets_friendly_hint(monkeypatch, capsys):
+    # nargs='?' + int type would eat the dataset name: '--smoke users'
+    monkeypatch.setattr(sys, "argv", ["coupa_bulk_import.py", "--smoke", "users"])
+    with pytest.raises(SystemExit):
+        cbi.main()
+    err = capsys.readouterr().err
+    assert "--smoke --dataset users" in err
+
+
 def test_main_rejects_smoke_larger_than_batch_size(monkeypatch, tmp_path):
     path = write_config(tmp_path, ds_batch_size=2)
     monkeypatch.setattr(sys, "argv",

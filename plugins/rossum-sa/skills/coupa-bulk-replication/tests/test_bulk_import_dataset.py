@@ -1,3 +1,5 @@
+import pytest
+
 from bulk_helpers import FakeDS, make_records, run_import
 
 import coupa_bulk_import as cbi
@@ -35,11 +37,22 @@ def test_resume_old_state_without_total_inserted(monkeypatch, tmp_path):
     assert st["anchor_updated_at"] == "2026-07-10T00:00:00Z"  # anchor reused
 
 
-def test_fresh_run_on_nonempty_collection_warns(monkeypatch, tmp_path, capsys):
-    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=7)
+def test_fresh_run_on_loaded_collection_warns(monkeypatch, tmp_path, capsys):
+    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=100)
     out = capsys.readouterr().out
     assert "[WARN]" in out
+    assert "already holds 100" in out
+    assert "SKIPPED, never updated" in out
+
+
+def test_fresh_run_on_handful_of_leftovers_notes_not_warns(monkeypatch, tmp_path, capsys):
+    # a hard-killed smoke's leftovers must not read as "clear the collection"
+    run_import(monkeypatch, tmp_path, [make_records(1, 2, 3), []], db_count=7)
+    out = capsys.readouterr().out
+    assert "[WARN]" not in out
+    assert "[NOTE]" in out
     assert "already holds 7" in out
+    assert "dedupe automatically" in out
 
 
 def test_fresh_run_on_empty_collection_no_warning(monkeypatch, tmp_path, capsys):
@@ -91,9 +104,42 @@ def test_notice_only_checked_on_first_flush(monkeypatch, tmp_path, capsys):
 def test_id_key_from_config_threaded_to_insert_batch(monkeypatch, tmp_path):
     datasets = {"users": {"endpoint": "api/users", "collection": "users",
                           "id_key": "number", "scope": "s", "fields": ["number"]}}
-    _, calls = run_import(monkeypatch, tmp_path, [make_records(1), []],
+    page = [{"number": 1, "updated_at": "t"}]
+    _, calls = run_import(monkeypatch, tmp_path, [page, []],
                           datasets=datasets)
     assert calls["id_keys"] == ["number"]
+
+
+# ── missing/falsy id_key observability ───────────────────────────────────────
+
+def test_flush_warns_about_missing_id_records(monkeypatch, tmp_path, capsys):
+    page = make_records(1) + [{"id": None, "updated_at": "t"},
+                              {"updated_at": "t"}]
+    run_import(monkeypatch, tmp_path, [page, []])
+    out = capsys.readouterr().out
+    assert "[WARN] 2 record(s) missing/falsy 'id'" in out
+
+
+def test_fresh_run_fails_fast_on_all_falsy_first_page(monkeypatch, tmp_path):
+    # a typo'd id_key would otherwise blind-load the whole dataset
+    page = [{"identifier": 1, "updated_at": "t"},
+            {"identifier": 2, "updated_at": "t"}]
+    with pytest.raises(SystemExit) as exc:
+        run_import(monkeypatch, tmp_path, [page, []])
+    assert "id_key" in str(exc.value)
+    assert "'id'" in str(exc.value)
+    assert "users" in str(exc.value)
+
+
+def test_resumed_run_does_not_fail_fast_on_falsy_page(monkeypatch, tmp_path, capsys):
+    old = {"users": {"offset": 5, "anchor_updated_at": "2026-07-10T00:00:00Z",
+                     "last_updated_at": "x", "total_processed": 5,
+                     "total_inserted": 5}}
+    page = [{"identifier": 6, "updated_at": "t"}]
+    saved, _ = run_import(monkeypatch, tmp_path, [page, []],
+                          resume=True, state=old)
+    assert saved["users"]["completed"] is True     # no SystemExit
+    assert "missing/falsy 'id'" in capsys.readouterr().out
 
 
 # ── end-to-end dedup pins (real insert_batch against a stateful DS stub) ────
