@@ -1489,6 +1489,31 @@ def main() -> None:
         help="Relaunch attempts per dataset before giving up on it (default: 3)",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override every selected dataset's config workers value "
+             "(datasets.<key>.workers, default 1). Effective workers > 1 "
+             "require --supervise",
+    )
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=None,
+        metavar="R",
+        help="Max Coupa requests/second for this process (default: "
+             "coupa.max_requests_per_second from the config, 20). The "
+             "supervisor sets this per child automatically",
+    )
+    parser.add_argument(
+        "--id-range",
+        default=None,
+        metavar="LO:HI",
+        help="Advanced: crawl only Coupa ids in [LO, HI] in the foreground "
+             "(debugging / manual splits). Single dataset only",
+    )
+    parser.add_argument(
         "--no-unique-index-ok",
         action="store_true",
         help="Proceed with a full run even when the collection lacks the "
@@ -1529,6 +1554,33 @@ def main() -> None:
         raise SystemExit("--smoke cannot be combined with --limit "
                          "(smoke carries its own record count: --smoke N)")
 
+    id_range = None
+    if args.id_range:
+        if args.supervise:
+            raise SystemExit("--id-range cannot be combined with --supervise "
+                             "(the supervisor plans partitions itself)")
+        try:
+            lo, hi = (int(x) for x in args.id_range.split(":", 1))
+        except ValueError:
+            raise SystemExit(f"--id-range expects LO:HI integers, got "
+                             f"{args.id_range!r}") from None
+        if lo > hi:
+            raise SystemExit(f"--id-range LO must be <= HI (got {lo}:{hi})")
+        id_range = (lo, hi)
+
+    if args.workers is not None:
+        if args.probe:
+            raise SystemExit("--workers cannot be combined with --probe "
+                             "(the probe only suggests worker counts)")
+        if args.smoke is not None:
+            raise SystemExit("--workers cannot be combined with --smoke")
+        if args.workers > 1 and not args.supervise:
+            raise SystemExit("--workers > 1 requires --supervise "
+                             "(partition children need a babysitter — "
+                             "see SKILL.md Phase 3)")
+        if args.workers < 1:
+            raise SystemExit("--workers must be >= 1")
+
     load_config(Path(args.config))
 
     if not args.probe and not ROSSUM_TOKEN and not (args.username and args.password):
@@ -1545,6 +1597,20 @@ def main() -> None:
             "existence-checked, so they dedupe automatically)")
 
     keys = resolve_dataset_keys(args.dataset, DATASETS)
+
+    global LIMITER
+    LIMITER = RateLimiter(args.rate if args.rate else COUPA_MAX_RPS)
+
+    if not args.supervise and args.workers is None:
+        hot = [k for k in keys if int(DATASETS[k].get("workers", 1)) > 1]
+        if hot and args.smoke is None and not args.probe:
+            raise SystemExit(
+                f"Dataset(s) {', '.join(hot)} have config workers > 1 — "
+                "partitioned runs require --supervise (or pass --workers 1 "
+                "to force a serial run)")
+
+    if id_range is not None and len(keys) != 1:
+        raise SystemExit("--id-range requires a single explicit --dataset")
 
     if args.supervise:
         raise SystemExit(supervise(keys, args))
@@ -1589,7 +1655,8 @@ def main() -> None:
     for key in keys:
         import_dataset(key, args.limit, args.resume, state, ds_session, state_path,
                        username=args.username, password=args.password,
-                       no_unique_index_ok=args.no_unique_index_ok)
+                       no_unique_index_ok=args.no_unique_index_ok,
+                       id_range=id_range)
 
     print("\nDone.")
 
