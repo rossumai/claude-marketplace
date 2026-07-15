@@ -231,6 +231,45 @@ def get_coupa_token(scope: str) -> str:
     return resp.json()["access_token"]
 
 
+def make_coupa_session(scope: str) -> requests.Session:
+    """Authed Coupa API session — single factory for import, smoke, count."""
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({
+        "Authorization": f"Bearer {get_coupa_token(scope)}",
+        "Accept":        "application/json",
+    })
+    return session
+
+
+def ds_call_with_heal(call, ds_session: requests.Session,
+                      username: str | None = None,
+                      password: str | None = None):
+    """Run a DS-touching callable; on HTTP 401 refresh the token once, retry.
+
+    Prefers --username/--password login; otherwise re-reads rossum.token
+    from the config file (a fresh token dropped into the config heals
+    running jobs).  Shared by import flushes and every smoke DS call —
+    a smoke run must not leave residue because its final delete 401'd.
+    """
+    try:
+        return call()
+    except requests.HTTPError as exc:
+        if exc.response.status_code != 401:
+            raise
+        if username and password:
+            print("   [Rossum token expired — refreshing]")
+            new_token = refresh_rossum_token(username, password)
+        else:
+            print("   [Rossum 401 — re-reading token from config]")
+            new_token = reload_config_token()
+            if not new_token:
+                raise
+        ds_session.headers["Authorization"] = f"Bearer {new_token}"
+        return call()  # retry once — insert_batch re-runs its existence
+        #                check, so records persisted before the 401 dedupe
+
+
 # ── Coupa pagination ─────────────────────────────────────────────────────────────
 
 def fetch_page(session: requests.Session, endpoint: str, fields: list,
@@ -280,7 +319,13 @@ _RETRYABLE = (
     requests.exceptions.Timeout,
 )
 
-BatchResult = namedtuple("BatchResult", "inserted duplicates failed")
+# inserted_values: id_key values of records THIS call actually landed —
+# smoke cleanup deletes exactly these, never a concurrent writer's copy.
+# Conservative on ambiguity (unattributable write_errors → empty): smoke
+# residue is a better failure mode than deleting someone else's record.
+BatchResult = namedtuple("BatchResult",
+                         "inserted duplicates failed inserted_values",
+                         defaults=([],))
 
 _DUPLICATE_KEY_CODE = 11000
 
@@ -378,17 +423,19 @@ def _collection_count(session: requests.Session, collection: str) -> int:
 
 
 def _insert_singly(session: requests.Session, collection: str, docs: list,
-                   id_key: str) -> tuple[int, int, int]:
+                   id_key: str) -> tuple[int, int, int, list]:
     """Fallback for an opaque batch 400: insert per record, classifying 400s.
 
-    Returns (inserted, duplicates, failed).  A single-record 400 is not
-    necessarily a poison document: the unique-index layer rejects a RACING
-    duplicate (written by a concurrent writer after the batch's existence
-    check) with the same opaque 400.  A post-hoc existence check on the
-    record's id decides — present → duplicate (skipped, accounting stays
-    correct), absent → poison (failed, warned).
+    Returns (inserted, duplicates, failed, ok_values).  A single-record 400
+    is not necessarily a poison document: the unique-index layer rejects a
+    RACING duplicate (written by a concurrent writer after the batch's
+    existence check) with the same opaque 400.  A post-hoc existence check
+    on the record's id decides — present → duplicate (skipped, accounting
+    stays correct), absent → poison (failed, warned).  ok_values carries
+    the truthy id values of the singles that actually landed.
     """
     inserted = duplicates = failed = 0
+    ok_values: list = []
     for doc in docs:
         resp = session.post(
             f"{ROSSUM_DS_URL}/data/insert_many",
@@ -405,13 +452,17 @@ def _insert_singly(session: requests.Session, collection: str, docs: list,
                   f"{resp.text[:200]}")
             continue
         resp.raise_for_status()
-        inserted += len((resp.json().get("result") or {}).get("inserted_ids") or [])
-    return inserted, duplicates, failed
+        landed = len((resp.json().get("result") or {}).get("inserted_ids") or [])
+        inserted += landed
+        if landed and doc.get(id_key):
+            ok_values.append(doc[id_key])
+    return inserted, duplicates, failed, ok_values
 
 
 def insert_batch(session: requests.Session, collection: str, records: list,
                  id_key: str = "id", _retries: int = 5) -> BatchResult:
-    """Check-then-insert — returns BatchResult(inserted, duplicates, failed).
+    """Check-then-insert — returns BatchResult(inserted, duplicates, failed,
+    inserted_values).
 
     Records keep their auto-generated Mongo _id (structurally identical to
     records written by the Coupa import extension); dedup keys on the Coupa
@@ -463,7 +514,7 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 if duplicates:
                     print(f"   {duplicates} duplicate(s) skipped "
                           "(expected after resume or smoke test)")
-                return BatchResult(recovered, duplicates, 0)
+                return BatchResult(recovered, duplicates, 0, [])
             resp = session.post(
                 f"{ROSSUM_DS_URL}/data/insert_many",
                 json={"collectionName": collection, "documents": to_insert,
@@ -474,15 +525,15 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 # duplicates are pre-filtered — an opaque batch 400 means poison
                 # doc(s) or a racing duplicate rejected by the unique index;
                 # _insert_singly isolates and classifies per record
-                ins, late_dups, failed = _insert_singly(session, collection,
-                                                        to_insert, id_key)
+                ins, late_dups, failed, ok_values = _insert_singly(
+                    session, collection, to_insert, id_key)
                 duplicates += late_dups
                 if duplicates:
                     print(f"   {duplicates} duplicate(s) skipped "
                           "(expected after resume or smoke test)")
                 if failed:
                     print(f"   [WARN] {failed} document(s) failed in this batch (isolated per-record)")
-                return BatchResult(ins + recovered, duplicates, failed)
+                return BatchResult(ins + recovered, duplicates, failed, ok_values)
             resp.raise_for_status()
             body         = resp.json().get("result", {}) or {}
             inserted     = len(body.get("inserted_ids") or [])
@@ -490,6 +541,19 @@ def insert_batch(session: requests.Session, collection: str, records: list,
             late_dups    = sum(1 for e in write_errors if _is_duplicate_error(e))
             failed       = max(len(to_insert) - inserted - late_dups, 0)
             duplicates  += late_dups
+            if not write_errors:
+                ok_values = [d[id_key] for d in to_insert if d.get(id_key)]
+            else:
+                # attribute errors to documents only when every error carries
+                # a usable index; otherwise stay conservative (empty) — smoke
+                # residue beats deleting a record this call never landed
+                bad = {e.get("index") for e in write_errors
+                       if isinstance(e, dict) and isinstance(e.get("index"), int)}
+                if len(bad) == len(write_errors):
+                    ok_values = [d[id_key] for i, d in enumerate(to_insert)
+                                 if i not in bad and d.get(id_key)]
+                else:
+                    ok_values = []
             if duplicates:
                 print(f"   {duplicates} duplicate(s) skipped "
                       "(expected after resume or smoke test)")
@@ -497,7 +561,7 @@ def insert_batch(session: requests.Session, collection: str, records: list,
                 non_dup = [e for e in write_errors if not _is_duplicate_error(e)]
                 print(f"   [WARN] {failed} document(s) failed in this batch. "
                       f"First error: {non_dup[0] if non_dup else 'n/a'}")
-            return BatchResult(inserted + recovered, duplicates, failed)
+            return BatchResult(inserted + recovered, duplicates, failed, ok_values)
         except _RETRYABLE as exc:
             if attempt == _retries:
                 raise
@@ -577,13 +641,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                   "re-replicating (e.g. a changed field list), clear or blue-green swap "
                   "the collection first (see SKILL.md).")
 
-    token         = get_coupa_token(cfg["scope"])
-    coupa_session = requests.Session()
-    coupa_session.verify = False
-    coupa_session.headers.update({
-        "Authorization": f"Bearer {token}",
-        "Accept":        "application/json",
-    })
+    coupa_session = make_coupa_session(cfg["scope"])
 
     offset  = start_offset
     buffer: list = []
@@ -595,23 +653,9 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         nonlocal total, total_ins, last_ts, buffer, first_fresh_flush
         if not buffer:
             return
-        try:
-            result = insert_batch(ds_session, cfg["collection"], buffer, id_key)
-        except requests.HTTPError as exc:
-            if exc.response.status_code != 401:
-                raise
-            if username and password:
-                print("   [Rossum token expired — refreshing]")
-                new_token = refresh_rossum_token(username, password)
-            else:
-                print("   [Rossum 401 — re-reading token from config]")
-                new_token = reload_config_token()
-                if not new_token:
-                    raise
-            ds_session.headers["Authorization"] = f"Bearer {new_token}"
-            # retry once — insert_batch re-runs its existence check, so
-            # records persisted before the 401 dedupe instead of doubling
-            result = insert_batch(ds_session, cfg["collection"], buffer, id_key)
+        result = ds_call_with_heal(
+            lambda: insert_batch(ds_session, cfg["collection"], buffer, id_key),
+            ds_session, username, password)
         batch_size = len(buffer)
         total     += batch_size
         total_ins += result.inserted
@@ -677,15 +721,23 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             break
 
 
-def smoke_dataset(key: str, n: int, ds_session: requests.Session) -> None:
+def smoke_dataset(key: str, n: int, ds_session: requests.Session,
+                  username: str | None = None,
+                  password: str | None = None) -> bool:
     """Self-cleaning smoke test: insert the newest n records, verify, delete.
 
-    Never reads or writes a state file.  insert_batch's existence check
-    means a re-run after a hard-killed smoke does not double-insert; the
-    delete filter carries only the id values this run actually added
-    (pre-existing records are never deleted).  Records with a missing/falsy
-    id_key value are excluded from the delete filter — they stay behind as
-    residue and are warned about.
+    Returns True only when nothing failed: no failed inserts, every record
+    this run added was found on verification, and the cleanup deleted
+    exactly that many — so `--smoke && full-run` is a real gate.
+
+    Never reads or writes a state file.  The delete filter carries exactly
+    the id values THIS run's insert landed (BatchResult.inserted_values) —
+    never a concurrent writer's copy — with the pre-insert snapshot kept as
+    an extra intersection guard.  insert_batch's existence check means a
+    re-run after a hard-killed smoke does not double-insert.  Records with
+    a missing/falsy id_key value are excluded from the delete filter — they
+    stay behind as residue and are warned about.  Every DS call is wrapped
+    in the shared 401 heal, so an expiring token cannot leave residue.
     """
     cfg        = DATASETS[key]
     id_key     = cfg.get("id_key", "id")
@@ -694,13 +746,10 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session) -> None:
 
     print(f"\n── smoke {key}  →  {collection} ──")
 
-    token         = get_coupa_token(cfg["scope"])
-    coupa_session = requests.Session()
-    coupa_session.verify = False
-    coupa_session.headers.update({
-        "Authorization": f"Bearer {token}",
-        "Accept":        "application/json",
-    })
+    def heal(call):
+        return ds_call_with_heal(call, ds_session, username, password)
+
+    coupa_session = make_coupa_session(cfg["scope"])
 
     records: list = []
     offset = 0
@@ -714,7 +763,7 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session) -> None:
     records = records[:n]
     if not records:
         print("   Coupa returned no records — nothing to smoke-test")
-        return
+        return True
 
     values = [r[id_key] for r in records if r.get(id_key)]
     if len(values) < len(records):
@@ -722,36 +771,53 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session) -> None:
               f"missing/falsy '{id_key}' — inserted but excluded from the "
               "smoke delete filter (residue stays behind)")
 
-    # Snapshot BEFORE inserting: only values absent now were added by this
-    # smoke run and may be deleted afterwards.
-    pre_existing = (_existing_ids(ds_session, collection, id_key, values)
+    # Snapshot BEFORE inserting — belt on top of inserted_values: nothing
+    # that pre-existed this run may ever enter the delete filter.
+    pre_existing = (heal(lambda: _existing_ids(ds_session, collection,
+                                               id_key, values))
                     if values else set())
-    result = insert_batch(ds_session, collection, records, id_key)
+    result = heal(lambda: insert_batch(ds_session, collection, records, id_key))
     print(f"   inserted {result.inserted}, duplicates {result.duplicates}, "
           f"failed {result.failed}")
+    ok = result.failed == 0
+    if not ok:
+        print(f"   [WARN] smoke insert had {result.failed} failure(s)")
 
-    to_delete = [v for v in values if v not in pre_existing]
+    to_delete = [v for v in result.inserted_values if v not in pre_existing]
     if to_delete:
-        found   = _existing_ids(ds_session, collection, id_key, to_delete)
+        found   = heal(lambda: _existing_ids(ds_session, collection,
+                                             id_key, to_delete))
         missing = len(to_delete) - len(found)
         if missing:
             print(f"   [WARN] {missing} inserted record(s) not found on verification")
-        resp = ds_session.post(
-            f"{ROSSUM_DS_URL}/data/delete_many",
-            # DS delete endpoints take "filter" — find/aggregate take "query"
-            # (live-verified asymmetry; a 422 usually means the wrong key).
-            json={"collectionName": collection,
-                  "filter": {id_key: {"$in": to_delete}}},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        deleted = (resp.json().get("result") or {}).get("deleted_count", "n/a")
+            ok = False
+
+        def _delete():
+            resp = ds_session.post(
+                f"{ROSSUM_DS_URL}/data/delete_many",
+                # DS delete endpoints take "filter" — find/aggregate take
+                # "query"/"pipeline" (live-verified asymmetry; a 422 usually
+                # means the wrong key).
+                json={"collectionName": collection,
+                      "filter": {id_key: {"$in": to_delete}}},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return resp
+
+        resp = heal(_delete)
+        deleted = (resp.json().get("result") or {}).get("deleted_count")
         print(f"   smoke cleanup: deleted {deleted} record(s)")
+        if deleted != len(to_delete):
+            print(f"   [WARN] cleanup shortfall: expected to delete "
+                  f"{len(to_delete)}, deleted {deleted}")
+            ok = False
     else:
         print("   smoke cleanup: nothing to delete "
               "(no records added by this run)")
-    remaining = _collection_count(ds_session, collection)
+    remaining = heal(lambda: _collection_count(ds_session, collection))
     print(f"   collection '{collection}' now holds {remaining} document(s)")
+    return ok
 
 
 def count_datasets(keys: list[str], state: dict) -> None:
@@ -763,11 +829,7 @@ def count_datasets(keys: list[str], state: dict) -> None:
         ds_st = state.get(key) or load_state(default_state_path(key, [key], None)).get(key, {})
         anchor = ds_st.get("anchor_updated_at") \
             or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        token = get_coupa_token(cfg["scope"])
-        session = requests.Session()
-        session.verify = False
-        session.headers.update({"Authorization": f"Bearer {token}",
-                                "Accept": "application/json"})
+        session = make_coupa_session(cfg["scope"])
 
         def probe(offset: int) -> bool:
             return bool(fetch_page(session, cfg["endpoint"], ["id"],
@@ -1036,6 +1098,12 @@ def main() -> None:
 
     load_config(Path(args.config))
 
+    if not args.count and not ROSSUM_TOKEN and not (args.username and args.password):
+        raise SystemExit(
+            "rossum.token is empty in the config and no --username/--password "
+            "given — DS writes need one of them (see SKILL.md Phase 0 token "
+            "strategy; --count is Coupa-only and exempt)")
+
     if args.smoke is not None and args.smoke > DS_BATCH_SIZE:
         raise SystemExit(
             f"--smoke {args.smoke} exceeds ds_batch_size ({DS_BATCH_SIZE}) — "
@@ -1056,13 +1124,24 @@ def main() -> None:
         return
 
     if args.smoke is not None:
+        token = ROSSUM_TOKEN
+        if not token:
+            # credentials-only config: mint a token up front instead of
+            # sending "Bearer " and dying on the first DS call
+            token = refresh_rossum_token(args.username, args.password)
         ds_session = requests.Session()
         ds_session.headers.update({
-            "Authorization": f"Bearer {ROSSUM_TOKEN}",
+            "Authorization": f"Bearer {token}",
             "Content-Type":  "application/json",
         })
-        for key in keys:
-            smoke_dataset(key, args.smoke, ds_session)
+        results = {key: smoke_dataset(key, args.smoke, ds_session,
+                                      username=args.username,
+                                      password=args.password)
+                   for key in keys}
+        failed_keys = [k for k, ok in results.items() if not ok]
+        if failed_keys:
+            raise SystemExit(f"\nSmoke test FAILED for: {', '.join(failed_keys)} "
+                             "— see [WARN] lines above. Exit 1.")
         print("\nSmoke test done.")
         return
 

@@ -61,7 +61,8 @@ def _check_calls(session):
 def test_all_new_batch_inserts_everything():
     s = StubSession([_resp([1, 2, 3])], existing=set())
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
-    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0)
+    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0,
+                                inserted_values=[1, 2, 3])
     inserts = _insert_calls(s)
     assert len(inserts) == 1
     assert len(inserts[0][1]["documents"]) == 3
@@ -106,7 +107,8 @@ def test_documents_inserted_without_underscore_id():
 def test_partial_duplicate_only_inserts_new_records(capsys):
     s = StubSession([_resp([2])], existing={1})
     r = cbi.insert_batch(s, "c", _recs(1, 2))
-    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0,
+                                inserted_values=[2])
     inserts = _insert_calls(s)
     assert len(inserts) == 1
     assert inserts[0][1]["documents"] == [{"id": 2}]
@@ -118,7 +120,8 @@ def test_partial_duplicate_only_inserts_new_records(capsys):
 def test_all_duplicate_skips_insert_entirely(capsys):
     s = StubSession([], existing={1, 2, 3})
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
-    assert r == cbi.BatchResult(inserted=0, duplicates=3, failed=0)
+    assert r == cbi.BatchResult(inserted=0, duplicates=3, failed=0,
+                                inserted_values=[])
     assert len(s.calls) == 1  # only the check call — no insert_many at all
     out = capsys.readouterr().out
     assert "duplicate(s) skipped" in out
@@ -128,7 +131,8 @@ def test_records_without_id_are_never_filtered():
     s = StubSession([_resp([1, 2])], existing=set())
     records = [{"id": 1}, {"no_id": True}]
     r = cbi.insert_batch(s, "c", records)
-    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=0)
+    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=0,
+                                inserted_values=[1])
     checks = _check_calls(s)
     assert len(checks) == 1
     assert checks[0][1]["pipeline"][0]["$match"]["id"]["$in"] == [1]
@@ -142,7 +146,8 @@ def test_falsy_ids_never_enter_dedup_queries():
     s = StubSession([_resp([1, 2, 3, 4])], existing=set())
     records = [{"id": 1}, {"id": None}, {"id": ""}, {"id": 0}]
     r = cbi.insert_batch(s, "c", records)
-    assert r == cbi.BatchResult(inserted=4, duplicates=0, failed=0)
+    assert r == cbi.BatchResult(inserted=4, duplicates=0, failed=0,
+                                inserted_values=[1])
     assert _check_calls(s)[0][1]["pipeline"][0]["$match"]["id"]["$in"] == [1]
     assert _insert_calls(s)[0][1]["documents"] == records
 
@@ -151,14 +156,16 @@ def test_all_falsy_batch_skips_check_entirely():
     s = StubSession([_resp([1, 2])], existing=set())
     records = [{"id": None}, {"id": 0}]
     r = cbi.insert_batch(s, "c", records)
-    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=0)
+    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=0,
+                                inserted_values=[])
     assert _check_calls(s) == []      # nothing usable to query on
 
 
 def test_repeated_id_within_batch_counts_as_duplicate():
     s = StubSession([_resp([1])], existing=set())
     r = cbi.insert_batch(s, "c", [{"id": 1, "v": "a"}, {"id": 1, "v": "b"}])
-    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0,
+                                inserted_values=[1])
     inserts = _insert_calls(s)
     assert len(inserts) == 1
     assert inserts[0][1]["documents"] == [{"id": 1, "v": "a"}]
@@ -170,7 +177,9 @@ def test_duplicates_by_code_are_informational(capsys):
     errs = [{"code": 11000, "errmsg": "duplicate key"}] * 2
     s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
-    assert r == cbi.BatchResult(inserted=1, duplicates=2, failed=0)
+    # write_errors carry no usable index -> conservative empty inserted_values
+    assert r == cbi.BatchResult(inserted=1, duplicates=2, failed=0,
+                                inserted_values=[])
     out = capsys.readouterr().out
     assert "duplicate(s) skipped" in out
     assert "[WARN]" not in out
@@ -187,24 +196,37 @@ def test_real_failures_keep_warn(capsys):
     errs = [{"code": 11000, "errmsg": "dup"}, {"code": 2, "errmsg": "too large"}]
     s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
-    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=1)
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=1,
+                                inserted_values=[])
     out = capsys.readouterr().out
     assert "[WARN] 1 document(s) failed" in out
     assert "too large" in out
+
+
+def test_write_errors_with_indices_attribute_inserted_values():
+    # every error carries a usable index → the failed doc (idx 1) is
+    # excluded from inserted_values, the rest are safe to smoke-delete
+    errs = [{"code": 2, "errmsg": "too large", "index": 1}]
+    s = StubSession([_resp([1, 3], errs)], existing=set())
+    r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
+    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=1,
+                                inserted_values=[1, 3])
 
 
 def test_bare_string_write_error_duplicate():
     errs = ["E11000 duplicate key error"]
     s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", _recs(1, 2))
-    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0,
+                                inserted_values=[])
 
 
 def test_bare_string_write_error_non_duplicate():
     errs = ["boom"]
     s = StubSession([_resp([1], errs)], existing=set())
     r = cbi.insert_batch(s, "c", _recs(1, 2))
-    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1)
+    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1,
+                                inserted_values=[])
 
 
 # ── opaque batch 400 after dedupe → per-record poison-doc isolation ─────────
@@ -218,7 +240,8 @@ def test_batch_400_isolates_poison_doc(capsys):
         existing=set(),
     )
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
-    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=1)
+    assert r == cbi.BatchResult(inserted=2, duplicates=0, failed=1,
+                                inserted_values=[1, 3])
     out = capsys.readouterr().out
     assert "poison document skipped (id=2)" in out
     assert "[WARN] 1 document(s) failed in this batch (isolated per-record)" in out
@@ -229,7 +252,8 @@ def test_batch_400_all_singles_succeed():
                              status=400)
     s = StubSession([batch_400, _resp([1]), _resp([2]), _resp([3])], existing=set())
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
-    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0)
+    assert r == cbi.BatchResult(inserted=3, duplicates=0, failed=0,
+                                inserted_values=[1, 2, 3])
 
 
 def test_batch_400_fallback_401_raises():
@@ -258,7 +282,8 @@ def test_batch_400_single_400_with_existing_id_is_racing_duplicate(capsys):
         check_queue=[_check_found(), _check_found(2)],
     )
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
-    assert r == cbi.BatchResult(inserted=2, duplicates=1, failed=0)
+    assert r == cbi.BatchResult(inserted=2, duplicates=1, failed=0,
+                                inserted_values=[1, 3])
     out = capsys.readouterr().out
     assert "poison" not in out
     assert "1 duplicate(s) skipped" in out
@@ -273,7 +298,8 @@ def test_batch_400_single_400_with_falsy_id_stays_poison(capsys):
         check_queue=[_check_found()],   # no classification check for a falsy id
     )
     r = cbi.insert_batch(s, "c", [{"id": 1}, {"id": None}])
-    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1)
+    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=1,
+                                inserted_values=[1])
     assert "poison document skipped (id=None)" in capsys.readouterr().out
 
 
@@ -282,7 +308,8 @@ def test_batch_400_with_duplicates_still_reports_them(capsys):
                              status=400)
     s = StubSession([batch_400, _resp([2])], existing={1})
     r = cbi.insert_batch(s, "c", _recs(1, 2))
-    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0)
+    assert r == cbi.BatchResult(inserted=1, duplicates=1, failed=0,
+                                inserted_values=[2])
     out = capsys.readouterr().out
     assert "1 duplicate(s) skipped" in out
 
@@ -310,7 +337,10 @@ def test_retry_recovers_partially_applied_insert(monkeypatch):
     )
     records = _recs(1, 2, 3, 4, 5)
     r = cbi.insert_batch(s, "c", records)
-    assert r == cbi.BatchResult(inserted=5, duplicates=0, failed=0)
+    # recovered records (1-3) are NOT in inserted_values: only the final
+    # successful attempt's landings are safe for smoke deletion
+    assert r == cbi.BatchResult(inserted=5, duplicates=0, failed=0,
+                                inserted_values=[4, 5])
     inserts = _insert_calls(s)
     assert len(inserts) == 2  # attempt 1 (raised) + attempt 2 (succeeded)
     assert inserts[-1][1]["documents"] == [{"id": 4}, {"id": 5}]
@@ -326,7 +356,8 @@ def test_retry_does_not_miscount_preexisting_as_recovered(monkeypatch):
     )
     r = cbi.insert_batch(s, "c", _recs(1, 2, 3))
     # 1 = pre-existing duplicate; 2 = recovered (persisted by attempt 1); 3 = inserted
-    assert r == cbi.BatchResult(inserted=2, duplicates=1, failed=0)
+    assert r == cbi.BatchResult(inserted=2, duplicates=1, failed=0,
+                                inserted_values=[3])
 
 
 def test_transient_error_on_check_retries_whole_flow(monkeypatch):
@@ -335,6 +366,7 @@ def test_transient_error_on_check_retries_whole_flow(monkeypatch):
                     check_queue=[requests.exceptions.ConnectionError("boom"),
                                  _check_found()])
     r = cbi.insert_batch(s, "c", _recs(1))
-    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=0)
+    assert r == cbi.BatchResult(inserted=1, duplicates=0, failed=0,
+                                inserted_values=[1])
     assert len(_check_calls(s)) == 2
     assert len(_insert_calls(s)) == 1
