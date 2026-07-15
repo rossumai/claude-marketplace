@@ -1205,11 +1205,14 @@ def read_last_log_line(path: Path) -> str:
 
 def build_child_cmd(dataset: str, config: str, *, resume: bool,
                     username: str | None, password: str | None,
-                    no_unique_index_ok: bool = False) -> list[str]:
-    """Command line for one supervised child (single dataset, own state file).
+                    no_unique_index_ok: bool = False,
+                    state_file=None, rate: float | None = None) -> list[str]:
+    """Command line for one supervised child (single dataset OR partition).
 
     No --limit: --supervise + --limit is refused in main() (a limit-stopped
-    child never writes the completed flag).
+    child never writes the completed flag).  Partition children get an
+    explicit --state-file (their pre-seeded plan) and are always launched
+    with --resume.
     """
     cmd = [sys.executable, "-u", str(Path(__file__).resolve()),
            "--dataset", dataset, "--config", config]
@@ -1221,38 +1224,112 @@ def build_child_cmd(dataset: str, config: str, *, resume: bool,
         cmd += ["--password", password]
     if no_unique_index_ok:
         cmd.append("--no-unique-index-ok")
+    if state_file is not None:
+        cmd += ["--state-file", str(state_file)]
+    if rate is not None:
+        cmd += ["--rate", str(rate)]
     return cmd
 
 
+def effective_workers(key: str, args_workers: int | None) -> int:
+    """CLI --workers overrides the per-dataset config value (default 1)."""
+    return args_workers if args_workers is not None else \
+        int(DATASETS.get(key, {}).get("workers", 1))
+
+
+def build_units(keys: list[str], args) -> list[dict]:
+    """One unit per supervised child: {'label','dataset','state_path','resume'}.
+
+    Datasets with effective workers > 1 get partition units — reusing
+    existing partition state files when present (never re-planning), else
+    planning + pre-seeding now. Unpartitioned datasets keep the original
+    behavior (per-dataset default state file, resume per args.resume).
+    """
+    units: list[dict] = []
+    for key in keys:
+        workers = effective_workers(key, getattr(args, "workers", None))
+        existing = find_partition_states(key)
+        if existing:
+            recorded_of = load_state(existing[0]).get(key, {}) \
+                .get("partition", {}).get("of")
+            if recorded_of and recorded_of != workers and workers > 1:
+                print(f"   [WARN] {key}: existing partition files use "
+                      f"of={recorded_of}; requested workers={workers} ignored — "
+                      "delete the partition state files to re-plan")
+            for path in existing:
+                part = load_state(path).get(key, {}).get("partition", {})
+                units.append({"label": f"{key}[p{part.get('index')}/{part.get('of')}]",
+                              "dataset": key, "state_path": path, "resume": True})
+            continue
+        if workers > 1:
+            unpart = default_state_path(key, [key], None)
+            if unpart.exists() and load_state(unpart).get(key, {}) \
+                    .get("total_processed"):
+                raise SystemExit(
+                    f"Dataset '{key}': unpartitioned state file {unpart} has "
+                    "progress. Finish it with a plain --resume run (workers 1), "
+                    "or delete it to re-plan a partitioned run (already-loaded "
+                    "records dedupe).")
+            anchor, parts = plan_partitions(key, DATASETS[key], workers)
+            if parts:
+                for part in parts:
+                    path = partition_state_path(key, part["index"], part["of"])
+                    seed_partition_state(key, part, anchor, path)
+                    units.append({"label": f"{key}[p{part['index']}/{part['of']}]",
+                                  "dataset": key, "state_path": path,
+                                  "resume": True})
+                continue
+        units.append({"label": key, "dataset": key,
+                      "state_path": default_state_path(key, [key], None),
+                      "resume": args.resume})
+    return units
+
+
+def _log_name(label: str) -> Path:
+    # "users" -> logs/users.log ; "users[p1/2]" -> logs/users_p1of2.log
+    return Path("logs") / (label.replace("[", "_").replace("]", "")
+                           .replace("/", "of") + ".log")
+
+
 def supervise(keys: list[str], args) -> int:
-    """Spawn one child per dataset and babysit until all complete or give up.
+    """Spawn one child per unit (dataset or partition) and babysit until all
+    complete or give up.
 
     Decision table per sweep (see decide()): completed -> done; alive -> wait;
     dead without the flag -> relaunch with --resume up to args.max_restarts,
-    then give up on that dataset.  Exit 0 iff every dataset completed.
+    then give up on that unit.  Exit 0 iff every unit completed.
     """
+    units = build_units(keys, args)
     Path("logs").mkdir(exist_ok=True)
-    logs        = {k: Path(f"logs/{k}.log") for k in keys}
-    # Single source of truth for the naming convention: children are always
-    # launched with an explicit single --dataset, so they resolve the same
-    # per-dataset default as default_state_path(k, [k], None) below.
-    state_paths = {k: default_state_path(k, [k], None) for k in keys}
+    per_child = (COUPA_MAX_RPS / len(units)) if units else COUPA_MAX_RPS
+    print(f"supervisor: {len(units)} child(ren), per-child cap "
+          f"{per_child:.2f} req/s (aggregate {COUPA_MAX_RPS})")
+    if per_child < 0.5:
+        print("   [WARN] per-child rate under 0.5 req/s — more workers than "
+              "the aggregate cap can feed; reduce workers or raise "
+              "coupa.max_requests_per_second")
+
+    logs = {u["label"]: _log_name(u["label"]) for u in units}
     children: dict = {}
-    restarts    = {k: 0 for k in keys}
-    status      = {}   # 'running' | 'done' | 'given_up'
+    restarts = {u["label"]: 0 for u in units}
+    status   = {}   # 'running' | 'done' | 'given_up'
 
     def slog(msg: str) -> None:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         print(f"{ts} supervisor: {msg}", flush=True)
 
-    def launch(key: str, resume: bool) -> None:
-        cmd = build_child_cmd(key, args.config, resume=resume,
+    def launch(unit: dict, resume: bool) -> None:
+        cmd = build_child_cmd(unit["dataset"], args.config, resume=resume,
                               username=args.username, password=args.password,
-                              no_unique_index_ok=args.no_unique_index_ok)
-        with open(logs[key], "ab") as log_f:      # Popen keeps its own fd
-            children[key] = subprocess.Popen(cmd, stdout=log_f,
-                                             stderr=subprocess.STDOUT)
-        status[key] = "running"
+                              no_unique_index_ok=args.no_unique_index_ok,
+                              state_file=(unit["state_path"]
+                                          if unit["label"] != unit["dataset"]
+                                          else None),
+                              rate=per_child)
+        with open(logs[unit["label"]], "ab") as log_f:   # Popen keeps its own fd
+            children[unit["label"]] = subprocess.Popen(
+                cmd, stdout=log_f, stderr=subprocess.STDOUT)
+        status[unit["label"]] = "running"
 
     def _sigterm(*_):
         raise KeyboardInterrupt
@@ -1263,40 +1340,44 @@ def supervise(keys: list[str], args) -> int:
         # Initial launches live inside the try: an interrupt at any point after
         # handler registration must terminate already-spawned children (not
         # orphan them) and exit 130.
-        for key in keys:
-            if args.resume and state_is_completed(state_paths[key], key):
-                slog(f"{key}: already complete — skipping")
-                status[key] = "done"
+        for unit in units:
+            if (unit["resume"] or args.resume) and \
+                    state_is_completed(unit["state_path"], unit["dataset"]):
+                slog(f"{unit['label']}: already complete — skipping")
+                status[unit["label"]] = "done"
             else:
-                slog(f"{key}: launching{' (--resume)' if args.resume else ''}")
-                launch(key, resume=args.resume)
+                slog(f"{unit['label']}: launching"
+                     f"{' (--resume)' if unit['resume'] else ''}")
+                launch(unit, resume=unit["resume"])
 
         while any(s == "running" for s in status.values()):
             time.sleep(args.poll_interval)
-            for key in keys:
-                if status[key] != "running":
+            for unit in units:
+                label = unit["label"]
+                if status.get(label) != "running":
                     continue
-                child     = children[key]
+                child     = children[label]
                 # poll() BEFORE the state read: a child seen dead has already
                 # done its final state write, so completion is never misread
                 # as a death (which would burn a restart slot).
                 alive     = child.poll() is None
-                completed = state_is_completed(state_paths[key], key)
-                action    = decide(completed, alive, restarts[key], args.max_restarts)
+                completed = state_is_completed(unit["state_path"], unit["dataset"])
+                action    = decide(completed, alive, restarts[label],
+                                   args.max_restarts)
                 if action == "done":
-                    slog(f"{key}: completed ({restarts[key]} restart(s))")
-                    status[key] = "done"
+                    slog(f"{label}: completed ({restarts[label]} restart(s))")
+                    status[label] = "done"
                 elif action == "relaunch":
-                    restarts[key] += 1
-                    slog(f"{key}: died (exit {child.returncode}) — resuming "
-                         f"(attempt {restarts[key]}/{args.max_restarts}); "
-                         f"last log line: {read_last_log_line(logs[key])}")
-                    launch(key, resume=True)
+                    restarts[label] += 1
+                    slog(f"{label}: died (exit {child.returncode}) — resuming "
+                         f"(attempt {restarts[label]}/{args.max_restarts}); "
+                         f"last log line: {read_last_log_line(logs[label])}")
+                    launch(unit, resume=True)
                 elif action == "give_up":
-                    slog(f"{key}: exceeded {args.max_restarts} restarts — giving up "
-                         f"(manual --resume needed); "
-                         f"last log line: {read_last_log_line(logs[key])}")
-                    status[key] = "given_up"
+                    slog(f"{label}: exceeded {args.max_restarts} restarts — "
+                         f"giving up (manual --resume needed); "
+                         f"last log line: {read_last_log_line(logs[label])}")
+                    status[label] = "given_up"
     except KeyboardInterrupt:
         slog("interrupted — terminating children")
         _terminate_children(children)
@@ -1310,7 +1391,7 @@ def supervise(keys: list[str], args) -> int:
 
     given_up = [k for k, s in status.items() if s == "given_up"]
     if given_up:
-        slog(f"finished with given-up dataset(s): {', '.join(given_up)} — exit 1")
+        slog(f"finished with given-up unit(s): {', '.join(given_up)} — exit 1")
         return 1
     slog("all datasets complete — exit 0")
     return 0
