@@ -3,9 +3,18 @@
 coupa_bulk_import.py
 
 Full initial load of Coupa master data into Rossum Data Storage.
-Replicates newest-first (sorted by updated_at DESC) so datasets are usable
-before the run completes.  Saves progress to coupa_import_state.json after
-every DS flush — safe to kill and resume at any time.
+Replicates newest-by-id first via id-cursor keyset pagination (order_by=id
+desc + id[lt]=<cursor>, offset always 0) — every page is an indexed seek,
+constant cost at any depth (offset pagination decayed linearly: observed
+throughput halved past ~2M rows).  Saves progress (the id cursor) to
+coupa_import_state.json after every DS flush — safe to kill and resume at
+any time.  State files written by pre-keyset script versions are refused
+on --resume: delete them and restart — already-loaded records dedupe.
+
+Every Coupa request is throttled (coupa.max_requests_per_second, default 20
+— Coupa allows 25/s per OAuth client; the supervisor splits the cap across
+children) and retried on 429/503/connection blips with blind exponential
+backoff (Coupa sends no Retry-After).
 
 Write strategy: insert_many (synchronous, 200 OK) in DS_BATCH_SIZE chunks.
 This is faster than async bulk_write and avoids async queue buildup after kill.
@@ -26,6 +35,7 @@ SKILL.md Phase 4 duplicate audit verifies the result.
 written and the exit code reflects success.
 
 Usage:
+    python coupa_bulk_import.py --probe              # sizing report + workers suggestion
     python coupa_bulk_import.py                      # all datasets, full load
     python coupa_bulk_import.py --dataset purchase_orders
     python coupa_bulk_import.py --dataset users,suppliers
@@ -33,10 +43,16 @@ Usage:
     python coupa_bulk_import.py --smoke 5 --dataset users
     python coupa_bulk_import.py --resume             # continue from saved state
 
-    # Recommended for full runs — supervised, sleep-proof, self-healing:
+    # Recommended full-run flow: probe, put the suggested workers values
+    # into the config (datasets.<key>.workers), then run supervised —
+    # sleep-proof, self-healing, one child per dataset partition:
+    python coupa_bulk_import.py --probe
     caffeinate -is python coupa_bulk_import.py --supervise --dataset all
     # (Linux: systemd-inhibit ... ; relaunch with --resume added to skip
-    #  completed datasets and continue the rest.)
+    #  completed units and continue the rest.)
+
+    # Debugging a single id slice in the foreground:
+    python coupa_bulk_import.py --dataset users --id-range 1000:50000
 
     # With auto token refresh (password-auth users only — SSO users must
     # pre-stage a long-lived token in the config instead):
