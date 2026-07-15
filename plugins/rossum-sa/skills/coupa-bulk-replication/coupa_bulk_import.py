@@ -12,13 +12,17 @@ This is faster than async bulk_write and avoids async queue buildup after kill.
 
 Records are inserted exactly as received from Coupa, with auto-generated
 Mongo _ids — structurally identical to records written by the Coupa import
-extension (which upserts by the id FIELD and never touches _id).  Dedup is
-a pre-insert existence check on that id field (config id_key) before EVERY
-batch — re-inserts (smoke leftovers, resume overlap, fresh runs over partial
-loads, records entering the frozen anchor window mid-run) are skipped
-instead of duplicated, regardless of which batch they land in.
+extension (which upserts by the id FIELD and never touches _id).
+Duplicate protection is layered on that id field (config id_key):
+a unique partial index is the root guarantee (SKILL.md Phase 1 — verified
+at the start of every full run, loud warning when missing); a pre-insert
+existence check before EVERY batch keeps accounting exact and avoids
+opaque-400 churn (re-inserts — smoke leftovers, resume overlap, mid-run
+anchor-window entries — are skipped, whichever batch they land in); the
+SKILL.md Phase 4 duplicate audit verifies the result.
 --smoke [N] is the supported config test: insert the newest N records
-(default 1), verify them, delete them again; no state file is written.
+(default 1), verify them, delete exactly what it landed; no state file is
+written and the exit code reflects success.
 
 Usage:
     python coupa_bulk_import.py                      # all datasets, full load

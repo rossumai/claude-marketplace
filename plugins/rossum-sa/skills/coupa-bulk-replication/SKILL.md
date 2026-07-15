@@ -205,7 +205,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
    If the config path is non-standard, pass `--config <path>`.
 
-   `--smoke [N]` (default N=1) is self-cleaning: it inserts the newest N records, verifies them, then deletes exactly the records it added and prints the collection's remaining doc count — no manual cleanup step, and no state file is written or overwritten. N must fit in one DS batch (`ds_batch_size`); the script refuses larger values, which is what guarantees a later full run's first-flush existence check can absorb the leftovers of a hard-killed smoke run (a re-run smoke absorbs them too). `--smoke` cannot be combined with `--supervise` or `--resume` (the script refuses), and `--limit` similarly refuses `--supervise` (a limit-stopped child never writes the completed flag).
+   `--smoke [N]` (default N=1) is self-cleaning: it inserts the newest N records, verifies them, then deletes **exactly the records its own insert landed** (never a concurrent writer's copy, never pre-existing data) and prints the collection's remaining doc count — no manual cleanup step, and no state file is written or overwritten. It exits non-zero on any failed insert, verification shortfall, or cleanup shortfall, so `--smoke <key> && <full run>` is a real gate. Every DS call shares the import path's 401 token heal, and a credentials-only config (empty `rossum.token` + `--username`/`--password`) mints a token up front. N must fit in one DS batch (`ds_batch_size`); leftovers of a hard-killed smoke are harmless — every batch of any later run is existence-checked, so they dedupe automatically. `--smoke` cannot be combined with `--supervise`, `--resume`, `--count`, or `--limit` (the script refuses each), and `--limit` similarly refuses `--supervise` (a limit-stopped child never writes the completed flag).
 
 **Artifact:** `coupa_bulk_import.py` + `coupa_bulk_import.config.json` present, gitignored, and smoke-tested.
 
@@ -257,13 +257,17 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `[Rossum 401 — re-reading token from config]` | No credentials passed; retried once with the (possibly refreshed) config token |
    | `[Coupa token expired — refreshing]` | Auto-refreshed via client credentials; no action needed |
    | `[RETRY N/5] SSLError` | Transient connection error; retrying with exponential backoff |
-   | `N duplicate(s) skipped (expected after resume or smoke test)` | The first-flush/retry existence check at work; healthy |
-   | `[NOTICE] >=90% of the first batch already exists…` | Fresh run over an already-loaded collection — STOP the run; see "Re-replicating a dataset" |
+   | `N duplicate(s) skipped (expected after resume or smoke test)` | The per-batch existence check at work; healthy |
+   | `[NOTICE] >=90% of the first batch already exists…` | Fresh run over an already-loaded collection — records are skipped, never updated; see "Re-replicating a dataset" |
    | `[WARN] N document(s) failed` | Real write failures; check payload size or field types |
+   | `[WARN] N record(s) missing/falsy '<id_key>'` | Records without a usable id in this batch — inserted without dedup protection |
+   | `Dataset '…': every record on the first page is missing a usable '<id_key>'` | Fail-fast abort — the dataset's `id_key` is almost certainly misconfigured |
+   | `[WARN] collection '…' has NO unique index on '<id_key>'` | Create the Phase 1 unique partial index (audit for duplicates first on old collections) |
    | `supervisor: <ds> died … resuming (attempt N/3)` | Child crashed; auto-resumed |
    | `supervisor: <ds> exceeded 3 restarts — giving up` | Investigate that dataset's log, then relaunch the supervisor |
-   | `[WARN] poison document skipped (id=…)` | A document DS rejects even alone; skipped after per-record isolation, run continues |
-   | `[WARN] collection '…' already holds N document(s)` | Fresh run over a non-empty collection — everything after the first batch will duplicate; see 'Re-replicating a dataset' |
+   | `[WARN] poison document skipped (<id_key>=…)` | A document DS rejects even alone (and whose id is confirmed absent); skipped after per-record isolation, run continues |
+   | `[NOTE] collection '…' already holds N document(s)` (N < 100) | A few leftovers (e.g. hard-killed smoke) — they dedupe automatically; no action |
+   | `[WARN] collection '…' already holds N document(s)` (N ≥ 100) | Fresh run over a loaded collection — existing records are skipped, never updated; see 'Re-replicating a dataset' |
 
 5. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from `coupa_import_state_<dataset>.json` with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
 
@@ -284,12 +288,13 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 2. **Duplicate audit.** Per collection, run a DS aggregate grouping on the dataset's `id_key`:
 
    ```json
-   [{"$group": {"_id": "$<id_key>", "n": {"$sum": 1}}},
+   [{"$match": {"<id_key>": {"$exists": true, "$nin": [null, "", 0]}}},
+    {"$group": {"_id": "$<id_key>", "n": {"$sum": 1}}},
     {"$match": {"n": {"$gt": 1}}},
     {"$count": "dups"}]
    ```
 
-   Expected result: empty (0 duplicates). A non-zero count means some records were double-inserted (e.g. a full run over a partially loaded collection) — investigate before handing off to continuous sync. Caveat: this audit is blind to records with a missing/falsy `id_key` value (they group under one bucket or none and are never dedup-protected); the existence check skips them by design, so a resume overlap can legitimately hold duplicate copies of exactly those records.
+   Expected result: empty (0 duplicates). A non-zero count means some records were double-inserted — investigate before handing off to continuous sync (and before creating the unique partial index on an old collection). The leading `$match` **excludes** records with a missing/falsy `id_key`: without it, two or more such records would bucket together (`_id: null` etc.) and false-positive as duplicates. Consequently the audit says nothing about those records — they are never dedup-protected, so a resume overlap can legitimately hold duplicate copies of exactly them (the run warns per batch: `[WARN] N record(s) missing/falsy '<id_key>'`). On multi-million-document collections add `"allowDiskUse": true` to the aggregate call — the `$group` can exceed the in-memory stage limit.
 
 3. **Register collections with MDH** (if the collections need fuzzy search or UI visibility). A seed CSV with only the header row is sufficient — MDH manages the collection from then on:
 
@@ -350,28 +355,30 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 
 ### Re-replicating a dataset (e.g. the field list changed)
 
-Only the FIRST batch of a run is existence-checked: a fresh full run into an already-loaded collection **duplicates everything except the first batch**. The supported path is therefore **clear-and-reload** — never rerun over loaded data. The script flags the mistake loudly (`[NOTICE]`) when a fresh run's first batch is ≥90% duplicates, and warns up front when the target collection is non-empty: stop the run, then:
+Insert-dedup is **not** upsert: a re-run over a loaded collection skips every existing record and **updates nothing** — the script flags this loudly (`[NOTICE]`) when a fresh run's first batch is ≥90% duplicates, and warns up front when the target collection holds 100+ documents. To re-replicate with a changed `fields` list:
 
 - **Dev/UAT:** drop the collection (Phase 1 flow), then run fresh.
 - **Live production collection:** blue-green — load into a temp collection (indexes build instantly on empty), swap via `data_storage_rename_collection`, then drop the old one. Avoids hours of empty/partial data under live MDH matching.
 
 DS REST quirk while cleaning up: `find`/`aggregate` take `query`/`pipeline`, but `delete_one`/`delete_many` take `filter` — a 422 usually means the wrong key.
 
-### Record identity and dedup
+### Record identity and dedup (layered)
 
-Records are inserted **exactly as received from Coupa**, with auto-generated Mongo `_id`s — structurally identical to records written by the Coupa import extension, which upserts by the `id` FIELD and never touches `_id`. (An earlier design wrote `_id = record[id_key]`; it was rejected in review for breaking that structural consistency — and DS's opaque-400 duplicate reporting made `_id`-based dup handling fragile anyway.)
+Records are inserted **exactly as received from Coupa**, with auto-generated Mongo `_id`s — structurally identical to records written by the Coupa import extension, which upserts by the `id` FIELD and never touches `_id`. (Two earlier designs were rejected in review: writing `_id = record[id_key]` broke that structural consistency — and DS's opaque-400 duplicate reporting made `_id`-based dup handling fragile anyway; scoping the existence check to the first flush only left holes — mid-run anchor-window entries and 401-heal retries landed in "provably fresh" batches unchecked.)
 
-Dedup is a pre-insert existence check on the id field (config `id_key`, default `id`), run only where ambiguity exists:
+Duplicate protection is **three layers**, keyed on the id field (config `id_key`, default `id`):
 
-- the **first flush of a run** (fresh or resumed) — it absorbs the resume-boundary re-fetch and any leftovers of a hard-killed smoke run (smoke never exceeds one batch);
-- every **transient-error retry** — an interrupted attempt may have persisted server-side with the response lost.
+1. **Unique partial index** (Phase 1) — the root guarantee: the DB rejects duplicates even across races the script cannot see (concurrent writers, records entering the frozen anchor window mid-run, backdated updates). The script verifies it at the start of every full run and warns when missing.
+2. **Pre-insert existence check before EVERY batch** — keeps accounting exact (`total_inserted`, duplicate counts) and avoids opaque-400 churn from index rejections. Necessary in its own right because the DS REST layer reports duplicate-key write errors as an opaque HTTP 400 ("batch op errors occurred") with no per-document detail (live-verified 2026-07) — and on collections without the unique index, double-inserts would not even error. The check costs ~one indexed aggregate per 5,000-record batch (~0.2% of wall time). It uses `$match`+`$group` (distinct values), immune to truncation by pre-existing duplicate copies.
+3. **Phase 4 duplicate audit** — verification that the first two layers held.
 
-Steady-state batches are provably fresh (the offset walks forward under a frozen anchor) and skip the check — checking them would buy nothing. Necessary rather than optional because the DS REST layer reports duplicate-key write errors as an opaque HTTP 400 ("batch op errors occurred") with no per-document detail (live-verified 2026-07) — and without a unique index on the id field, double-inserts would not even error. Consequences:
+Consequences:
 
 - `total_inserted` (state file) counts actual inserts and must match the DB count; `total_processed` includes duplicate-skips.
-- Records with a missing/falsy `id_key` value never enter dedup queries (a shared falsy id would collapse distinct records) — they always insert, are excluded from smoke-delete filters, and the Phase 4 duplicate audit is blind to them.
+- Records with a missing/falsy `id_key` value never enter dedup queries (a shared falsy id would collapse distinct records) and are exempt from the unique index (partial filter) — they always insert, are excluded from smoke-delete filters and from the Phase 4 audit, and are warned about per batch. A fresh run whose FIRST page is 100% missing/falsy ids aborts: the `id_key` is almost certainly misconfigured.
 - Two datasets must not share a collection — the config loader rejects it.
-- A fresh full run over a loaded collection is NOT self-healing — see "Re-replicating a dataset".
+- Smoke cleanup deletes exactly the id values its own insert landed (`BatchResult.inserted_values`), with the pre-insert snapshot as an intersection belt — a concurrent writer's record is never deleted.
+- Re-inserts are skips, not updates — see "Re-replicating a dataset".
 
 ### Why `insert_many` instead of `bulk_write`
 
