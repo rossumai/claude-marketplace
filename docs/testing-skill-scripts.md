@@ -6,16 +6,33 @@ rounds only ever ADD tests; without a stopping rule a migration script ends up
 with a ratchet-grown suite pinning log wording and request dicts. The
 `coupa-bulk-replication` suite (post-pruning) is the worked example.
 
+**Scope:** this bar governs scripts bundled with skills
+(`plugins/*/skills/*/`). The repo-level suites under `tests/` (MCP server
+contract, manifests, doc-sync) are a different animal — there,
+request/response *shapes are the contract under test*, and shape assertions
+are the point, not a smell.
+
 ## Scale the suite to blast radius
 
-- **Scripts that WRITE to customer systems** (Data Storage loads, hook
-  patches, deletes): pin three things exhaustively —
+Blast radius has two axes: what the script touches, and whether anyone is
+watching when it runs.
+
+- **Unattended/bulk writer scripts** (Data Storage loads, scheduled jobs,
+  anything that runs for hours or over thousands of objects): pin three things exhaustively —
   1. **data-integrity invariants** (no duplicates, no lost records, never
      delete anything the run didn't create),
   2. **exit codes** (a wrapper like `smoke && full-run` must be able to trust
      them),
   3. **CLI contracts** (refusal guards for unsafe flag combinations, config
      validation that prevents a bad run from starting).
+- **Attended, single-object writer scripts** (guided conversions, one-queue
+  patches — an operator watches every run and can undo it): the middle bar.
+  Pin the **transformation invariants** — the pure functions that decide
+  *what gets written* — against ground-truth fixtures, plus any refusal
+  guards. The API choreography around them doesn't need pinning; the
+  operator is the verification. Worked example:
+  `queue-engine-binding/tests/` (derivation/cleaning/restore pinned; the
+  attended write path is not).
 - **Scripts that only read** (counters, reporters, inspectors): smoke coverage
   is enough — one happy path per mode plus any pure-function algorithm with
   real failure potential. A miscounted report is an annoyance, not an
