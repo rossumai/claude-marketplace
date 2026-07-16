@@ -1456,6 +1456,79 @@ def _log_name(label: str) -> Path:
                            .replace("/", "of") + ".log")
 
 
+# ── Run summary (logs/run_summary.jsonl) ─────────────────────────────────────────
+#
+# One JSON line per supervisor invocation — the raw material for post-run
+# debriefs and next-run calibration (SKILL.md Phase 0/6): measured rec/s and
+# 429 counts from a real run beat fresh probe samples.
+
+def _unit_progress(state_path: Path, dataset: str) -> tuple[int, int]:
+    """(total_processed, total_inserted) from a unit's state file; (0, 0)
+    when missing/unreadable — the summary must never fail a run."""
+    try:
+        st = json.loads(state_path.read_text()).get(dataset, {})
+        return int(st.get("total_processed", 0)), int(st.get("total_inserted", 0))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0, 0
+
+
+def _count_log_markers(path: Path, offset: int) -> tuple[int, int]:
+    """(coupa_429s, retries) in a child log AFTER byte offset — logs append
+    across invocations, so only this invocation's slice is counted."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return 0, 0
+    return text.count("Coupa 429"), text.count("[RETRY")
+
+
+def build_run_summary(units: list, stats: dict, status: dict, restarts: dict,
+                      started: str, aggregate: float, per_child: float,
+                      logs: dict) -> dict:
+    rows = []
+    for unit in units:
+        label = unit["label"]
+        row = {"label": label, "dataset": unit["dataset"],
+               "status": status.get(label, "skipped")}
+        s = stats.get(label)
+        if s:
+            secs = max(s.get("t_end", time.monotonic()) - s["t_launch"], 0.0)
+            done_p, done_i = _unit_progress(unit["state_path"], unit["dataset"])
+            processed = done_p - s["start_processed"]
+            n429, retries = _count_log_markers(logs[label], s["log_offset"])
+            row.update({
+                "seconds":           round(secs, 1),
+                "records_processed": processed,
+                "records_inserted":  done_i - s["start_inserted"],
+                "rec_per_s":         round(processed / secs, 1) if secs > 0 else None,
+                "restarts":          restarts.get(label, 0),
+                "coupa_429s":        n429,
+                "retries":           retries,
+            })
+        rows.append(row)
+    return {"started": started, "finished": _utcnow_ts(),
+            "aggregate_rate_cap": aggregate,
+            "per_child_rate": round(per_child, 2), "units": rows}
+
+
+def write_run_summary(summary: dict,
+                      path: Path = Path("logs/run_summary.jsonl")) -> None:
+    path.parent.mkdir(exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(summary) + "\n")
+    print(f"supervisor: run summary appended to {path}")
+    for u in summary["units"]:
+        if "seconds" in u:
+            print(f"   {u['label']:<28} {u['status']:<9} {u['seconds']:>8.1f}s "
+                  f"{u['records_processed']:>9} rec "
+                  f"({u['rec_per_s'] or 0} rec/s)  "
+                  f"restarts {u['restarts']}  429s {u['coupa_429s']}")
+        else:
+            print(f"   {u['label']:<28} {u['status']}")
+
+
 def supervise(keys: list[str], args) -> int:
     """Spawn one child per unit (dataset or partition) and babysit until all
     complete or give up.
@@ -1486,12 +1559,24 @@ def supervise(keys: list[str], args) -> int:
     children: dict = {}
     restarts = {u["label"]: 0 for u in units}
     status   = {}   # 'running' | 'done' | 'given_up'
+    stats: dict = {}   # per label: launch time, log offset, starting progress
+    run_started = _utcnow_ts()
 
     def slog(msg: str) -> None:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         print(f"{ts} supervisor: {msg}", flush=True)
 
     def launch(unit: dict, resume: bool) -> None:
+        label = unit["label"]
+        if label not in stats:
+            log_path = logs[label]
+            start_p, start_i = _unit_progress(unit["state_path"], unit["dataset"])
+            stats[label] = {
+                "t_launch":        time.monotonic(),
+                "log_offset":      log_path.stat().st_size if log_path.exists() else 0,
+                "start_processed": start_p,
+                "start_inserted":  start_i,
+            }
         cmd = build_child_cmd(unit["dataset"], args.config, resume=resume,
                               username=args.username, password=args.password,
                               no_unique_index_ok=args.no_unique_index_ok,
@@ -1499,10 +1584,10 @@ def supervise(keys: list[str], args) -> int:
                                           if unit["label"] != unit["dataset"]
                                           else None),
                               rate=per_child)
-        with open(logs[unit["label"]], "ab") as log_f:   # Popen keeps its own fd
-            children[unit["label"]] = subprocess.Popen(
+        with open(logs[label], "ab") as log_f:   # Popen keeps its own fd
+            children[label] = subprocess.Popen(
                 cmd, stdout=log_f, stderr=subprocess.STDOUT)
-        status[unit["label"]] = "running"
+        status[label] = "running"
 
     def _sigterm(*_):
         raise KeyboardInterrupt
@@ -1540,6 +1625,7 @@ def supervise(keys: list[str], args) -> int:
                 if action == "done":
                     slog(f"{label}: completed ({restarts[label]} restart(s))")
                     status[label] = "done"
+                    stats[label]["t_end"] = time.monotonic()
                 elif action == "relaunch":
                     restarts[label] += 1
                     slog(f"{label}: died (exit {child.returncode}) — resuming "
@@ -1551,6 +1637,7 @@ def supervise(keys: list[str], args) -> int:
                          f"giving up (manual --resume needed); "
                          f"last log line: {read_last_log_line(logs[label])}")
                     status[label] = "given_up"
+                    stats[label]["t_end"] = time.monotonic()
     except KeyboardInterrupt:
         slog("interrupted — terminating children")
         _terminate_children(children)
@@ -1561,6 +1648,9 @@ def supervise(keys: list[str], args) -> int:
         raise
     finally:
         signal.signal(signal.SIGTERM, prev_sigterm)
+
+    write_run_summary(build_run_summary(units, stats, status, restarts,
+                                        run_started, aggregate, per_child, logs))
 
     given_up = [k for k, s in status.items() if s == "given_up"]
     if given_up:

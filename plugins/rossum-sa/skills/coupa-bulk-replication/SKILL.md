@@ -33,16 +33,17 @@ If in doubt, confirm. The cost of asking is low; the cost of unwanted changes to
 
 ## How to Use This Skill
 
-This skill has 6 phases. Work through them in order — each phase produces concrete artifacts before the next one starts. Use tasks to track progress across phases so work can resume if interrupted.
+This skill has 7 phases. Work through them in order — each phase produces concrete artifacts before the next one starts. Use tasks to track progress across phases so work can resume if interrupted.
 
 | Phase | What it covers |
 |-------|----------------|
-| 0 — Discovery | Credentials, token strategy, org URL, Coupa hook settings, dataset selection, `--probe` sizing + worker calibration |
+| 0 — Discovery | Credentials, token strategy, org URL, Coupa hook settings, dataset selection, `--probe` sizing + worker calibration (from previous run summaries when they exist) |
 | 1 — Pre-flight | Disable hooks, create/clear collections, create indexes |
 | 2 — Script Setup | Place `coupa_bulk_import.py`, create `coupa_bulk_import.config.json`, smoke-test |
-| 3 — Replication | Supervised launch (`--supervise`, partitioned workers), keep-awake, monitoring, resume |
+| 3 — Replication | Supervised launch (`--supervise`, partitioned workers), keep-awake, monitoring, migration journal, resume |
 | 4 — Completion | Verify counts, register with MDH |
 | 5 — Handoff to continuous sync | Create or re-enable import hooks, delta seeding, canary |
+| 6 — Debrief | Read `run_summary.jsonl` + journal, route learnings to their durable homes |
 
 ---
 
@@ -89,7 +90,9 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    |-------------|----------------|---------------|---------|---------|
    | `...`       | `api/...`      | `..._test`    | `...`   | yes/no  |
 
-6. **Size the run with `--probe`.** Coupa has no count endpoint, but the script's probe computes exact per-dataset counts by offset bisection (~45 cheap API calls per dataset) AND samples real throughput: `python3 coupa_bulk_import.py --probe` (needs the Phase 2 config; add `--dataset a,b` for a subset). Per dataset it prints the exact count, measured records/sec (3 sample pages with the dataset's real field list), estimated duration at 1/2/4/8 workers, and a config-ready `workers` suggestion. Always do this before planning the run — never plan against collection counts copied from another org (a presale/sibling org, when one even exists): field runs saw those off by 2.7×–27×. Re-run `--probe` mid-replication for exact %-complete — it reuses the run's anchor from the state file (summing partition state files for partitioned datasets). The probe also doubles as the keyset-query preflight: its sample pages use the exact query shape the workers will run.
+6. **Calibrate from previous runs first.** Before probing, look for `logs/run_summary.jsonl` — in this environment's migration directory AND in sibling environments' (a test-org run calibrates the dev run; dev calibrates prod). Each line is one supervised run with per-unit measured `rec_per_s`, durations, restarts, and `coupa_429s`. Measured rates from a real full run beat fresh 3-page probe samples: derive worker suggestions from them (same ceiling math as below), flag any dataset whose past run logged 429s (lower the cap or workers), and only lean on the probe's sampled rate for datasets with no history. Still run `--probe` for the **counts** — sibling-org record counts drift.
+
+7. **Size the run with `--probe`.** Coupa has no count endpoint, but the script's probe computes exact per-dataset counts by offset bisection (~45 cheap API calls per dataset) AND samples real throughput: `python3 coupa_bulk_import.py --probe` (needs the Phase 2 config; add `--dataset a,b` for a subset). Per dataset it prints the exact count, measured records/sec (3 sample pages with the dataset's real field list), estimated duration at 1/2/4/8 workers, and a config-ready `workers` suggestion. Always do this before planning the run — never plan against collection counts copied from another org (a presale/sibling org, when one even exists): field runs saw those off by 2.7×–27×. Re-run `--probe` mid-replication for exact %-complete — it reuses the run's anchor from the state file (summing partition state files for partitioned datasets). The probe also doubles as the keyset-query preflight: its sample pages use the exact query shape the workers will run.
 
    **Calibrate workers from measured rates, not record counts.** Per-record cost scales with record width — field count, and especially nested association fields that force server-side joins. A field run saw ~10× between narrow `lookup_values` (4.77M records, fast) and wide PO lines (fewer records, much slower) — counts alone mislead. The probe's suggestion targets ~4 h per dataset (suggestion caps at 8 workers, min 50k records per worker); adjust it against context the script cannot see: the rate budget shared with live webhooks (see Phase 2 rate cap), how urgent the wall clock is, tenant load. Then set the chosen values in the config — each dataset block takes an optional `"workers": N` (default 1) — and run Phase 3 with `--supervise`. Claude applies the config edit on request.
 
@@ -289,7 +292,9 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `[NOTE] collection '…' already holds N document(s)` (N < 100) | A few leftovers (e.g. hard-killed smoke) — they dedupe automatically; no action |
    | `[WARN] collection '…' already holds N document(s)` (N ≥ 100) | Fresh run over a loaded collection — existing records are skipped, never updated; see 'Re-replicating a dataset' |
 
-5. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from its state file with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). For a partitioned dataset, sum `total_inserted` across all `coupa_import_state_<ds>_p*of*.json` files. `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
+5. **Keep a migration journal.** Append to `MIGRATION-NOTES.md` (next to the config) *at the moment* anything surprises: a probe estimate that misses, a 429 burst, an endpoint quirk, a manual intervention, anything you had to figure out. Timestamp each entry. Field experience: learnings reconstructed from logs days later lose the "why"; notes written live are what makes the Phase 6 debrief cheap and honest. The supervisor's exit summary (`logs/run_summary.jsonl`, one JSON line per invocation with per-unit durations, effective rec/s, restarts, and 429 counts) captures the *numbers* automatically — the journal captures the *judgment*.
+
+6. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from its state file with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). For a partitioned dataset, sum `total_inserted` across all `coupa_import_state_<ds>_p*of*.json` files. `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
 
 **Artifact:** All target collections populated. State files show `"completed": true` for each dataset. DB counts match `total_inserted`.
 
@@ -381,6 +386,31 @@ Two costs, both manageable:
 Default recipe stays verify-then-activate; use this variant deliberately.
 
 **Artifact:** Hooks active for every dataset, first delta canary verified, `${last_modified_date}` placeholders restored.
+
+---
+
+## Phase 6: Debrief
+
+**Goal:** Every learning from this migration lands in its one durable home, and the run's measurements are preserved for the next migration's calibration.
+
+The raw material already exists by construction: `logs/run_summary.jsonl` (per-unit durations, effective rec/s, restarts, 429 counts — written automatically by every supervised run) and `MIGRATION-NOTES.md` (the live journal from Phase 3). This phase is optional in the sense that skipping it loses nothing *mechanical* — but each skipped debrief is a run the next migration cannot learn from.
+
+**Checklist:**
+
+1. **Estimates vs. reality.** Diff the probe's estimated durations against `run_summary.jsonl`'s actuals per dataset. A consistent miss means the sampled rate or the worker ceiling math needs adjusting — that is a *skill* learning, not a run anecdote.
+2. **Grep the logs for pain.** `grep -c 'Coupa 429' logs/*.log`, give-ups in `supervisor.log`, `[WARN]` lines. Sustained 429s at N workers ≈ Coupa's real concurrency tolerance for this tenant — record the number.
+3. **Doc-vs-observation diff.** Anything this SKILL.md *claims* that the run *contradicted* is a documentation bug — fix it, don't just note it.
+4. **Route each learning to its home:**
+
+   | Learning type | Durable home |
+   |---|---|
+   | Platform-general fact (Coupa behavior, DS behavior, script gap) | This skill / reference packs — marketplace PR |
+   | Client-specific invariant (dataset sizes, tenant quirks, org decisions) | The client repo's CLAUDE.md / context notes |
+   | Numbers for the next environment's run | Nothing to do — `run_summary.jsonl` stays in the migration dir; Phase 0 step 6 of the next run reads it |
+
+5. **Keep `run_summary.jsonl` and `MIGRATION-NOTES.md`** when cleaning up state files (Phase 4 step 4 deletes state; these two survive — they are the migration's memory).
+
+**Artifact:** Updated skill/docs where the run contradicted them, client context updated, summaries preserved.
 
 ---
 

@@ -177,6 +177,41 @@ def test_supervise_interrupt_during_startup_terminates_and_returns_130(monkeypat
     assert spawned[0].poll() is not None
 
 
+# ── run summary (the raw material for debriefs / next-run calibration) ──────
+
+def test_supervise_appends_run_summary(monkeypatch, tmp_path):
+    code, _ = _run_supervise(
+        monkeypatch, tmp_path, {"users": [_stub_completes("users")]}, ["users"])
+    assert code == 0
+    lines = (tmp_path / "logs/run_summary.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    run = json.loads(lines[0])
+    unit = run["units"][0]
+    assert unit["dataset"] == "users"
+    assert unit["status"] == "done"
+    assert unit["seconds"] >= 0
+    assert unit["restarts"] == 0
+    assert "records_processed" in unit and "coupa_429s" in unit
+
+    # a second invocation APPENDS — history accumulates, never overwritten
+    code2, _ = _run_supervise(
+        monkeypatch, tmp_path, {"users": [_stub_completes("users")]}, ["users"])
+    assert code2 == 0
+    assert len((tmp_path / "logs/run_summary.jsonl")
+               .read_text().splitlines()) == 2
+
+
+def test_supervise_run_summary_records_give_up(monkeypatch, tmp_path):
+    code, _ = _run_supervise(
+        monkeypatch, tmp_path, {"users": [_STUB_DIES]}, ["users"], max_restarts=1)
+    assert code == 1
+    run = json.loads((tmp_path / "logs/run_summary.jsonl")
+                     .read_text().splitlines()[-1])
+    unit = run["units"][0]
+    assert unit["status"] == "given_up"
+    assert unit["restarts"] == 1
+
+
 # ── partition units ──────────────────────────────────────────────────────────
 
 def _partitioned_env(monkeypatch, tmp_path, workers=2):
