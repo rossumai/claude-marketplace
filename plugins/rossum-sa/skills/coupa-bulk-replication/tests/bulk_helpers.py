@@ -118,22 +118,34 @@ def make_records(*ids):
 
 class FakeCoupa:
     """Stateful Coupa stub over a fixed id set — serves keyset pages and
-    rank probes by actually interpreting the id filters, so tests assert
-    outcomes (which records landed) instead of request shapes."""
+    rank probes by actually interpreting the id AND anchor filters, so tests
+    assert outcomes (which records landed) instead of request shapes.
 
-    def __init__(self, ids, page_size=50):
+    updated: optional {id: updated_at} overrides (default stamp is ancient,
+    so records are in-anchor for any realistic anchor) — ids stamped after
+    a run's anchor are excluded, like the real `updated-at[lt_or_eq]`
+    filter."""
+
+    def __init__(self, ids, page_size=50, updated=None):
         self.ids = sorted(ids)
         self.page_size = page_size
+        self.updated = dict(updated or {})
         self.page_calls = 0
         self.rank_calls = 0
 
+    def _stamp(self, i):
+        return self.updated.get(i, "2020-01-01T00:00:00Z")
+
     def _rec(self, i):
-        return {"id": i, "updated_at": "2026-07-01T00:00:00Z"}
+        return {"id": i, "updated_at": self._stamp(i)}
+
+    def _anchored(self, anchor_ts):
+        return [i for i in self.ids if self._stamp(i) <= anchor_ts]
 
     def fetch_page(self, session, endpoint, fields, anchor_ts, *,
                    before_id=None, id_gt=None, limit=None):
         self.page_calls += 1
-        sel = [i for i in self.ids
+        sel = [i for i in self._anchored(anchor_ts)
                if (before_id is None or i < before_id)
                and (id_gt is None or i > id_gt)]
         sel = sorted(sel, reverse=True)[: (limit or self.page_size)]
@@ -141,7 +153,8 @@ class FakeCoupa:
 
     def fetch_at_rank(self, session, endpoint, anchor_ts, rank):
         self.rank_calls += 1
-        return [{"id": self.ids[rank]}] if rank < len(self.ids) else []
+        asc = self._anchored(anchor_ts)
+        return [{"id": asc[rank]}] if rank < len(asc) else []
 
     def install(self, monkeypatch):
         import coupa_bulk_import as cbi

@@ -158,6 +158,30 @@ def test_partition_range_crawls_only_its_slice(monkeypatch, tmp_path):
     assert st["partition"]["id_gt"] == 3           # partition block persisted
 
 
+def test_anchor_freezes_the_target_set(monkeypatch, tmp_path):
+    """A record updated past the run's frozen anchor leaves the target set —
+    the bulk run must not absorb post-anchor changes (the import hook owns
+    them, per the Phase 5 handoff contract)."""
+    coupa = FakeCoupa([1, 2, 3], updated={3: "2026-07-20T00:00:00Z"})
+    ds = FakeDS()
+    old = {"users": {"last_id": 999, "anchor_updated_at": "2026-07-10T00:00:00Z",
+                     "total_processed": 0, "total_inserted": 0}}
+    saved, _ = run_import(monkeypatch, tmp_path, fake_coupa=coupa,
+                          ds_session=ds, resume=True, state=old)
+    assert ds.value_counts() == {1: 1, 2: 1}       # id 3 is post-anchor
+    assert saved["users"]["completed"] is True
+
+
+def test_crawl_aborts_when_cursor_does_not_advance(monkeypatch, tmp_path):
+    """An endpoint that silently ignores order_by=id / id[lt] returns the
+    same top page forever; the crawl must abort loudly, not loop while the
+    supervisor sees a healthy child."""
+    page = [{"id": 5, "updated_at": "t"}, {"id": 4, "updated_at": "t"}]
+    with pytest.raises(SystemExit) as exc:
+        run_import(monkeypatch, tmp_path, [page, list(page)])
+    assert "did not advance" in str(exc.value)
+
+
 def test_id_range_crawls_only_the_requested_slice(monkeypatch, tmp_path):
     ids = [1, 2, 3, 10, 11, 12, 20, 21, 22]
     ds = FakeDS()
@@ -168,6 +192,19 @@ def test_id_range_crawls_only_the_requested_slice(monkeypatch, tmp_path):
     st = saved["users"]
     assert st["completed"] is True
     assert st["partition"] == {"id_gt": 9, "id_lte": 12}   # range recorded
+
+
+def test_id_range_resume_with_empty_state_stays_bounded(monkeypatch, tmp_path):
+    """A run started with --resume before any flush wrote state (or after a
+    very early kill) must still honour the range — not silently crawl the
+    whole dataset."""
+    ids = [1, 2, 3, 10, 11, 12, 20, 21, 22]
+    ds = FakeDS()
+    saved, _ = run_import(monkeypatch, tmp_path, fake_coupa=FakeCoupa(ids),
+                          ds_session=ds, resume=True, state={},
+                          id_range=(10, 12))
+    assert ds.value_counts() == {10: 1, 11: 1, 12: 1}
+    assert saved["users"]["completed"] is True
 
 
 def test_id_range_refuses_resume_against_rangeless_state(monkeypatch, tmp_path):

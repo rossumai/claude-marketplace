@@ -40,16 +40,48 @@ def test_partitions_cover_exactly_and_balance(monkeypatch, tmp_path):
 
 
 def test_partitions_clamped_by_min_partition(monkeypatch, tmp_path):
-    monkeypatch.setattr(cbi, "MIN_PARTITION", 600)
-    _env(monkeypatch, tmp_path, GAPPY)      # 1000 ids -> ceil(1000/600) = 2 max
+    # FLOOR semantics: no partition ever holds fewer than MIN_PARTITION
+    # records — 1000 ids / 500 floor = at most 2 workers, even when 8 asked
+    monkeypatch.setattr(cbi, "MIN_PARTITION", 500)
+    _env(monkeypatch, tmp_path, GAPPY)
     anchor, parts = cbi.plan_partitions("users", cbi.DATASETS["users"], 8)
     assert len(parts) == 2
+    for p in parts:
+        n = sum(1 for i in GAPPY if p["id_gt"] < i <= p["id_lte"])
+        # floor clamps the AVERAGE (C/W >= MIN_PARTITION); rank-boundary
+        # rounding makes individual slices vary by at most one record
+        assert abs(n - 500) <= 1
 
 
 def test_single_worker_returns_no_partitions(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path, GAPPY)      # default MIN_PARTITION=50k -> clamp to 1
     anchor, parts = cbi.plan_partitions("users", cbi.DATASETS["users"], 4)
     assert parts == []
+
+
+def test_partitioned_preflight_id_key_and_populated(monkeypatch, tmp_path):
+    """Partition children always run --resume, so the supervisor's one-time
+    preflight owns the fresh-run guards: a misconfigured id_key must abort
+    BEFORE planning; a populated collection warns but proceeds."""
+    from bulk_helpers import FakeDS
+    monkeypatch.chdir(tmp_path)
+    datasets = {"users": {"endpoint": "api/users", "collection": "users",
+                          "id_key": "number", "scope": "s", "fields": ["number"],
+                          "workers": 2}}
+    cbi.load_config(write_config(tmp_path, datasets=datasets))
+    monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
+    coupa = FakeCoupa([1, 2, 3])            # records carry id but no 'number'
+    coupa.install(monkeypatch)
+    ds = FakeDS(id_key="number", preloaded=range(1, 200))
+
+    with pytest.raises(SystemExit) as exc:
+        cbi.partitioned_preflight("users", cbi.DATASETS["users"], ds)
+    assert "number" in str(exc.value)
+
+    datasets["users"]["id_key"] = "id"
+    cbi.load_config(write_config(tmp_path, datasets=datasets))
+    # populated collection: warns, does NOT raise
+    cbi.partitioned_preflight("users", cbi.DATASETS["users"], ds)
 
 
 def test_planning_aborts_when_dataset_shrinks(monkeypatch, tmp_path):

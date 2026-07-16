@@ -105,6 +105,13 @@ ROSSUM_API_URL: str = ""
 
 STATE_FILE    = Path("coupa_import_state.json")  # overridden by --state-file
 DS_BATCH_SIZE = 5000                              # records per insert_many call
+MIN_PARTITION = 50_000   # never split below this many records per worker
+
+
+def _utcnow_ts() -> str:
+    """Anchor timestamp — planner and importer MUST produce the same format
+    (children crawl the frozen set the planner defined)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 RE_REPLICATION_NOTICE = """
    ================================================================
@@ -807,14 +814,17 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 f"not match the range recorded in {state_path} "
                 f"(id_gt={part.get('id_gt')}, id_lte={part.get('id_lte')}). "
                 "Resume without --id-range, or use a different --state-file.")
-        if not resume:
+        if not part:
+            # fresh run — or a resume that never reached its first flush
+            # (empty/absent state file): without this seeding, such a resume
+            # would silently crawl the WHOLE dataset instead of the range
             part = wanted
             cursor = id_range[1] + 1
 
     id_gt = part.get("id_gt")
 
     if anchor_ts is None:
-        anchor_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        anchor_ts = _utcnow_ts()
 
     id_key = cfg.get("id_key", "id")
     fields = ensure_id_field(cfg["fields"])
@@ -914,14 +924,19 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             flush(final=True)
             # a non-empty final flush already wrote completed; this covers the
             # nothing-buffered case (flush returned early without saving)
-            state[key] = {**state.get(key, {}), "completed": True}
-            save_state(state, state_path)
+            if not state.get(key, {}).get("completed"):
+                state[key] = {**state.get(key, {}), "completed": True}
+                save_state(state, state_path)
             print(f"   complete — {total} records total")
             break
 
         # Fail fast on a misconfigured id_key: a typo'd key would otherwise
-        # blind-load the whole dataset with dedup never engaging.
-        if first_page and not resume and all(not r.get(id_key) for r in page):
+        # blind-load the whole dataset with dedup never engaging.  Gated on
+        # "no progress yet", NOT on `not resume`: partition children always
+        # launch with --resume, and a resumed run killed before its first
+        # flush is effectively fresh too.  A mid-load resume (total > 0)
+        # must not abort on one falsy page — that would strand supervision.
+        if first_page and total == 0 and all(not r.get(id_key) for r in page):
             raise SystemExit(
                 f"Dataset '{key}': every record on the first page is missing a "
                 f"usable '{id_key}' value — id_key is likely misconfigured for "
@@ -937,8 +952,22 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 break
             page = page[:remaining]
 
+        # Cursor-advance guard: the crawl terminates ONLY via the cursor
+        # strictly decreasing toward the floor. An endpoint that silently
+        # ignores order_by=id / id[lt] (unsupported field, proxy quirk)
+        # would return the same top page forever — and the supervisor would
+        # see a healthy child and never intervene. Abort loudly instead.
+        new_cursor = page[-1].get("id")   # min id of the (possibly truncated) page
+        if not isinstance(new_cursor, int) \
+                or (cursor is not None and new_cursor >= cursor) \
+                or (id_gt is not None and new_cursor <= id_gt):
+            raise SystemExit(
+                f"Dataset '{key}': keyset cursor did not advance (page ended "
+                f"at id {new_cursor!r}, previous cursor {cursor!r}, floor "
+                f"{id_gt!r}) — the endpoint likely ignores order_by=id or "
+                "the id filters; aborting instead of looping forever")
         buffer.extend(page)
-        cursor = page[-1]["id"]   # min id of the (possibly truncated) page
+        cursor = new_cursor
 
         if len(buffer) >= DS_BATCH_SIZE:
             flush()
@@ -970,7 +999,7 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
     cfg        = DATASETS[key]
     id_key     = cfg.get("id_key", "id")
     collection = cfg["collection"]
-    anchor_ts  = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    anchor_ts  = _utcnow_ts()
 
     print(f"\n── smoke {key}  →  {collection} ──")
 
@@ -987,8 +1016,10 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
                           anchor_ts, before_id=cursor, limit=n - len(records))
         if not page:
             break
-        cursor = page[-1]["id"]
         records.extend(page)
+        cursor = page[-1].get("id")
+        if not isinstance(cursor, int):
+            break   # cannot advance the cursor safely — stop fetching
     records = records[:n]
     if not records:
         print("   Coupa returned no records — nothing to smoke-test")
@@ -1056,14 +1087,18 @@ SAMPLE_PAGES = 3   # keyset pages fetched (real field list) to measure rec/s
 
 
 def suggest_workers(count: int, rate: float, target_hours: float = 4.0,
-                    max_workers: int = 8, min_partition: int = 50_000) -> int:
+                    max_workers: int = 8,
+                    min_partition: int = MIN_PARTITION) -> int:
     """Advisory only (spec §4.4): workers to bring one dataset under
-    target_hours, capped by max_workers and the min-partition clamp.
+    target_hours, capped by max_workers and the min-partition floor
+    (floor semantics — no partition ever holds fewer than min_partition
+    records; same clamp the planner enforces, so the suggestion is never
+    silently clamped away at run time).
     Printed by --probe; the run path never calls this."""
     if not count or not rate:
         return 1
     by_time = math.ceil(count / rate / 3600 / target_hours)
-    by_size = max(1, math.ceil(count / min_partition))
+    by_size = max(1, count // min_partition)
     return max(1, min(by_time, by_size, max_workers))
 
 
@@ -1079,7 +1114,9 @@ def measure_rate(session, endpoint: str, fields: list, anchor_ts: str) -> float:
         if not page:
             break
         fetched += len(page)
-        cursor = page[-1]["id"]
+        cursor = page[-1].get("id")
+        if cursor is None:
+            break   # cannot advance the cursor safely — stop sampling
     secs = time.monotonic() - t0
     return fetched / secs if secs > 0 and fetched else 0.0
 
@@ -1093,8 +1130,14 @@ def _dataset_progress(key: str, state: dict) -> tuple[dict, int]:
     ds_st = state.get(key) or load_state(
         default_state_path(key, [key], None)).get(key, {})
     done = ds_st.get("total_processed", 0)
-    for p in sorted(Path(".").glob(f"coupa_import_state_{key}_p*of*.json")):
+    parts = find_partition_states(key)
+    for p in parts:
         done += load_state(p).get(key, {}).get("total_processed", 0)
+    if not ds_st and parts:
+        # a partitioned run never writes the per-dataset file — the shared
+        # anchor lives in every partition file; without this, the probe
+        # would invent a fresh now() anchor and understate %-complete
+        ds_st = load_state(parts[0]).get(key, {})
     return ds_st, done
 
 
@@ -1107,7 +1150,7 @@ def probe_datasets(keys: list[str], state: dict) -> None:
         cfg = DATASETS[key]
         ds_st, done = _dataset_progress(key, state)
         anchor = ds_st.get("anchor_updated_at") \
-            or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            or _utcnow_ts()
         session = make_coupa_session(cfg["scope"])
         n = _bisect_count(
             lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off)))
@@ -1131,9 +1174,6 @@ def probe_datasets(keys: list[str], state: dict) -> None:
 
 
 # ── Partition planning (spec §4.3) ───────────────────────────────────────────────
-
-MIN_PARTITION = 50_000   # never split below this many records per worker
-
 
 def partition_state_path(dataset: str, index: int, of: int) -> Path:
     return Path(f"coupa_import_state_{dataset}_p{index}of{of}.json")
@@ -1187,11 +1227,11 @@ def plan_partitions(key: str, cfg: dict, workers: int) -> tuple[str, list[dict]]
     count-balanced regardless of id gaps. Returns (anchor, []) when the
     min-partition clamp lands on a single worker.
     """
-    anchor = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    anchor = _utcnow_ts()
     session = make_coupa_session(cfg["scope"])
     count = _bisect_count(
         lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off)))
-    w = min(workers, max(1, -(-count // MIN_PARTITION)))   # ceil clamp
+    w = min(workers, max(1, count // MIN_PARTITION))   # floor: no partition under MIN_PARTITION records
     if w <= 1:
         if workers > 1:
             print(f"   {key}: workers clamped to 1 — {count} records is under "
@@ -1316,6 +1356,48 @@ def effective_workers(key: str, args_workers: int | None) -> int:
         int(DATASETS.get(key, {}).get("workers", 1))
 
 
+def _make_ds_session(args) -> requests.Session:
+    """DS session for the supervisor's own pre-flight checks."""
+    token = ROSSUM_TOKEN
+    if not token and args.username and args.password:
+        token = refresh_rossum_token(args.username, args.password)
+    session = requests.Session()
+    session.headers.update({"Authorization": f"Bearer {token}",
+                            "Content-Type":  "application/json"})
+    return session
+
+
+def partitioned_preflight(key: str, cfg: dict, ds_session) -> None:
+    """Fresh-run guards for a partitioned dataset, run ONCE before planning.
+
+    Partition children always launch with --resume, so import_dataset's
+    fresh-run collection check never fires for them — and a per-child check
+    would false-positive on sibling partitions' concurrent writes.  Also
+    sanity-checks id_key on one real-field page before burning the planning
+    budget (belt on top of the child-side total==0 fail-fast).
+    """
+    id_key = cfg.get("id_key", "id")
+    session = make_coupa_session(cfg["scope"])
+    page = fetch_page(session, cfg["endpoint"], ensure_id_field(cfg["fields"]),
+                      _utcnow_ts(), limit=10)
+    if page and all(not r.get(id_key) for r in page):
+        raise SystemExit(
+            f"Dataset '{key}': every sampled record is missing a usable "
+            f"'{id_key}' value — id_key is likely misconfigured for this "
+            "dataset (check the config; dedup would never engage)")
+    preexisting = _collection_count(ds_session, cfg["collection"])
+    if preexisting >= 100:
+        print(f"   [WARN] collection '{cfg['collection']}' already holds "
+              f"{preexisting} document(s). Existing records are SKIPPED, "
+              "never updated — if you are re-replicating (e.g. a changed "
+              "field list), clear or blue-green swap the collection first "
+              "(see SKILL.md).")
+    elif preexisting:
+        print(f"   [NOTE] collection '{cfg['collection']}' already holds "
+              f"{preexisting} document(s) — a few leftovers dedupe "
+              "automatically (every batch is existence-checked).")
+
+
 def build_units(keys: list[str], args) -> list[dict]:
     """One unit per supervised child: {'label','dataset','state_path','resume'}.
 
@@ -1325,16 +1407,18 @@ def build_units(keys: list[str], args) -> list[dict]:
     behavior (per-dataset default state file, resume per args.resume).
     """
     units: list[dict] = []
+    ds_session = None
     for key in keys:
         workers = effective_workers(key, getattr(args, "workers", None))
         existing = find_partition_states(key)
         if existing:
             validated = validate_partition_set(key, existing)
             recorded_of = validated[0][0]["of"]
-            if recorded_of != workers and workers > 1:
-                print(f"   [WARN] {key}: existing partition files use "
-                      f"of={recorded_of}; requested workers={workers} ignored — "
-                      "delete the partition state files to re-plan")
+            # always say so — reusing a plan silently would look like a
+            # violated workers setting (including an explicit --workers 1)
+            print(f"   {key}: reusing the existing {recorded_of}-partition "
+                  "plan (workers settings are ignored for it — delete "
+                  f"coupa_import_state_{key}_p*of*.json to re-plan)")
             for part, path in validated:
                 units.append({"label": f"{key}[p{part['index']}/{part['of']}]",
                               "dataset": key, "state_path": path, "resume": True})
@@ -1348,6 +1432,9 @@ def build_units(keys: list[str], args) -> list[dict]:
                     "progress. Finish it with a plain --resume run (workers 1), "
                     "or delete it to re-plan a partitioned run (already-loaded "
                     "records dedupe).")
+            if ds_session is None:
+                ds_session = _make_ds_session(args)
+            partitioned_preflight(key, DATASETS[key], ds_session)
             anchor, parts = plan_partitions(key, DATASETS[key], workers)
             if parts:
                 for part in parts:
@@ -1380,10 +1467,15 @@ def supervise(keys: list[str], args) -> int:
     units = build_units(keys, args)
     Path("logs").mkdir(exist_ok=True)
     # --rate overrides the config cap as the AGGREGATE for the whole run
-    # (e.g. "--rate 15" when webhooks share the OAuth client)
+    # (e.g. "--rate 15" when webhooks share the OAuth client).  Split across
+    # units that will actually LAUNCH — counting already-completed units
+    # would throttle a resume's lone survivor to a fraction of the budget.
+    launching = [u for u in units
+                 if not ((u["resume"] or args.resume)
+                         and state_is_completed(u["state_path"], u["dataset"]))]
     aggregate = getattr(args, "rate", None) or COUPA_MAX_RPS
-    per_child = (aggregate / len(units)) if units else aggregate
-    print(f"supervisor: {len(units)} child(ren), per-child cap "
+    per_child = (aggregate / len(launching)) if launching else aggregate
+    print(f"supervisor: {len(launching)} child(ren), per-child cap "
           f"{per_child:.2f} req/s (aggregate {aggregate})")
     if per_child < 0.5:
         print("   [WARN] per-child rate under 0.5 req/s — more workers than "

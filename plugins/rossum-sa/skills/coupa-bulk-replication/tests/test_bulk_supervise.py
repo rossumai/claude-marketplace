@@ -192,7 +192,18 @@ def _partitioned_env(monkeypatch, tmp_path, workers=2):
              for k in range(1, workers + 1)]
     monkeypatch.setattr(cbi, "plan_partitions",
                         lambda key, cfg, w: ("2026-07-15T00:00:00Z", parts))
+    # preflight is Coupa/DS-touching — pinned by its own test in
+    # test_bulk_partitions; lifecycle tests stub it out
+    monkeypatch.setattr(cbi, "partitioned_preflight", lambda *a, **kw: None)
     return parts
+
+
+def test_effective_workers_cli_overrides_config(monkeypatch, tmp_path):
+    # an operator's emergency "--workers 1" must beat the config value
+    _partitioned_env(monkeypatch, tmp_path, workers=2)
+    assert cbi.effective_workers("users", None) == 2   # config value
+    assert cbi.effective_workers("users", 1) == 1      # explicit serialize
+    assert cbi.effective_workers("users", 8) == 8
 
 
 def _stub_completes_partition(key, path):
@@ -245,16 +256,21 @@ def test_supervise_reuses_existing_partition_files_without_replanning(
                         lambda *a: pytest.fail("must not re-plan"))
 
     launched = []
+    rates = []
 
     def fake_build(dataset, config, *, resume, username, password,
                    no_unique_index_ok=False, state_file=None, rate=None):
         launched.append(str(state_file))
+        rates.append(rate)
         return _stub_completes_partition(dataset, state_file)
 
     monkeypatch.setattr(cbi, "build_child_cmd", fake_build)
     code = cbi.supervise(["users"], _args(resume=True))
     assert code == 0
     assert launched == ["coupa_import_state_users_p2of2.json"]  # p1 skipped
+    # the lone survivor gets the WHOLE aggregate — completed units must not
+    # count in the rate split (they consume no budget)
+    assert rates == [pytest.approx(20.0)]
 
 
 def test_supervise_rate_override_splits_that_aggregate(monkeypatch, tmp_path):
