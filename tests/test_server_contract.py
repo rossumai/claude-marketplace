@@ -1431,9 +1431,14 @@ _OPS_TREE = {"results": [{
 }]}
 
 
-def _run_update(monkeypatch, args, *, ann_meta=None, ops_response=_OPS_TREE):
-    """Drive rossum_update_annotation_content with start/ops/cancel + the
-    best-effort post-write annotation read all mocked."""
+_ME_URL = "https://x.example/api/v1/users/9"
+
+
+def _run_update(monkeypatch, args, *, ann_meta=None, ops_response=_OPS_TREE,
+                guard_code=200, guard_body=None, whoami=(200, {"url": _ME_URL})):
+    """Drive rossum_update_annotation_content with the pre-write status guard,
+    the whoami owner check, the ops call, and the best-effort post-write
+    annotation read all mocked."""
     silent_calls = []
     monkeypatch.setattr(
         server, "_http_request_silent",
@@ -1445,13 +1450,13 @@ def _run_update(monkeypatch, args, *, ann_meta=None, ops_response=_OPS_TREE):
 
     def fake_status(url, *, method="GET", body=None):
         status_calls.append(url)
-        return 200, ann_meta
+        if "auth/user" in url:
+            return whoami
+        return (guard_code, ann_meta) if guard_code == 200 else (guard_code, guard_body)
 
     monkeypatch.setattr(server, "_http_request_status", fake_status)
 
     def responder(url, method, body):
-        if url.endswith("/start"):
-            return 204
         if url.endswith("/content/operations"):
             return ops_response
         return None
@@ -1465,11 +1470,11 @@ def test_update_annotation_content_compact_default(monkeypatch):
     ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
     fake, emitted, silent_calls, _ = _run_update(
         monkeypatch, {"annotation_id": 55, "operations": ops})
-    # request contract unchanged: start -> ops -> cancel(silent)
-    assert fake.calls[0]["url"].endswith("/annotations/55/start")
-    assert fake.calls[1]["url"].endswith("/annotations/55/content/operations")
-    assert fake.calls[1]["body"] == {"operations": ops}
-    assert any(u.endswith("/annotations/55/cancel") for u in silent_calls)
+    # request contract: status-guarded direct write — no start, no cancel
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert fake.calls[0]["body"] == {"operations": ops}
+    assert silent_calls == []
+    assert not any(c["url"].endswith("/start") for c in fake.calls)
     out = emitted_payload(emitted)
     assert out["annotation_id"] == 55
     assert out["operations_applied"] == 1
@@ -1512,7 +1517,7 @@ def test_update_annotation_content_verbose_preserves_full_result(monkeypatch):
     out = emitted_payload(emitted)
     # exact legacy shape: full ops response echoed under "result"
     assert out == {"annotation_id": 55, "operations_applied": 1, "result": _OPS_TREE}
-    assert status_calls == []                        # no extra read in verbose mode
+    assert len(status_calls) == 1                    # guard only; no post-write read in verbose mode
 
 
 def test_update_annotation_content_schema_has_view_and_fields():
@@ -1521,6 +1526,110 @@ def test_update_annotation_content_schema_has_view_and_fields():
     assert props["fields"]["type"] == "array"
     desc = server.TOOLS["rossum_update_annotation_content"]["description"]
     assert "view" in desc and "fields" in desc
+
+
+# --- update_annotation_content: status guard (no start/cancel lock ritual) ---
+#
+# Verified live 2026-07-23: content/operations needs NO review session — it
+# succeeds on to_review, postponed, and even confirmed annotations, preserving
+# the status. The tool therefore writes directly (no start/cancel, no
+# annotation_content.started side effects) and guards on status itself, because
+# the API would silently accept an edit on a confirmed/exported document.
+
+def test_update_annotation_content_allows_postponed_without_start(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, silent_calls, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "postponed", "automation_blocker": None})
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert silent_calls == []                        # no cancel — status untouched
+    out = emitted_payload(emitted)
+    assert out["status"] == "postponed"              # read-back reflects preserved status
+
+
+def test_update_annotation_content_refuses_confirmed(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, silent_calls, status_calls = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "confirmed"})
+    assert fake.calls == []                          # nothing written
+    assert silent_calls == []
+    assert len(status_calls) == 1                    # guard read only
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    text = res["content"][0]["text"]
+    assert "'confirmed'" in text and "refusing" in text
+
+
+def test_update_annotation_content_refuses_on_guard_read_failure(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        guard_code=503, guard_body="bad gateway")
+    assert fake.calls == []                          # never writes blind
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    # delegated to _emit_http_error: real status + the API's error detail
+    assert "HTTP 503" in res["content"][0]["text"]
+    assert "bad gateway" in res["content"][0]["text"]
+
+
+def test_update_annotation_content_guard_401_prompts_reauth(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        guard_code=401, guard_body={"detail": "Invalid token."})
+    assert fake.calls == []
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    # the guard must go through the standard 401 ladder (re-auth hint +
+    # connection invalidation), not a hand-rolled opaque message
+    assert "rossum_set_token" in res["content"][0]["text"]
+
+
+def test_update_annotation_content_allows_own_reviewing_session(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, status_calls = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "reviewing", "modifier": _ME_URL,
+                  "automation_blocker": None})
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert any("auth/user" in u for u in status_calls)   # owner check ran
+    out = emitted_payload(emitted)
+    assert out["status"] == "reviewing"
+
+
+def test_update_annotation_content_refuses_foreign_reviewing_session(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "reviewing",
+                  "modifier": "https://x.example/api/v1/users/777"})
+    assert fake.calls == []                          # nothing written
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    assert "another user" in res["content"][0]["text"]
+    assert "users/777" in res["content"][0]["text"]
+
+
+def test_update_annotation_content_refuses_reviewing_when_whoami_fails(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "reviewing", "modifier": _ME_URL},
+        whoami=(503, None))
+    assert fake.calls == []                          # fail closed
+    assert emitted[-1]["result"].get("isError")
+
+
+def test_update_annotation_content_no_success_payload_when_ops_fail(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops}, ops_response=None)
+    # guard passed, the ops POST failed (the real _http_request emits its own
+    # error) — the handler must not fabricate a success payload on top
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert emitted == []
 
 
 # --- dispatch-level required-argument validation (usability fix 2) ---
@@ -1835,14 +1944,10 @@ def test_update_marks_failed_blocker_readback(monkeypatch):
             return 502, "bad gateway"
         return 200, ann
 
-    monkeypatch.setattr(server, "_http_request_silent",
-                        lambda url, method="GET": 200)
     monkeypatch.setattr(server, "_http_request_status", fake_status)
     ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
 
     def responder(url, method, body):
-        if url.endswith("/start"):
-            return 204
         if url.endswith("/content/operations"):
             return _OPS_TREE
         return None
@@ -1858,15 +1963,16 @@ def test_update_marks_failed_blocker_readback(monkeypatch):
 
 
 def test_update_marks_failed_annotation_readback(monkeypatch):
-    monkeypatch.setattr(server, "_http_request_silent",
-                        lambda url, method="GET": 200)
+    # pre-write status guard succeeds; the post-write read-back fails
+    status_responses = iter([
+        (200, {"id": 55, "status": "to_review", "automation_blocker": None}),
+        (502, "bad gateway"),
+    ])
     monkeypatch.setattr(server, "_http_request_status",
-                        lambda url, method="GET", body=None: (502, "bad gateway"))
+                        lambda url, method="GET", body=None: next(status_responses))
     ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
 
     def responder(url, method, body):
-        if url.endswith("/start"):
-            return 204
         if url.endswith("/content/operations"):
             return _OPS_TREE
         return None
