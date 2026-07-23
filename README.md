@@ -204,7 +204,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_refire_annotation` | ✏️ Inner-loop re-fire primitive (`mode=validate\|toggle\|reupload`) with try/finally cancel, dedup auto-restore, and merged compact response |
 | `rossum_get_task` | 👁️ Retrieve an async task object (uses `?no_redirect=true` to read status instead of following the /tasks 303 to its result) |
 | `rossum_delete_annotation` | ⚠️ Delete annotations (reversible soft-delete; optional irreversible purge with poll-to-purged) — cleanup for test/iteration loops |
-| `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); direct write, no review lock (status-guarded: refuses annotations past review); compact result by default (`fields`/`view` params like `rossum_get_annotation`) |
+| `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); direct write, no review lock (best-effort status guard: refuses annotations past review and foreign reviewing sessions); compact result by default (`fields`/`view` params like `rossum_get_annotation`) |
 | `rossum_apply_labels` | ✏️ Bulk add/remove labels across annotations in one call (label definitions must already exist — created in the UI or via raw `POST /labels`; list them via `rossum_get` path `/api/v1/labels`) |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |

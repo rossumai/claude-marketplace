@@ -5418,11 +5418,18 @@ def handle_validate_content(request_id, arguments):
     "rossum_update_annotation_content",
     "Writes extracted field values onto an annotation via the bulk content-operations endpoint "
     "(POST /annotations/{id}/content/operations). No review session is needed: the endpoint "
-    "applies edits directly to annotations in to_review, postponed, or reviewing status and "
-    "leaves the status untouched — do NOT wrap this in rossum_start_annotation/"
-    "rossum_cancel_annotation. The tool refuses other statuses (the API silently accepts edits "
-    "even on confirmed/exported annotations — a footgun, not a feature); if such an edit is "
-    "truly intended, move the annotation back to to_review first via rossum_patch_annotation. "
+    "applies edits directly to annotations in to_review or postponed status and leaves the "
+    "status untouched — do NOT wrap this in rossum_start_annotation/rossum_cancel_annotation. "
+    "A 'reviewing' annotation is allowed only when the review session is the caller's own; a "
+    "foreign session is refused (the write would land under that user's live review). The tool "
+    "refuses all other statuses (the API silently accepts edits even on confirmed/exported "
+    "annotations — a footgun, not a feature); if such an edit is truly intended, move the "
+    "annotation back to to_review first via rossum_patch_annotation. The status pre-check is "
+    "best-effort, not atomic with the write. "
+    "CAVEAT: the bulk endpoint returns HTTP 200 but silently no-ops on enum-typed and "
+    "ui_configuration.type=manual fields (e.g. document_type) — read back via fields=[...] to "
+    "confirm the edit landed; for such fields use the per-datapoint endpoint instead "
+    "(PATCH /annotations/{id}/content/{datapoint_id}). "
     "To re-evaluate the hook chain (formulas, rules, MDH) after the edit, follow up with "
     "rossum_refire_annotation mode='validate'. "
     "Each operation targets a DATAPOINT ID from the content tree "
@@ -5445,7 +5452,7 @@ def handle_validate_content(request_id, arguments):
                 "type": "integer",
                 "description": (
                     "The annotation to edit. Must be in to_review, postponed, or reviewing "
-                    "status — the tool checks and refuses others."
+                    "(own session only) status — the tool checks and refuses others."
                 ),
             },
             "operations": {
@@ -5492,17 +5499,20 @@ def handle_update_annotation_content(request_id, arguments):
         return
     annotation_id = arguments["annotation_id"]
     operations = arguments["operations"]
-    # Status guard: content/operations needs no review lock and the API silently
-    # accepts edits even on confirmed/exported annotations, so the pre-check is
-    # the only thing standing between the caller and a write to a document that
-    # already left review.
+    # Status guard (best-effort pre-check — the write is not atomic with it):
+    # content/operations needs no review lock and the API silently accepts edits
+    # even on confirmed/exported annotations, so this check is the only thing
+    # standing between the caller and a write to a document that already left
+    # review.
     guard_code, guard_ann = _http_request_status(
-        f"{base_url}/api/v1/annotations/{annotation_id}")
-    if guard_code != 200 or not isinstance(guard_ann, dict):
-        detail = f"HTTP {guard_code}" if guard_code else "transport error"
+        f"{base_url}/api/v1/annotations/{annotation_id}?fields=status,modifier")
+    if guard_code != 200:
+        _emit_http_error(request_id, guard_code, guard_ann)
+        return
+    if not isinstance(guard_ann, dict):
         tool_result(
             request_id,
-            f"Could not read annotation {annotation_id} before editing ({detail}) — "
+            f"Annotation {annotation_id} pre-check returned an unexpected body — "
             "refusing to write blind.",
             is_error=True,
         )
@@ -5518,6 +5528,34 @@ def handle_update_annotation_content(request_id, arguments):
             is_error=True,
         )
         return
+    if ann_status == "reviewing":
+        # A reviewing annotation is locked to whoever started the session (its
+        # 'modifier'). The raw endpoint would still accept the write, but it
+        # would mutate values under that user's live session — allow only when
+        # the session belongs to the caller.
+        holder = guard_ann.get("modifier")
+        if holder:
+            me_code, me = _http_request_status(f"{base_url}/api/v1/auth/user")
+            if me_code != 200 or not isinstance(me, dict):
+                detail = f"HTTP {me_code}" if me_code else "transport error"
+                tool_result(
+                    request_id,
+                    f"Annotation {annotation_id} is 'reviewing' and the session owner "
+                    f"could not be verified (whoami failed: {detail}) — refusing to "
+                    "write into a possibly foreign review session.",
+                    is_error=True,
+                )
+                return
+            if me.get("url") != holder:
+                tool_result(
+                    request_id,
+                    f"Annotation {annotation_id} is 'reviewing', locked to another user "
+                    f"({holder}) — writing now would change values under their live "
+                    "session. Wait for them to finish, or ask them to close the "
+                    "annotation.",
+                    is_error=True,
+                )
+                return
     result = _http_request(
         request_id, f"{base_url}/api/v1/annotations/{annotation_id}/content/operations",
         method="POST", body={"operations": operations},
