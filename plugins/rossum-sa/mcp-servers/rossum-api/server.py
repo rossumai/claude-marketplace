@@ -209,7 +209,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.32.2"
+_SERVER_VERSION = "0.33.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -5140,8 +5140,11 @@ def handle_patch_annotation(request_id, arguments):
     "rossum_start_annotation",
     "Starts a review session on an annotation — transitions to 'reviewing' status and "
     "locks the annotation to the calling user. Fires 'annotation_content.started' hook events. "
-    "Use as part of an inner-loop iteration; remember to call rossum_cancel_annotation "
-    "afterwards to release the lock (otherwise no other user can edit the annotation). "
+    "Only needed for operations that require an active review session: content/validate "
+    "(rossum_validate_content) and confirm (rossum_confirm_annotation) return HTTP 409 without "
+    "it. NOT needed for content edits — rossum_update_annotation_content writes directly, no "
+    "lock involved. Remember to call rossum_cancel_annotation afterwards to release the lock "
+    "(it restores the annotation's pre-start status). "
     "For the typical 'start → validate → cancel' soft re-fire, prefer rossum_refire_annotation "
     "with mode='validate' — it handles cancel-in-finally automatically.",
     {
@@ -5180,9 +5183,10 @@ def handle_start_annotation(request_id, arguments):
 
 @_tool(
     "rossum_cancel_annotation",
-    "Cancels a review session on an annotation — releases the 'reviewing' lock and returns "
-    "the annotation to 'to_review' status. Mandatory after rossum_start_annotation, even on "
-    "the error path. Tolerates HTTP 409 (already not in reviewing) silently.",
+    "Cancels a review session on an annotation — releases the 'reviewing' lock and restores "
+    "the annotation to its pre-start status (a postponed annotation returns to postponed, "
+    "not to_review). Mandatory after rossum_start_annotation, even on the error path. "
+    "Tolerates HTTP 409 (already not in reviewing) silently.",
     {
         "type": "object",
         "required": ["annotation_id"],
@@ -5355,9 +5359,11 @@ def handle_confirm_annotation(request_id, arguments):
     "Fires the hook chain against an annotation by POSTing to /content/validate with the "
     "specified actions. Returns the freshly computed datapoints projected to the same compact "
     "shape as rossum_get_annotation (value, ocr, normalized, src, score). This does NOT take "
-    "or release a reviewing lock — the annotation must already be in a valid state for "
-    "validation. For the typical iterate-on-deliverable flow, prefer rossum_refire_annotation "
-    "with mode='validate' — it wraps start/validate/cancel correctly.",
+    "or release a reviewing lock — but the endpoint REQUIRES one: the annotation must already "
+    "be in 'reviewing' (started), otherwise it returns HTTP 409 'Document is not being "
+    "annotated' (both to_review and postponed 409). For the typical iterate-on-deliverable "
+    "flow, prefer rossum_refire_annotation with mode='validate' — it wraps "
+    "start/validate/cancel correctly.",
     {
         "type": "object",
         "required": ["annotation_id"],
@@ -5411,9 +5417,15 @@ def handle_validate_content(request_id, arguments):
 @_tool(
     "rossum_update_annotation_content",
     "Writes extracted field values onto an annotation via the bulk content-operations endpoint "
-    "(POST /annotations/{id}/content/operations). Self-managing: it starts the annotation (locking "
-    "it), applies the operations, then releases the lock in a finally block — the edits persist and "
-    "the status returns to to_review. Each operation targets a DATAPOINT ID from the content tree "
+    "(POST /annotations/{id}/content/operations). No review session is needed: the endpoint "
+    "applies edits directly to annotations in to_review, postponed, or reviewing status and "
+    "leaves the status untouched — do NOT wrap this in rossum_start_annotation/"
+    "rossum_cancel_annotation. The tool refuses other statuses (the API silently accepts edits "
+    "even on confirmed/exported annotations — a footgun, not a feature); if such an edit is "
+    "truly intended, move the annotation back to to_review first via rossum_patch_annotation. "
+    "To re-evaluate the hook chain (formulas, rules, MDH) after the edit, follow up with "
+    "rossum_refire_annotation mode='validate'. "
+    "Each operation targets a DATAPOINT ID from the content tree "
     "(find them via rossum_get_annotation_content or rossum_get_annotation), NOT a schema_id. "
     "Operation shapes: replace a value — "
     "{\"op\": \"replace\", \"id\": <datapoint_id>, \"value\": {\"content\": {\"value\": \"<new>\"}}}; "
@@ -5431,7 +5443,10 @@ def handle_validate_content(request_id, arguments):
         "properties": {
             "annotation_id": {
                 "type": "integer",
-                "description": "The annotation to edit. Must be in a startable state (e.g. to_review).",
+                "description": (
+                    "The annotation to edit. Must be in to_review, postponed, or reviewing "
+                    "status — the tool checks and refuses others."
+                ),
             },
             "operations": {
                 "type": "array",
@@ -5477,31 +5492,36 @@ def handle_update_annotation_content(request_id, arguments):
         return
     annotation_id = arguments["annotation_id"]
     operations = arguments["operations"]
-    # start — locks the annotation for editing (returns 204 No Content)
-    start_status = _http_request(
-        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/start",
-        method="POST", parse_json=False,
-    )
-    if start_status is None or not (200 <= start_status < 300):
-        if start_status is not None:
-            tool_result(
-                request_id,
-                f"Start returned HTTP {start_status} — the annotation may not be in a startable "
-                "state (e.g. already confirmed/exported, or locked by another user).",
-                is_error=True,
-            )
+    # Status guard: content/operations needs no review lock and the API silently
+    # accepts edits even on confirmed/exported annotations, so the pre-check is
+    # the only thing standing between the caller and a write to a document that
+    # already left review.
+    guard_code, guard_ann = _http_request_status(
+        f"{base_url}/api/v1/annotations/{annotation_id}")
+    if guard_code != 200 or not isinstance(guard_ann, dict):
+        detail = f"HTTP {guard_code}" if guard_code else "transport error"
+        tool_result(
+            request_id,
+            f"Could not read annotation {annotation_id} before editing ({detail}) — "
+            "refusing to write blind.",
+            is_error=True,
+        )
         return
-    result = None
-    try:
-        result = _http_request(
-            request_id, f"{base_url}/api/v1/annotations/{annotation_id}/content/operations",
-            method="POST", body={"operations": operations},
+    ann_status = guard_ann.get("status")
+    if ann_status not in ("to_review", "postponed", "reviewing"):
+        tool_result(
+            request_id,
+            f"Annotation {annotation_id} is '{ann_status}' — refusing to edit content. "
+            "The API would accept the edit even in this status, but writing to an "
+            "annotation that already left review is almost always a mistake. If it is "
+            "intentional, move it back first (rossum_patch_annotation status='to_review').",
+            is_error=True,
         )
-    finally:
-        # release the review lock; tolerate 409 if no longer in reviewing
-        _http_request_silent(
-            f"{base_url}/api/v1/annotations/{annotation_id}/cancel", method="POST",
-        )
+        return
+    result = _http_request(
+        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/content/operations",
+        method="POST", body={"operations": operations},
+    )
     if result is None:
         return
     fields = arguments.get("fields")
