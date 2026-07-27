@@ -68,3 +68,19 @@ def test_config_accepts_valid_workers(tmp_path):
                           "workers": 4}}
     cbi.load_config(write_config(tmp_path, datasets=datasets))
     assert cbi.DATASETS["users"]["workers"] == 4
+
+
+def test_config_rejects_dataset_extra_params_with_reserved_key(tmp_path):
+    # a dataset's extra_params overriding a cursor/anchor/projection key
+    # must fail loudly at startup, naming both the dataset and the key
+    with pytest.raises(SystemExit) as exc:
+        cbi.load_config(write_config(tmp_path, extra_params={"order_by": "name"}))
+    msg = str(exc.value)
+    assert "users" in msg
+    assert "order_by" in msg
+
+
+def test_config_accepts_valid_extra_params(tmp_path):
+    extra = {"created-at[gt_or_eq]": "2026-01-01T00:00:00Z", "active": "true"}
+    cbi.load_config(write_config(tmp_path, extra_params=extra))
+    assert cbi.DATASETS["users"]["extra_params"] == extra

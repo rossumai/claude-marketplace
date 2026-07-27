@@ -8,9 +8,9 @@ import coupa_bulk_import as cbi
 from bulk_helpers import FakeCoupa, write_config
 
 
-def _env(monkeypatch, tmp_path, ids):
+def _env(monkeypatch, tmp_path, ids, extra_params=None):
     monkeypatch.chdir(tmp_path)
-    cbi.load_config(write_config(tmp_path))
+    cbi.load_config(write_config(tmp_path, extra_params=extra_params))
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
     coupa = FakeCoupa(ids)
     coupa.install(monkeypatch)
@@ -59,6 +59,38 @@ def test_single_worker_returns_no_partitions(monkeypatch, tmp_path):
     assert parts == []
 
 
+def test_plan_partitions_passes_dataset_extra_params_to_probes(monkeypatch, tmp_path):
+    # THE REGRESSION TEST: partition boundaries must be computed over the
+    # SAME filtered slice --probe counts and the run crawls — omitting
+    # extra_params here would balance boundaries over the unfiltered (much
+    # larger) population and hand partition children the wrong id ranges.
+    monkeypatch.setattr(cbi, "MIN_PARTITION", 10)
+    extra = {"created-at[gt_or_eq]": "2026-01-01T00:00:00Z"}
+    coupa = _env(monkeypatch, tmp_path, GAPPY, extra_params=extra)
+    rank_seen, page_seen = [], []
+    real_rank, real_page = coupa.fetch_at_rank, coupa.fetch_page
+
+    def rank_spy(session, endpoint, anchor_ts, rank, extra_params=None):
+        rank_seen.append(extra_params)
+        return real_rank(session, endpoint, anchor_ts, rank,
+                         extra_params=extra_params)
+
+    def page_spy(session, endpoint, fields, anchor_ts, *, before_id=None,
+                id_gt=None, limit=None, extra_params=None):
+        page_seen.append(extra_params)
+        return real_page(session, endpoint, fields, anchor_ts, before_id=before_id,
+                         id_gt=id_gt, limit=limit, extra_params=extra_params)
+
+    monkeypatch.setattr(cbi, "fetch_at_rank", rank_spy)
+    monkeypatch.setattr(cbi, "fetch_page", page_spy)
+    cbi.plan_partitions("users", cbi.DATASETS["users"], 4)
+    # covers BOTH the bisection lambda's rank probes and the per-boundary
+    # rank probes in the edges loop — both go through fetch_at_rank
+    assert rank_seen and all(e == extra for e in rank_seen)
+    # the desc top-edge fetch (limit=1) must carry it too
+    assert page_seen and all(e == extra for e in page_seen)
+
+
 def test_partitioned_preflight_id_key_and_populated(monkeypatch, tmp_path):
     """Partition children always run --resume, so the supervisor's one-time
     preflight owns the fresh-run guards: a misconfigured id_key must abort
@@ -92,10 +124,10 @@ def test_planning_aborts_when_dataset_shrinks(monkeypatch, tmp_path):
     coupa = _env(monkeypatch, tmp_path, GAPPY)
     real = coupa.fetch_at_rank
 
-    def shrunk(session, endpoint, anchor_ts, rank):
+    def shrunk(session, endpoint, anchor_ts, rank, extra_params=None):
         if rank == 250:                      # first internal boundary (1000/4)
             return []
-        return real(session, endpoint, anchor_ts, rank)
+        return real(session, endpoint, anchor_ts, rank, extra_params=extra_params)
 
     monkeypatch.setattr(cbi, "fetch_at_rank", shrunk)
     with pytest.raises(SystemExit) as exc:

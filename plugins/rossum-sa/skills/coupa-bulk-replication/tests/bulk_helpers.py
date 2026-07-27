@@ -88,7 +88,16 @@ class FakeDS:
 
 
 def write_config(tmp_path, **kw):
-    """Write a minimal valid config JSON; keyword args override defaults."""
+    """Write a minimal valid config JSON; keyword args override defaults.
+
+    extra_params: merged into the default "users" dataset block (ignored
+    when an explicit `datasets` override is also given) — a convenience for
+    tests that only need to add extra_params to the single default dataset.
+    """
+    default_users = {"endpoint": "api/users", "collection": "users",
+                     "id_key": "id", "scope": "s", "fields": ["id"]}
+    if kw.get("extra_params") is not None:
+        default_users = {**default_users, "extra_params": kw["extra_params"]}
     cfg = {
         "coupa": {
             "base_url": kw.get("base_url", "https://x.coupahost.com"),
@@ -101,10 +110,7 @@ def write_config(tmp_path, **kw):
             "token": kw.get("token", "tok"),
         },
         "ds_batch_size": kw.get("ds_batch_size", 5000),
-        "datasets": kw.get("datasets", {
-            "users": {"endpoint": "api/users", "collection": "users",
-                      "id_key": "id", "scope": "s", "fields": ["id"]},
-        }),
+        "datasets": kw.get("datasets", {"users": default_users}),
     }
     path = tmp_path / "coupa_bulk_import.config.json"
     path.write_text(json.dumps(cfg))
@@ -143,7 +149,7 @@ class FakeCoupa:
         return [i for i in self.ids if self._stamp(i) <= anchor_ts]
 
     def fetch_page(self, session, endpoint, fields, anchor_ts, *,
-                   before_id=None, id_gt=None, limit=None):
+                   before_id=None, id_gt=None, limit=None, extra_params=None):
         self.page_calls += 1
         sel = [i for i in self._anchored(anchor_ts)
                if (before_id is None or i < before_id)
@@ -151,7 +157,8 @@ class FakeCoupa:
         sel = sorted(sel, reverse=True)[: (limit or self.page_size)]
         return [self._rec(i) for i in sel]
 
-    def fetch_at_rank(self, session, endpoint, anchor_ts, rank):
+    def fetch_at_rank(self, session, endpoint, anchor_ts, rank, *,
+                      extra_params=None):
         self.rank_calls += 1
         asc = self._anchored(anchor_ts)
         return [{"id": asc[rank]}] if rank < len(asc) else []
@@ -176,8 +183,8 @@ def run_import(monkeypatch, tmp_path, pages=None, batch_results=None, resume=Fal
     insert_stub: full replacement for insert_batch (overrides batch_results).
     ds_session: a stateful DS stub (e.g. FakeDS) — when given, the REAL
     insert_batch/_collection_count run against it end-to-end.
-    Returns (saved_state_dict, calls) where calls records cursor values per
-    fetch and inserted batches.
+    Returns (saved_state_dict, calls) where calls records cursor values,
+    extra_params, per fetch and inserted batches.
     """
     import coupa_bulk_import as cbi
 
@@ -190,7 +197,7 @@ def run_import(monkeypatch, tmp_path, pages=None, batch_results=None, resume=Fal
     cbi.load_config(write_config(tmp_path, **kw))
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "coupa-token")
 
-    calls = {"cursors": [], "inserted_batches": [], "id_keys": []}
+    calls = {"cursors": [], "inserted_batches": [], "id_keys": [], "extra_params": []}
 
     if fake_coupa is not None:
         fake_coupa.install(monkeypatch)
@@ -198,8 +205,9 @@ def run_import(monkeypatch, tmp_path, pages=None, batch_results=None, resume=Fal
         pages_iter = iter(pages)
 
         def fake_fetch(session, endpoint, fields, anchor_ts, *,
-                       before_id=None, id_gt=None, limit=None):
+                       before_id=None, id_gt=None, limit=None, extra_params=None):
             calls["cursors"].append(before_id)
+            calls["extra_params"].append(extra_params)
             return next(pages_iter)
 
         monkeypatch.setattr(cbi, "fetch_page", fake_fetch)

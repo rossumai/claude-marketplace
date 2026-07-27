@@ -191,6 +191,10 @@ def load_config(path: Path) -> None:
             raise SystemExit(
                 f"Config error: dataset '{ds_key}' workers must be an "
                 f"integer >= 1 (got {workers!r})")
+        try:
+            validate_extra_params(ds_cfg.get("extra_params"), dataset=ds_key)
+        except ValueError as exc:
+            raise SystemExit(f"Config error: {exc}") from exc
 
 
 def resolve_dataset_keys(arg: str, datasets: dict) -> list[str]:
@@ -385,13 +389,50 @@ def ensure_id_field(fields: list) -> list:
     return fields if "id" in fields else ["id", *fields]
 
 
+# extra_params lets a dataset config be a FILTERED SLICE of its Coupa
+# endpoint (e.g. a lookup slice needs lookup[name][in] + active; an invoice
+# load needs a created-at[gt_or_eq] floor) — merged into every Coupa call
+# fetch_page/fetch_at_rank make for that dataset. These keys are reserved
+# because the script itself manages them (cursor, anchor, projection);
+# letting a dataset override one would corrupt keyset pagination or
+# re-slice partitions mid-run.
+RESERVED_PARAM_KEYS = frozenset({
+    "fields", "order_by", "dir", "offset", "limit",
+    "updated-at[lt_or_eq]", "id[lt]", "id[gt]",
+})
+
+
+def validate_extra_params(extra, *, dataset: str) -> dict:
+    """Reject reserved keys loudly — overriding the cursor keys (order_by,
+    dir, id[lt], id[gt], ...) would corrupt keyset pagination or re-slice
+    partitions mid-run; failing at startup is much cheaper."""
+    if extra is None:
+        return {}
+    if not isinstance(extra, dict):
+        raise ValueError(
+            f"Dataset '{dataset}': extra_params must be an object of Coupa "
+            f"query parameters (got {type(extra).__name__})")
+    bad = sorted(RESERVED_PARAM_KEYS & set(extra))
+    if bad:
+        raise ValueError(
+            f"Dataset '{dataset}': extra_params may not override reserved "
+            f"key(s) {', '.join(bad)} — these are managed by the script "
+            "(cursor, anchor, projection)")
+    return dict(extra)
+
+
 def fetch_page(session: requests.Session, endpoint: str, fields: list,
                anchor_ts: str, *, before_id: int | None = None,
-               id_gt: int | None = None, limit: int | None = None) -> list:
+               id_gt: int | None = None, limit: int | None = None,
+               extra_params: dict | None = None) -> list:
     """One keyset page: newest-by-id first, anchored, every page an indexed seek.
 
     before_id: moving upper bound (exclusive) — the cursor.
     id_gt:     static lower bound (exclusive) — partition floor (spec §4.3).
+    extra_params: dataset-specific Coupa query params (filtered-slice
+    datasets) merged in last — see validate_extra_params for the reserved
+    keys guarded against here as a last-resort belt on top of the
+    load_config-time check.
     """
     params = {
         "fields":               json.dumps(fields),
@@ -406,19 +447,27 @@ def fetch_page(session: requests.Session, endpoint: str, fields: list,
         params["id[gt]"] = id_gt
     if limit is not None:
         params["limit"] = limit
+    if extra_params:
+        bad = RESERVED_PARAM_KEYS & set(extra_params)
+        if bad:
+            raise ValueError(f"extra_params may not override reserved key(s): "
+                             f"{', '.join(sorted(bad))}")
+        params.update(extra_params)
     resp = coupa_call(lambda: session.get(f"{COUPA_BASE_URL}/{endpoint}",
                                           params=params, verify=False, timeout=120))
     return resp.json() or []
 
 
 def fetch_at_rank(session: requests.Session, endpoint: str, anchor_ts: str,
-                  rank: int) -> list:
+                  rank: int, *, extra_params: dict | None = None) -> list:
     """The record at ascending-id rank N, or [] past the end.
 
     limit=1&offset=N — Coupa's only counting primitive (no count endpoint):
     a record exists at rank N iff count > N. Also the boundary-rank probe
     for partition planning (spec §4.3). Deep offsets are slow per call but
     each plan needs only ~2*log2(C) + W-1 of them.
+    extra_params: see fetch_page — a filtered-slice dataset must count and
+    plan over the SAME slice it will import, not the whole endpoint.
     """
     params = {
         "fields":               json.dumps(["id"]),
@@ -428,6 +477,12 @@ def fetch_at_rank(session: requests.Session, endpoint: str, anchor_ts: str,
         "limit":                1,
         "updated-at[lt_or_eq]": anchor_ts,
     }
+    if extra_params:
+        bad = RESERVED_PARAM_KEYS & set(extra_params)
+        if bad:
+            raise ValueError(f"extra_params may not override reserved key(s): "
+                             f"{', '.join(sorted(bad))}")
+        params.update(extra_params)
     resp = coupa_call(lambda: session.get(f"{COUPA_BASE_URL}/{endpoint}",
                                           params=params, verify=False, timeout=120))
     return resp.json() or []
@@ -828,6 +883,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
 
     id_key = cfg.get("id_key", "id")
     fields = ensure_id_field(cfg["fields"])
+    extra  = cfg.get("extra_params")
 
     print(f"\n── {key}  →  {cfg['collection']} ──")
     if part:
@@ -909,14 +965,16 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         # absorbed 429/503/conn blips before a 401 can reach here)
         try:
             page = fetch_page(coupa_session, cfg["endpoint"], fields,
-                              anchor_ts, before_id=cursor, id_gt=id_gt)
+                              anchor_ts, before_id=cursor, id_gt=id_gt,
+                              extra_params=extra)
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code == 401:
                 print("   [Coupa token expired — refreshing]")
                 token = get_coupa_token(cfg["scope"])
                 coupa_session.headers["Authorization"] = f"Bearer {token}"
                 page = fetch_page(coupa_session, cfg["endpoint"], fields,
-                                  anchor_ts, before_id=cursor, id_gt=id_gt)
+                                  anchor_ts, before_id=cursor, id_gt=id_gt,
+                                  extra_params=extra)
             else:
                 raise
 
@@ -1009,11 +1067,13 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
     coupa_session = make_coupa_session(cfg["scope"])
 
     fields = ensure_id_field(cfg["fields"])
+    extra  = cfg.get("extra_params")
     records: list = []
     cursor = None
     while len(records) < n:
         page = fetch_page(coupa_session, cfg["endpoint"], fields,
-                          anchor_ts, before_id=cursor, limit=n - len(records))
+                          anchor_ts, before_id=cursor, limit=n - len(records),
+                          extra_params=extra)
         if not page:
             break
         records.extend(page)
@@ -1102,15 +1162,18 @@ def suggest_workers(count: int, rate: float, target_hours: float = 4.0,
     return max(1, min(by_time, by_size, max_workers))
 
 
-def measure_rate(session, endpoint: str, fields: list, anchor_ts: str) -> float:
+def measure_rate(session, endpoint: str, fields: list, anchor_ts: str,
+                 extra_params: dict | None = None) -> float:
     """Sampled single-worker throughput (rec/s) over SAMPLE_PAGES keyset
     pages with the dataset's REAL field list — record width dominates
     per-record cost (~10x between narrow and wide datasets), so counts
-    alone cannot size workers."""
+    alone cannot size workers. extra_params: see fetch_page — a filtered-
+    slice dataset must be sampled over its own slice, not the whole endpoint."""
     fetched, cursor = 0, None
     t0 = time.monotonic()
     for _ in range(SAMPLE_PAGES):
-        page = fetch_page(session, endpoint, fields, anchor_ts, before_id=cursor)
+        page = fetch_page(session, endpoint, fields, anchor_ts, before_id=cursor,
+                          extra_params=extra_params)
         if not page:
             break
         fetched += len(page)
@@ -1148,14 +1211,17 @@ def probe_datasets(keys: list[str], state: dict) -> None:
     suggestions: dict[str, int] = {}
     for key in keys:
         cfg = DATASETS[key]
+        extra = cfg.get("extra_params")
         ds_st, done = _dataset_progress(key, state)
         anchor = ds_st.get("anchor_updated_at") \
             or _utcnow_ts()
         session = make_coupa_session(cfg["scope"])
         n = _bisect_count(
-            lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off)))
+            lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off,
+                                           extra_params=extra)))
         rate = measure_rate(session, cfg["endpoint"],
-                            ensure_id_field(cfg["fields"]), anchor)
+                            ensure_id_field(cfg["fields"]), anchor,
+                            extra_params=extra)
         pct = f"  ({done / n:.1%} processed)" if done and n else ""
         print(f"   {key:<28} {n:>9}  anchor: {anchor}{pct}")
         if rate:
@@ -1228,9 +1294,11 @@ def plan_partitions(key: str, cfg: dict, workers: int) -> tuple[str, list[dict]]
     min-partition clamp lands on a single worker.
     """
     anchor = _utcnow_ts()
+    extra = cfg.get("extra_params")
     session = make_coupa_session(cfg["scope"])
     count = _bisect_count(
-        lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off)))
+        lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off,
+                                       extra_params=extra)))
     w = min(workers, max(1, count // MIN_PARTITION))   # floor: no partition under MIN_PARTITION records
     if w <= 1:
         if workers > 1:
@@ -1242,14 +1310,16 @@ def plan_partitions(key: str, cfg: dict, workers: int) -> tuple[str, list[dict]]
     # A rank probe at count-1 would crash whenever the anchored set shrinks
     # during the minutes-long bisection (any record updated mid-planning
     # leaves the set), which is the normal case on a live tenant.
-    top = fetch_page(session, cfg["endpoint"], ["id"], anchor, limit=1)
+    top = fetch_page(session, cfg["endpoint"], ["id"], anchor, limit=1,
+                     extra_params=extra)
     if not top:
         raise SystemExit(f"Dataset '{key}': no records under the planning "
                          "anchor — nothing to partition")
     edges = [0]
     for k in range(1, w):
         rank = k * count // w
-        rec = fetch_at_rank(session, cfg["endpoint"], anchor, rank)
+        rec = fetch_at_rank(session, cfg["endpoint"], anchor, rank,
+                            extra_params=extra)
         if not rec:
             raise SystemExit(
                 f"Dataset '{key}': the dataset shrank while planning "
@@ -1379,7 +1449,7 @@ def partitioned_preflight(key: str, cfg: dict, ds_session) -> None:
     id_key = cfg.get("id_key", "id")
     session = make_coupa_session(cfg["scope"])
     page = fetch_page(session, cfg["endpoint"], ensure_id_field(cfg["fields"]),
-                      _utcnow_ts(), limit=10)
+                      _utcnow_ts(), limit=10, extra_params=cfg.get("extra_params"))
     if page and all(not r.get(id_key) for r in page):
         raise SystemExit(
             f"Dataset '{key}': every sampled record is missing a usable "

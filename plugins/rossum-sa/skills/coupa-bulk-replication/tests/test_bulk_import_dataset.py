@@ -23,6 +23,26 @@ def test_fresh_run_records_total_inserted_and_cursor(monkeypatch, tmp_path):
     assert calls["cursors"] == [None, 8, 7]        # cursor advances per page
 
 
+# ── extra_params: the highest-stakes call site ───────────────────────────────
+
+def test_import_dataset_passes_extra_params_to_every_fetch_page_call(monkeypatch, tmp_path):
+    # THE regression pin for the call site that actually writes rows: if
+    # import_dataset's own fetch_page forgot extra_params, a "filtered
+    # slice" dataset would silently ingest the WHOLE Coupa endpoint instead
+    # of the configured slice — the exact data-integrity bug this feature
+    # exists to prevent (a field run saw 1.88M unfiltered vs 197k inside the
+    # intended floor). Covers the normal-path fetch; every page this run
+    # makes (including the terminating empty page) must carry it.
+    extra = {"created-at[gt_or_eq]": "2026-01-01T00:00:00Z", "active": "true"}
+    datasets = {"users": {"endpoint": "api/users", "collection": "users",
+                          "id_key": "id", "scope": "s", "fields": ["id"],
+                          "extra_params": extra}}
+    saved, calls = run_import(monkeypatch, tmp_path,
+                              [make_records(2, 1), []], datasets=datasets)
+    assert saved["users"]["completed"] is True
+    assert calls["extra_params"] and all(e == extra for e in calls["extra_params"])
+
+
 def test_duplicates_counted_processed_not_inserted(monkeypatch, tmp_path):
     results = [cbi.BatchResult(inserted=1, duplicates=2, failed=0)]
     saved, _ = run_import(monkeypatch, tmp_path, [make_records(3, 2, 1), []],

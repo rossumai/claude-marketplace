@@ -28,7 +28,9 @@
       "fields": [
         "id", "created_at", "updated_at", "po_number", "status",
         {"supplier": ["id", "name", "display_name", "number"]}
-      ]
+      ],
+      "_comment_extra_params": "optional: extra Coupa query params merged into EVERY call for this dataset (fetch, --probe counting, partition planning) — use for filtered slices, e.g. {\"created-at[gt_or_eq]\": \"...\"} or {\"active\": \"true\"}. Reserved (rejected): fields, order_by, dir, offset, limit, updated-at[lt_or_eq], id[lt], id[gt]",
+      "extra_params": {}
     }
   }
 }

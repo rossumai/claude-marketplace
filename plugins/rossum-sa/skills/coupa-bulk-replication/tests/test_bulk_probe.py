@@ -55,9 +55,9 @@ def test_suggest_workers_degenerate_inputs():
 
 # ── probe_datasets: anchor reuse + report ────────────────────────────────────
 
-def _probe_env(monkeypatch, tmp_path, ids):
+def _probe_env(monkeypatch, tmp_path, ids, extra_params=None):
     monkeypatch.chdir(tmp_path)
-    cbi.load_config(write_config(tmp_path))
+    cbi.load_config(write_config(tmp_path, extra_params=extra_params))
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
     coupa = FakeCoupa(ids)
     coupa.install(monkeypatch)
@@ -69,9 +69,9 @@ def test_probe_uses_anchor_from_state(monkeypatch, tmp_path, capsys):
     anchors = []
     real = coupa.fetch_at_rank
 
-    def spy(session, endpoint, anchor_ts, rank):
+    def spy(session, endpoint, anchor_ts, rank, extra_params=None):
         anchors.append(anchor_ts)
-        return real(session, endpoint, anchor_ts, rank)
+        return real(session, endpoint, anchor_ts, rank, extra_params=extra_params)
 
     monkeypatch.setattr(cbi, "fetch_at_rank", spy)
     state = {"users": {"anchor_updated_at": "2026-05-01T00:00:00Z"}}
@@ -123,11 +123,34 @@ def test_probe_reads_anchor_from_partition_files(monkeypatch, tmp_path, capsys):
     anchors = []
     real = coupa.fetch_at_rank
 
-    def spy(session, endpoint, anchor_ts, rank):
+    def spy(session, endpoint, anchor_ts, rank, extra_params=None):
         anchors.append(anchor_ts)
-        return real(session, endpoint, anchor_ts, rank)
+        return real(session, endpoint, anchor_ts, rank, extra_params=extra_params)
 
     monkeypatch.setattr(cbi, "fetch_at_rank", spy)
     cbi.probe_datasets(["users"], {})
     assert anchors and all(a == "2026-06-15T12:00:00Z" for a in anchors)
     assert "25.0%" in capsys.readouterr().out   # progress summed vs frozen set
+
+
+# ── probe_datasets: extra_params reaches counting (regression) ───────────────
+
+def test_probe_passes_dataset_extra_params_to_rank_probe(monkeypatch, tmp_path):
+    # THE REGRESSION TEST: a dataset that is a filtered slice of its Coupa
+    # endpoint (e.g. a floor filter) must have --probe count THAT slice, not
+    # the whole endpoint — a field run saw 1,884,749 unfiltered vs 197,259
+    # inside the intended floor (9.6x). Missing this wiring silently reports
+    # the wrong population before any partitioning or run even starts.
+    extra = {"created-at[gt_or_eq]": "2026-01-01T00:00:00Z"}
+    coupa = _probe_env(monkeypatch, tmp_path, list(range(1, 11)),
+                       extra_params=extra)
+    seen = []
+    real = coupa.fetch_at_rank
+
+    def spy(session, endpoint, anchor_ts, rank, extra_params=None):
+        seen.append(extra_params)
+        return real(session, endpoint, anchor_ts, rank, extra_params=extra_params)
+
+    monkeypatch.setattr(cbi, "fetch_at_rank", spy)
+    cbi.probe_datasets(["users"], {})
+    assert seen and all(e == extra for e in seen)
