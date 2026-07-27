@@ -84,3 +84,19 @@ def test_config_accepts_valid_extra_params(tmp_path):
     extra = {"created-at[gt_or_eq]": "2026-01-01T00:00:00Z", "active": "true"}
     cbi.load_config(write_config(tmp_path, extra_params=extra))
     assert cbi.DATASETS["users"]["extra_params"] == extra
+
+
+def test_config_min_partition_default_and_override(tmp_path):
+    # top-level knob, sits beside ds_batch_size — same default/override
+    # pattern as COUPA_MAX_RPS above
+    cbi.load_config(write_config(tmp_path))
+    assert cbi.MIN_PARTITION == 50_000
+    cbi.load_config(write_config(tmp_path, min_partition=25_000))
+    assert cbi.MIN_PARTITION == 25_000
+
+
+@pytest.mark.parametrize("bad", [0, -1, "big", 2.5, True])
+def test_config_rejects_bad_min_partition(tmp_path, bad):
+    with pytest.raises(SystemExit) as exc:
+        cbi.load_config(write_config(tmp_path, min_partition=bad))
+    assert "min_partition" in str(exc.value)

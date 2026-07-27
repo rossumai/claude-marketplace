@@ -105,7 +105,8 @@ ROSSUM_API_URL: str = ""
 
 STATE_FILE    = Path("coupa_import_state.json")  # overridden by --state-file
 DS_BATCH_SIZE = 5000                              # records per insert_many call
-MIN_PARTITION = 50_000   # never split below this many records per worker
+MIN_PARTITION = 50_000   # never split below this many records per worker —
+                         # overridden by config key "min_partition" in load_config
 
 
 def _utcnow_ts() -> str:
@@ -132,7 +133,7 @@ def load_config(path: Path) -> None:
     """Populate module-level configuration from a JSON file."""
     global COUPA_CLIENT_ID, COUPA_CLIENT_SECRET, COUPA_BASE_URL, COUPA_MAX_RPS
     global ROSSUM_TOKEN, ROSSUM_DS_URL, ROSSUM_API_URL
-    global DS_BATCH_SIZE, DATASETS, CONFIG_PATH
+    global DS_BATCH_SIZE, MIN_PARTITION, DATASETS, CONFIG_PATH
 
     CONFIG_PATH = path
 
@@ -157,6 +158,15 @@ def load_config(path: Path) -> None:
     ROSSUM_API_URL = (rossum.get("api_url") or "").strip().rstrip("/")
 
     DS_BATCH_SIZE = int(cfg.get("ds_batch_size", 5000))
+
+    min_partition = cfg.get("min_partition", 50_000)
+    if isinstance(min_partition, bool) or not isinstance(min_partition, int) \
+            or min_partition < 1:
+        raise SystemExit(
+            f"Config error: min_partition must be an integer >= 1 "
+            f"(got {min_partition!r})")
+    MIN_PARTITION = min_partition
+
     DATASETS      = cfg.get("datasets") or {}
 
     required = {
@@ -1146,15 +1156,21 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
 SAMPLE_PAGES = 3   # keyset pages fetched (real field list) to measure rec/s
 
 
-def suggest_workers(count: int, rate: float, target_hours: float = 4.0,
+def suggest_workers(count: int, rate: float, target_hours: float = 1.0,
                     max_workers: int = 8,
-                    min_partition: int = MIN_PARTITION) -> int:
+                    min_partition: int | None = None) -> int:
     """Advisory only (spec §4.4): workers to bring one dataset under
     target_hours, capped by max_workers and the min-partition floor
     (floor semantics — no partition ever holds fewer than min_partition
     records; same clamp the planner enforces, so the suggestion is never
     silently clamped away at run time).
+    min_partition defaults to the module global MIN_PARTITION, read at
+    CALL time (not def time — a bare `= MIN_PARTITION` default would bind
+    the value in effect when this module loads, before load_config ever
+    runs, and a config-set min_partition would never be seen here).
     Printed by --probe; the run path never calls this."""
+    if min_partition is None:
+        min_partition = MIN_PARTITION
     if not count or not rate:
         return 1
     by_time = math.ceil(count / rate / 3600 / target_hours)

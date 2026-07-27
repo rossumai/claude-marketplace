@@ -17,6 +17,9 @@
 
   "ds_batch_size": 5000,
 
+  "_comment_min_partition": "optional (default 50000): no partition ever holds fewer than this many records, however many workers are requested — the floor plan_partitions and the --probe suggestion clamp to. Field runs have seen this floor, not the Coupa API, be the binding constraint on worker count for a mid-sized dataset",
+  "min_partition": 50000,
+
   "datasets": {
     "purchase_orders": {
       "endpoint":   "api/purchase_orders",

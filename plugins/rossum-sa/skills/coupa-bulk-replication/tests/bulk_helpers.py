@@ -93,6 +93,9 @@ def write_config(tmp_path, **kw):
     extra_params: merged into the default "users" dataset block (ignored
     when an explicit `datasets` override is also given) — a convenience for
     tests that only need to add extra_params to the single default dataset.
+    min_partition: top-level config key (sits beside ds_batch_size); omitted
+    from the JSON entirely unless explicitly passed, so tests can exercise
+    load_config's own "key absent -> defaults to 50_000" fallback.
     """
     default_users = {"endpoint": "api/users", "collection": "users",
                      "id_key": "id", "scope": "s", "fields": ["id"]}
@@ -112,6 +115,8 @@ def write_config(tmp_path, **kw):
         "ds_batch_size": kw.get("ds_batch_size", 5000),
         "datasets": kw.get("datasets", {"users": default_users}),
     }
+    if kw.get("min_partition") is not None:
+        cfg["min_partition"] = kw["min_partition"]
     path = tmp_path / "coupa_bulk_import.config.json"
     path.write_text(json.dumps(cfg))
     return path

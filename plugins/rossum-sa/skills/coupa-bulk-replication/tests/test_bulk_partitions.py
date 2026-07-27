@@ -8,9 +8,10 @@ import coupa_bulk_import as cbi
 from bulk_helpers import FakeCoupa, write_config
 
 
-def _env(monkeypatch, tmp_path, ids, extra_params=None):
+def _env(monkeypatch, tmp_path, ids, extra_params=None, min_partition=None):
     monkeypatch.chdir(tmp_path)
-    cbi.load_config(write_config(tmp_path, extra_params=extra_params))
+    cbi.load_config(write_config(tmp_path, extra_params=extra_params,
+                                 min_partition=min_partition))
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "t")
     coupa = FakeCoupa(ids)
     coupa.install(monkeypatch)
@@ -23,8 +24,10 @@ GAPPY = ([*range(1, 401)] +                 # dense low ids
 
 
 def test_partitions_cover_exactly_and_balance(monkeypatch, tmp_path):
-    monkeypatch.setattr(cbi, "MIN_PARTITION", 10)
+    # load_config (inside _env) now sets MIN_PARTITION from config too, so
+    # the monkeypatch override must be applied AFTER _env, not before it
     _env(monkeypatch, tmp_path, GAPPY)
+    monkeypatch.setattr(cbi, "MIN_PARTITION", 10)
     anchor, parts = cbi.plan_partitions("users", cbi.DATASETS["users"], 4)
     assert [p["index"] for p in parts] == [1, 2, 3, 4]
     assert all(p["of"] == 4 for p in parts)
@@ -42,8 +45,8 @@ def test_partitions_cover_exactly_and_balance(monkeypatch, tmp_path):
 def test_partitions_clamped_by_min_partition(monkeypatch, tmp_path):
     # FLOOR semantics: no partition ever holds fewer than MIN_PARTITION
     # records — 1000 ids / 500 floor = at most 2 workers, even when 8 asked
-    monkeypatch.setattr(cbi, "MIN_PARTITION", 500)
     _env(monkeypatch, tmp_path, GAPPY)
+    monkeypatch.setattr(cbi, "MIN_PARTITION", 500)
     anchor, parts = cbi.plan_partitions("users", cbi.DATASETS["users"], 8)
     assert len(parts) == 2
     for p in parts:
@@ -59,14 +62,24 @@ def test_single_worker_returns_no_partitions(monkeypatch, tmp_path):
     assert parts == []
 
 
+def test_config_min_partition_changes_the_planner_clamp(monkeypatch, tmp_path):
+    # the config knob reaches plan_partitions with NO monkeypatch involved —
+    # this is the path a real customer config exercises (the field case: at
+    # 197k records the 50k default floor capped workers at 3; a config
+    # override changes what "the floor" even means, without touching code)
+    _env(monkeypatch, tmp_path, GAPPY, min_partition=10)
+    anchor, parts = cbi.plan_partitions("users", cbi.DATASETS["users"], 4)
+    assert len(parts) == 4
+
+
 def test_plan_partitions_passes_dataset_extra_params_to_probes(monkeypatch, tmp_path):
     # THE REGRESSION TEST: partition boundaries must be computed over the
     # SAME filtered slice --probe counts and the run crawls — omitting
     # extra_params here would balance boundaries over the unfiltered (much
     # larger) population and hand partition children the wrong id ranges.
-    monkeypatch.setattr(cbi, "MIN_PARTITION", 10)
     extra = {"created-at[gt_or_eq]": "2026-01-01T00:00:00Z"}
     coupa = _env(monkeypatch, tmp_path, GAPPY, extra_params=extra)
+    monkeypatch.setattr(cbi, "MIN_PARTITION", 10)
     rank_seen, page_seen = [], []
     real_rank, real_page = coupa.fetch_at_rank, coupa.fetch_page
 
@@ -120,8 +133,8 @@ def test_planning_aborts_when_dataset_shrinks(monkeypatch, tmp_path):
     # a record updated during the minutes-long bisection leaves the anchored
     # set; a rank probe past the new end must abort the plan, not crash or
     # seed a bad plan
-    monkeypatch.setattr(cbi, "MIN_PARTITION", 10)
     coupa = _env(monkeypatch, tmp_path, GAPPY)
+    monkeypatch.setattr(cbi, "MIN_PARTITION", 10)
     real = coupa.fetch_at_rank
 
     def shrunk(session, endpoint, anchor_ts, rank, extra_params=None):

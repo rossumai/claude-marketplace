@@ -33,12 +33,26 @@ def test_bisect_count_large_stays_within_call_budget():
 # ── suggest_workers (pure) ───────────────────────────────────────────────────
 
 def test_suggest_workers_scales_with_est_hours():
-    # 4.77M at 20 rec/s ≈ 66h -> ceil(66/4)=17 -> capped at 8
+    # target_hours default is 1.0 (was 4.0 — under-advised: a dataset that
+    # measures ~2.57h single-threaded used to suggest 1 worker instead of
+    # the floor-allowed 3; see test_suggest_workers_field_validated_boundary).
+    # 4.77M at 20 rec/s ≈ 66h -> ceil(66/1)=67 -> still capped at 8
     assert cbi.suggest_workers(4_770_000, 20.0) == 8
-    # 4.77M at 700 rec/s ≈ 1.9h -> under target -> 1
-    assert cbi.suggest_workers(4_770_000, 700.0) == 1
-    # 200k at 10 rec/s ≈ 5.6h -> 2 by time, min-partition floor allows 4 -> 2
-    assert cbi.suggest_workers(200_000, 10.0) == 2
+    # 4.77M at 700 rec/s ≈ 1.9h -> ceil(1.9/1)=2 (no longer "under target")
+    assert cbi.suggest_workers(4_770_000, 700.0) == 2
+    # 200k at 10 rec/s ≈ 5.6h -> ceil(5.6/1)=6 by time, but the 50k floor
+    # caps it at 4 — the floor is now the binding constraint, not the target
+    assert cbi.suggest_workers(200_000, 10.0) == 4
+
+
+def test_suggest_workers_field_validated_boundary():
+    # THE field-validated case motivating the target_hours change: at
+    # 197,259 records measuring 21.3 rec/s single-threaded (~2.57h), the
+    # OLD 4h target suggested 1 worker; the 50k-per-worker floor — not the
+    # API — was the actual binding constraint (capped at 3 workers either
+    # way: measured 21.3 rec/s at 1 worker vs 41.6 at 3). New 1h default:
+    # by_time=ceil(2.57/1)=3, by_size=197259//50000=3 -> suggests 3.
+    assert cbi.suggest_workers(197_259, 21.3) == 3
 
 
 def test_suggest_workers_min_partition_floor():
