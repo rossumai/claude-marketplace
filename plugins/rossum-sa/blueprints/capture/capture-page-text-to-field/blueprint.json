@@ -4,13 +4,25 @@
   "summary": "Park whole-page OCR text into schema fields on initialize, so an LLM/reasoning field (which cannot read the document) has content to work with.",
   "maturity": "standard",
   "params": {
-    "first_page_field": {"required": true, "description": "schema id receiving the FIRST page's text; plain string field, ui_configuration.type 'data'"},
-    "last_page_field":  {"required": true, "description": "schema id receiving the LAST page's text; on a 1-page document it receives the same text as first_page_field"},
-    "max_chars":        {"default": 20000, "description": "per-field truncation cap; keeps a long page from bloating the annotation and the downstream prompt"}
+    "first_page_field": {
+      "required": true,
+      "description": "schema id receiving the FIRST page's text; plain string field, ui_configuration.type 'data'"
+    },
+    "last_page_field": {
+      "required": true,
+      "description": "schema id receiving the LAST page's text; on a 1-page document it receives the same text as first_page_field"
+    },
+    "max_chars": {
+      "default": 20000,
+      "description": "per-field truncation cap; keeps a long page from bloating the annotation and the downstream prompt"
+    }
   },
-  "produces": ["«first_page_field»", "«last_page_field»"],
+  "produces": [
+    "\u00abfirst_page_field\u00bb",
+    "\u00ablast_page_field\u00bb"
+  ],
   "consumes": [],
-  "provenance": "Lifted from a field-built function hook (2026-07). Verified live on a 6-page and a 1-page document, and the page_data semantics re-verified against a purpose-built 25-page document: the 20-page default, the silent >20 truncation, ascending result order, and texts-has-no-position all confirmed by API probe.",
+  "provenance": "Lifted from a field-built function hook (2026-07) and verified live: the page_data semantics re-probed against a purpose-built 25-page document (20-page default, silent >20 truncation, ascending result order, texts-has-no-position), and the downstream contract confirmed on an org with reasoning fields enabled \u2014 a hook-written context field is picked up by the reasoning field on the same run.",
   "reference": "rossum-reference#page-data-ocr-text-and-spatial-data",
-  "notes": "Reasoning fields are feature-gated and separately billed — confirm the org has them before designing around this. Fails OPEN: any fetch/parse error logs and writes empty strings rather than blocking the document. Uses granularity=texts so no line joining or reading-order reconstruction is needed. Requires sideload: [\"schemas\"] on the hook (TxScript) — clearing it fails every run before any useful work. Pairs with a reasoning field naming these fields in its context; prefer two narrow labelled fields over one concatenated blob, since context entries are presented to the model by field label."
+  "notes": "Reasoning fields are feature-gated and separately billed, and the gate is NOT enforced by the schema API \u2014 a non-enabled org accepts the config and simply never produces a value. A reasoning field is a normal datapoint (type string) marked by ui_configuration.type 'reasoning'; sending type 'reasoning' is rejected. Verified: a reasoning field DOES recalculate from a field this hook writes in the same event chain, so one pass is enough. Fails OPEN: any fetch/parse error logs and writes empty strings rather than blocking the document. Uses granularity=texts so no line joining or reading-order reconstruction is needed. Requires sideload: [\"schemas\"] on the hook (TxScript) \u2014 clearing it fails every run before any useful work. Prefer two narrow labelled fields over one concatenated blob, since context entries are presented to the model by field label."
 }

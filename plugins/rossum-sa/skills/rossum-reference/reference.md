@@ -1303,11 +1303,16 @@ For the full reference — field/annotation access, helpers (`is_set`/`is_empty`
 
 ## Reasoning Fields
 
-Reasoning fields are "inline LLM fields" that generate predictions based on configured prompts. Schema type: `reasoning`.
+Reasoning fields are "inline LLM fields" that generate predictions based on configured prompts.
+
+**They are not a schema `type`.** A reasoning field is an ordinary datapoint — usually
+`"type": "string"` — marked by **`ui_configuration.type: "reasoning"`** and carrying `prompt` and
+`context` properties. Sending `"type": "reasoning"` is rejected
+(`reasoning not among date,number,enum,string,button`), which reads like a typo but is really the
+wrong axis.
 
 **Key characteristics**:
 - Best for single-value, single-task extraction (e.g., extract country code from address)
-- Aggressive caching: identical inputs produce identical outputs even when prompt changes
 - Not suitable for tasks requiring high accuracy or reproducibility (use formula fields for math)
 - Can be overridden from UI unless edit option is disabled
 - Always validate outputs with business rules when possible
@@ -1315,32 +1320,37 @@ Reasoning fields are "inline LLM fields" that generate predictions based on conf
 ### Availability — feature-gated and separately billed
 
 Reasoning fields require **Rossum-side organization enablement** and are **billed separately**.
-They are not a schema feature you can simply start using. On an organization without the feature,
-a schema PATCH adding one is rejected:
 
-```
-HTTP 400
-{"content":[…,{"children":{"2":{"type":"reasoning not among date,number,enum,string,button"}}}]}
-```
-
-That error reads like a typo in the `type` value; it is not. It is the feature gate. Confirm
-entitlement before designing around reasoning fields. (The rejected PATCH is atomic — the schema
-is left untouched.)
+**The gate is not enforced by the schema API.** A schema PATCH adding a correctly-shaped reasoning
+field is accepted on an organization that cannot run one — verified on a non-enabled sandbox. So a
+misconfiguration presents as a field that simply never produces a value, with no error anywhere.
+Confirm entitlement before designing around reasoning fields; do not treat "the PATCH worked" as
+evidence the feature is available.
 
 ### The two properties that matter
 
-`prompt` and `context` are properties of the schema **datapoint** itself:
+`prompt` and `context` are properties of the schema **datapoint** itself. A real production field:
 
 ```jsonc
 {
   "category": "datapoint",
-  "id": "service_period_start",
-  "label": "Service period start",
-  "type": "reasoning",
-  "prompt": "Return the service period start date as YYYY-MM-DD. If the document states no service period, return an empty string.",
-  "context": ["field.page_text_first", "self.attr.label"]
+  "id": "recipient_country_code",
+  "label": "Bill to Country Code",
+  "type": "string",                              // the DATA type — not "reasoning"
+  "ui_configuration": {
+    "type": "reasoning",                         // <- this is what makes it a reasoning field
+    "edit": "disabled"
+  },
+  "prompt": "Extract the 2-letter ISO 3166-1 alpha-2 country code from the bill-to address. Examples: Danmark→DK, Deutschland→DE… If no country is found, output empty string.",
+  "context": ["field.recipient_address"],
+  "disable_prediction": true,                    // conventional: no engine prediction competing
+  "rir_field_names": [],
+  "hidden": true
 }
 ```
+
+`disable_prediction: true` with empty `rir_field_names` is the conventional companion shape — the
+value comes from the prompt, not from extraction.
 
 | Property | Type | Meaning |
 |---|---|---|
@@ -1350,11 +1360,18 @@ is left untouched.)
 ### `context` takes field references only — there is no document context
 
 `context` accepts TxScript-style references: **`field.<schema_id>`**, plus **`self.attr.label`**
-and **`self.attr.description`**. That is the whole vocabulary.
+and **`self.attr.description`**. That is the whole vocabulary. (A production queue's seven
+reasoning fields used exactly two forms between them: `field.<id>` and `self.attr.label`.)
 
 There is **no whole-document, page-text, or attachment context.** A reasoning field cannot read
 the document. This is the single most important thing to know when designing one, because it
 inverts the natural approach.
+
+> **`context` entries are not validated.** The schema API accepts `["document"]`, `["ocr"]`,
+> `["field.does_not_exist"]` and `["self.attr.bogus"]` without complaint — only a non-list value
+> is rejected (`Expected a list of items but got type "str"`). An unsupported entry is stored and
+> then silently contributes nothing. So a plausible-looking `"context": ["document"]` will pass
+> review, pass the API, and quietly starve the model. Treat the vocabulary above as closed.
 
 **Consequence — the "park it in a field" pattern.** Any document content a reasoning field needs
 must first be written into a schema field, by a hook or a formula, and that field then named in
@@ -1377,15 +1394,24 @@ platform already provides the delimiting; hand-rolled markers just add tokens th
 re-parse. Name the parked fields for what they contain (`Page text — first page`), not for their
 mechanism (`hook_output_1`).
 
-### Caching changes how you iterate
+### Iterating on a prompt
 
-Caching is aggressive: **identical inputs produce identical outputs even after you change the
-prompt.** Re-running a document you have already run is therefore not a test of your new prompt —
-it will hand back the previous answer and read as "my prompt edit did nothing".
+Folklore holds that caching is aggressive enough that *identical inputs produce identical outputs
+even after the prompt changes*, making prompt edits invisible until you switch documents. **That
+did not reproduce.** Measured on the same annotation with byte-identical context content:
 
-To actually see a prompt change, vary the input: use a different document, or re-fire a document
-whose context field content has changed. Budget for this — it is the main reason reasoning-field
-prompt iteration feels slower than formula iteration.
+| Change | Re-fire used | Result |
+|---|---|---|
+| context content changed | re-extract | recomputed against the new content |
+| prompt changed, input identical | re-extract | new prompt took effect |
+| prompt changed, input identical | **soft re-fire** (`start → content/validate → cancel`) | new prompt took effect |
+
+So a reasoning field **recomputes on an ordinary soft re-fire**, and prompt edits are picked up on
+identical input. Prompt iteration is therefore cheap: edit the prompt, soft re-fire the same
+document, read the value — no need to re-extract or find a fresh document.
+
+Caching may still deduplicate a genuinely unchanged prompt+input pair, which is harmless. Do not
+plan around prompt edits being swallowed.
 
 ### `edit` and `no_recalculation`
 
@@ -1394,19 +1420,24 @@ prompt iteration feels slower than formula iteration.
 - `no_recalculation` — when set, the field is generated once and not recomputed on subsequent
   events, which pins a value a reviewer has accepted.
 
-### Open question — hook-written context and recalculation ordering
+### A hook writing the context field works — same event chain
 
-**Unverified.** Whether a reasoning field recalculates when a **hook** writes its context field
-*within the same event chain* is not established.
+**Yes, a reasoning field recalculates from content a hook wrote to its context field within the
+same event chain.** The ordering resolves correctly; you do not need a second pass, and you do not
+need the context source to be a formula field.
 
-The known-good in-field precedent has a **formula** field as the context source. Formula
-evaluation order is resolved by Rossum's dependency graph, so a formula-sourced context field is
-a different — and easier — ordering question than a hook write, which lands via a separate
-content operation. Do not assume the hook case behaves the same way.
+Verified directly: a hook on `annotation_content.initialize` wrote a unique sentinel into a plain
+string field, and a reasoning field whose `context` named that field returned the sentinel on the
+same run. Repeated with a second, different sentinel to rule out a stale value.
 
-If you depend on this, verify it on the target organization before committing to the design: park
-the value with the hook, then confirm the reasoning field's output reflects the newly parked
-content on that same run rather than on a subsequent one.
+```
+hook (initialize) writes  zz_parked_text = "SENTINEL=ZEBRA-7734-QUARTZ"
+reasoning field, context: ["field.zz_parked_text"]
+                  output: "ZEBRA-7734-QUARTZ"          ← same run
+```
+
+This is what makes the *park it in a field* pattern above viable end to end: a hook can fetch page
+text, park it, and have a reasoning field consume it in one pass.
 
 ---
 

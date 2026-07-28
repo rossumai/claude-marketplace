@@ -62,6 +62,15 @@ has been working on.
 
 ## Composes with
 
-A reasoning field naming both fields in its `context`. Note reasoning fields are **feature-gated
-and separately billed** — confirm the organization has them enabled before designing around this.
+A reasoning field naming both fields in its `context`. Two things to know:
+
+- **A reasoning field is not `"type": "reasoning"`.** It is a normal datapoint (`"type": "string"`)
+  carrying `ui_configuration.type: "reasoning"` plus `prompt` and `context`.
+- **One pass is enough.** A reasoning field does recalculate from a field this hook writes in the
+  same event chain — verified with a sentinel round-trip. No second re-fire needed.
+
+Reasoning fields are **feature-gated and separately billed**, and the gate is *not* enforced by the
+schema API — a non-enabled org accepts the configuration and silently never produces a value. Confirm
+entitlement rather than inferring it from a successful PATCH.
+
 Prefer the two narrow fields over concatenating into one blob with hand-rolled section markers.
