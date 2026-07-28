@@ -360,6 +360,96 @@ def test_upload_document_too_large(monkeypatch, tmp_path):
     assert "40" in res["content"][0]["text"]
 
 
+def test_refire_reextract_patches_in_place_and_polls(monkeypatch):
+    """reextract is the UI Re-extract call: PATCH status=importing with rir_poll_id
+    cleared, then poll the SAME annotation past 'importing'. No new annotation id."""
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    patches = []
+    state = {"status": "importing"}
+
+    def responder(url, method, body):
+        if url.endswith("/annotations/100") and method == "PATCH":
+            patches.append(body)
+            return {"id": 100, "status": "importing"}
+        if url.endswith("/annotations/100"):
+            s = state["status"]
+            state["status"] = "to_review"  # next GET reports settled
+            return {"id": 100, "status": s, "automation_blocker": None,
+                    "document": f"{BASE}/api/v1/documents/7",
+                    "queue": f"{BASE}/api/v1/queues/5"}
+        if "/annotations/100/content" in url:
+            return {"results": []}
+        if "/hooks/logs" in url:
+            return {"results": []}
+        return {}
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_refire_annotation",
+        {"annotation_id": 100, "mode": "reextract"},
+        responder,
+    )
+    payload = json.loads(emitted[-1]["result"]["content"][0]["text"])
+
+    # the PATCH body is the contract — all three keys matter
+    assert patches == [{"status": "importing", "rir_poll_id": None, "messages": []}]
+    # in place: the response is about the SOURCE annotation, and no new id is minted
+    assert payload["_refire"]["mode"] == "reextract"
+    assert payload["_refire"]["source_annotation_id"] == 100
+    assert "target_annotation_id" not in payload["_refire"]
+    assert payload["annotation_id"] == 100
+    # polled until it left 'importing'
+    assert payload["_refire"]["final_status"] == "to_review"
+    assert "timed_out" not in payload["_refire"]
+
+
+def test_refire_reextract_flags_timeout(monkeypatch):
+    """A document still importing when the budget runs out is reported, not silently
+    returned as if it had settled."""
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+
+    def responder(url, method, body):
+        if url.endswith("/annotations/100") and method == "PATCH":
+            return {"id": 100, "status": "importing"}
+        if url.endswith("/annotations/100"):
+            return {"id": 100, "status": "importing", "automation_blocker": None}
+        if "/annotations/100/content" in url:
+            return {"results": []}
+        if "/hooks/logs" in url:
+            return {"results": []}
+        return {}
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_refire_annotation",
+        {"annotation_id": 100, "mode": "reextract", "poll_timeout": 0},
+        responder,
+    )
+    payload = json.loads(emitted[-1]["result"]["content"][0]["text"])
+    assert payload["_refire"]["timed_out"] is True
+    assert payload["_refire"]["final_status"] == "importing"
+
+
+def test_list_hook_logs_output_is_opt_in(monkeypatch):
+    """stdout lives in `output`, which is untruncated — so it must be excluded by
+    default and only appear when include_output is asked for."""
+    row = {
+        "hook_id": 1, "annotation_id": 2, "status": "completed", "message": "",
+        "output": "PRINTED LINE\n", "timestamp": "2026-01-01T00:00:00Z",
+    }
+    responder = lambda url, method, body: {"results": [row], "pagination": {"total": 1}}
+
+    _, emitted = run_handler(
+        monkeypatch, "rossum_list_hook_logs", {"hook": 1}, responder)
+    default = emitted[-1]["result"]["content"][0]["text"]
+    assert "PRINTED LINE" not in default
+    assert "output" not in json.loads(default)["results"][0]
+
+    _, emitted = run_handler(
+        monkeypatch, "rossum_list_hook_logs",
+        {"hook": 1, "include_output": True}, responder)
+    opted_in = json.loads(emitted[-1]["result"]["content"][0]["text"])
+    assert opted_in["results"][0]["output"] == "PRINTED LINE\n"
+
+
 def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
     monkeypatch.setattr(server, "_http_get_bytes", lambda rid, url: b"PDFBYTES")
     raw = {}

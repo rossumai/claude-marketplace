@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, and re-upload — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", or when the user invokes a goal-style prompt.
+description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, in-place re-extract, and re-upload — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", or when the user invokes a goal-style prompt.
 argument-hint: [annotation-id-or-url] [--goal=<short description>] [--env=<name>] [--max-iterations=<N>]
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 ---
@@ -79,13 +79,13 @@ Re-firing **mutates the annotation you point at** — `validate`/`toggle` recomp
   Use the original only when they confirm it's OK to mutate it. Otherwise make a copy.
 - **`/goal` autonomous loop** → you decide the technique. **Prefer the copy** unless the user already said the original is fine.
 
-**How the copy works.** `rossum_refire_annotation mode="reupload"` re-uploads the source PDF and returns a **new annotation ID** (`_refire.target_annotation_id`); the original is never touched. Iterate against that new ID from then on. Caveat: re-upload re-runs OCR + extraction from scratch — the copy is a *fresh run of the same document*, not a content-identical clone, so manual corrections on the original are not carried over. For the usual "does my fix make a fresh run come out right?" test that is exactly what you want; if your assertions depend on specific human-entered values, test the original (with confirmation) instead.
+**How the copy works.** When the original must stay pristine, use `reupload`, not `reextract` — `reextract` re-imports the original in place and replaces its content. `rossum_refire_annotation mode="reupload"` re-uploads the source PDF and returns a **new annotation ID** (`_refire.target_annotation_id`); the original is never touched. Iterate against that new ID from then on. Caveat: re-upload re-runs OCR + extraction from scratch — the copy is a *fresh run of the same document*, not a content-identical clone, so manual corrections on the original are not carried over. For the usual "does my fix make a fresh run come out right?" test that is exactly what you want; if your assertions depend on specific human-entered values, test the original (with confirmation) instead.
 
 **Cleanup.** When the loop ends, if you created a copy, **offer to delete it** (don't auto-delete): use `rossum_delete_annotation` (soft-delete by default; add `purge=true` for a permanent, irreversible purge) — a write, so it passes the hard-gate. For a simple status flip without purging, `rossum_patch_annotation` with `status="deleted"` still works. Record the copy's ID in the task list so it doesn't get orphaned. If the copy came from a `rossum_upload_document` call and you need to track the async upload state, `rossum_get_task` polls the task object directly (no-follow GET, surfaces the status behind the `/tasks` 303 redirect).
 
 Either way: **sandbox/UAT only**, never production.
 
-## The four re-fire patterns
+## The five re-fire patterns
 
 Pick the right one based on **which hook event** your deliverable listens for, or which side-effect you need to reproduce. When in doubt, start with **soft re-fire** — it is the lightest and fastest.
 
@@ -93,8 +93,26 @@ Pick the right one based on **which hook event** your deliverable listens for, o
 |---|---|---|---|
 | **Soft re-fire** ⭐ default | `rossum_refire_annotation` `mode="validate"` | `user_update`, `started` (per actions list) | Iterating on validation rules, MDH matching, field-update hooks, formulas. Returns updated datapoints inline plus the full compact annotation view. |
 | **Status toggle** | `rossum_refire_annotation` `mode="toggle"` | `annotation_content.started` + any status-listening hooks | Hook listens **only** to `started`, or you need full content re-render side-effects. |
-| **Re-upload** | `rossum_refire_annotation` `mode="reupload"` | `annotation_content.initialize`, full OCR, doc-type detection | Iterating on `initialize` hooks, OCR-adjacent logic, anything depending on fresh extraction. **Produces a new annotation ID** (returned in the response). |
+| **Re-extract** ⭐ for initialize | `rossum_refire_annotation` `mode="reextract"` | `annotation_content.initialize`, full OCR, doc-type detection | Iterating on `initialize` hooks or OCR-adjacent logic. Re-imports **in place**: same annotation ID, no duplicate document. **Replaces extracted content.** |
+| **Re-upload** | `rossum_refire_annotation` `mode="reupload"` | `annotation_content.initialize`, full OCR, doc-type detection | Same events as re-extract, but when the original must survive untouched. **Produces a new annotation ID** (returned in the response). |
 | **Direct edit + re-fire** | `rossum_update_annotation_content` → `rossum_refire_annotation` `mode="validate"` `actions=["user_update"]` | `user_update` | Testing a hook that reacts to one specific datapoint change. The content edit itself needs **no** start/cancel lock. |
+
+### Re-extract vs re-upload — both fire `initialize`
+
+`reextract` is the API call behind the UI's **Re-extract** button:
+
+```
+PATCH /v1/annotations/{id}   {"status": "importing", "rir_poll_id": null, "messages": []}
+```
+
+Prefer it for `initialize` work. It keeps the annotation ID stable — so your assertions, task list
+and cached payloads all keep pointing at the same document — and it does not upload a second copy
+of the PDF. Measured at roughly a minute on a 25-page document; the tool polls past `importing`
+for you (`poll_timeout`, default 180 s).
+
+**It replaces extracted content.** That makes it the wrong tool for a document carrying human
+corrections you need to keep — see *Where to test* above. `reupload` remains correct there: it
+leaves the original completely untouched and gives you a fresh annotation to work on instead.
 
 ### Soft re-fire — the canonical path
 
