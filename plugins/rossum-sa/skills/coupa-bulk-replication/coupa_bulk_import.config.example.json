@@ -10,7 +10,7 @@
   "rossum": {
     "api_url": "https://<org>.rossum.app/api/v1",
     "ds_url":  "https://<org>.rossum.app/svc/data-storage/api/v1",
-    "token":   "<bearer token; used as initial value, refreshed at runtime if --username/--password is passed>"
+    "token":   "<bearer token — mint long-lived: POST /auth/login with max_token_lifetime_s 583200 (162h platform max). Re-read from this file on DS 401 and by every supervised relaunch, so a fresh token dropped here heals running jobs. SSO users: use a password-auth integration user to mint it>"
   },
 
   "ds_batch_size": 5000,

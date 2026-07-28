@@ -1404,3 +1404,582 @@ def test_rossum_patch_rejects_empty_body_family_wide(monkeypatch):
     res = emitted[-1]["result"]
     assert res.get("isError")
     assert "nothing to update" in res["content"][0]["text"].lower()
+
+
+# --- update_annotation_content: compact/verbose projection (usability fix 1) ---
+#
+# The content-operations endpoint echoes the full merged content tree (~hundreds
+# of KB on real annotations). The tool must default to a compact projection —
+# ops applied + touched datapoints + status/blocker summary — reusing the same
+# projection helpers as rossum_get_annotation, with view="verbose" preserving
+# the old full echo.
+
+_OPS_TREE = {"results": [{
+    "category": "section",
+    "children": [
+        {"category": "datapoint", "id": 101, "schema_id": "customer_match",
+         "content": {"value": "ACME"}, "validation_sources": ["human"]},
+        {"category": "datapoint", "id": 102, "schema_id": "invoice_id",
+         "content": {"value": "INV-1"}, "validation_sources": ["score"]},
+        {"category": "multivalue", "id": 300, "schema_id": "line_items", "children": [
+            {"category": "tuple", "id": 301, "children": [
+                {"category": "datapoint", "id": 302, "schema_id": "item_desc",
+                 "content": {"value": "Widget"}, "validation_sources": ["human"]},
+            ]},
+        ]},
+    ],
+}]}
+
+
+_ME_URL = "https://x.example/api/v1/users/9"
+
+
+def _run_update(monkeypatch, args, *, ann_meta=None, ops_response=_OPS_TREE,
+                guard_code=200, guard_body=None, whoami=(200, {"url": _ME_URL})):
+    """Drive rossum_update_annotation_content with the pre-write status guard,
+    the whoami owner check, the ops call, and the best-effort post-write
+    annotation read all mocked."""
+    silent_calls = []
+    monkeypatch.setattr(
+        server, "_http_request_silent",
+        lambda url, method="GET": silent_calls.append(url) or 200,
+    )
+    status_calls = []
+    if ann_meta is None:
+        ann_meta = {"id": 55, "status": "to_review", "automation_blocker": None}
+
+    def fake_status(url, *, method="GET", body=None):
+        status_calls.append(url)
+        if "auth/user" in url:
+            return whoami
+        return (guard_code, ann_meta) if guard_code == 200 else (guard_code, guard_body)
+
+    monkeypatch.setattr(server, "_http_request_status", fake_status)
+
+    def responder(url, method, body):
+        if url.endswith("/content/operations"):
+            return ops_response
+        return None
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_update_annotation_content", args, responder)
+    return fake, emitted, silent_calls, status_calls
+
+
+def test_update_annotation_content_compact_default(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, silent_calls, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops})
+    # request contract: status-guarded direct write — no start, no cancel
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert fake.calls[0]["body"] == {"operations": ops}
+    assert silent_calls == []
+    assert not any(c["url"].endswith("/start") for c in fake.calls)
+    out = emitted_payload(emitted)
+    assert out["annotation_id"] == 55
+    assert out["operations_applied"] == 1
+    assert "result" not in out                       # full tree NOT echoed
+    assert out["touched"] == [
+        {"id": 101, "schema_id": "customer_match", "value": "ACME", "src": "human"},
+    ]
+    assert out["status"] == "to_review"
+    assert out["blocker"] is None
+    # the whole response stays small — that's the point of the fix
+    assert len(emitted[-1]["result"]["content"][0]["text"]) < 2000
+
+
+def test_update_annotation_content_compact_remove_ops(monkeypatch):
+    ops = [{"op": "remove", "id": 301}]
+    _, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops})
+    out = emitted_payload(emitted)
+    assert out["removed_ids"] == [301]
+    assert out["touched"] == []                      # removed node no longer in tree
+
+
+def test_update_annotation_content_fields_filter(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    _, emitted, _, _ = _run_update(
+        monkeypatch,
+        {"annotation_id": 55, "operations": ops, "fields": ["customer_match"]})
+    out = emitted_payload(emitted)
+    # same projection shape as rossum_get_annotation, filtered to the schema_id,
+    # plus the datapoint id needed for follow-up operations
+    assert out["fields"] == {"customer_match": {"value": "ACME", "src": "human", "id": 101}}
+    assert "invoice_id" not in out["fields"]
+
+
+def test_update_annotation_content_verbose_preserves_full_result(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    _, emitted, _, status_calls = _run_update(
+        monkeypatch,
+        {"annotation_id": 55, "operations": ops, "view": "verbose"})
+    out = emitted_payload(emitted)
+    # exact legacy shape: full ops response echoed under "result"
+    assert out == {"annotation_id": 55, "operations_applied": 1, "result": _OPS_TREE}
+    assert len(status_calls) == 1                    # guard only; no post-write read in verbose mode
+
+
+def test_update_annotation_content_schema_has_view_and_fields():
+    props = server.TOOLS["rossum_update_annotation_content"]["inputSchema"]["properties"]
+    assert props["view"]["enum"] == ["compact", "verbose"]
+    assert props["fields"]["type"] == "array"
+    desc = server.TOOLS["rossum_update_annotation_content"]["description"]
+    assert "view" in desc and "fields" in desc
+
+
+# --- update_annotation_content: status guard (no start/cancel lock ritual) ---
+#
+# Verified live 2026-07-23: content/operations needs NO review session — it
+# succeeds on to_review, postponed, and even confirmed annotations, preserving
+# the status. The tool therefore writes directly (no start/cancel, no
+# annotation_content.started side effects) and guards on status itself, because
+# the API would silently accept an edit on a confirmed/exported document.
+
+def test_update_annotation_content_allows_postponed_without_start(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, silent_calls, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "postponed", "automation_blocker": None})
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert silent_calls == []                        # no cancel — status untouched
+    out = emitted_payload(emitted)
+    assert out["status"] == "postponed"              # read-back reflects preserved status
+
+
+def test_update_annotation_content_refuses_confirmed(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, silent_calls, status_calls = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "confirmed"})
+    assert fake.calls == []                          # nothing written
+    assert silent_calls == []
+    assert len(status_calls) == 1                    # guard read only
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    text = res["content"][0]["text"]
+    assert "'confirmed'" in text and "refusing" in text
+
+
+def test_update_annotation_content_refuses_on_guard_read_failure(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        guard_code=503, guard_body="bad gateway")
+    assert fake.calls == []                          # never writes blind
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    # delegated to _emit_http_error: real status + the API's error detail
+    assert "HTTP 503" in res["content"][0]["text"]
+    assert "bad gateway" in res["content"][0]["text"]
+
+
+def test_update_annotation_content_guard_401_prompts_reauth(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        guard_code=401, guard_body={"detail": "Invalid token."})
+    assert fake.calls == []
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    # the guard must go through the standard 401 ladder (re-auth hint +
+    # connection invalidation), not a hand-rolled opaque message
+    assert "rossum_set_token" in res["content"][0]["text"]
+
+
+def test_update_annotation_content_allows_own_reviewing_session(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, status_calls = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "reviewing", "modifier": _ME_URL,
+                  "automation_blocker": None})
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert any("auth/user" in u for u in status_calls)   # owner check ran
+    out = emitted_payload(emitted)
+    assert out["status"] == "reviewing"
+
+
+def test_update_annotation_content_refuses_foreign_reviewing_session(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "reviewing",
+                  "modifier": "https://x.example/api/v1/users/777"})
+    assert fake.calls == []                          # nothing written
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    assert "another user" in res["content"][0]["text"]
+    assert "users/777" in res["content"][0]["text"]
+
+
+def test_update_annotation_content_refuses_reviewing_when_whoami_fails(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops},
+        ann_meta={"id": 55, "status": "reviewing", "modifier": _ME_URL},
+        whoami=(503, None))
+    assert fake.calls == []                          # fail closed
+    assert emitted[-1]["result"].get("isError")
+
+
+def test_update_annotation_content_no_success_payload_when_ops_fail(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    fake, emitted, _, _ = _run_update(
+        monkeypatch, {"annotation_id": 55, "operations": ops}, ops_response=None)
+    # guard passed, the ops POST failed (the real _http_request emits its own
+    # error) — the handler must not fabricate a success payload on top
+    assert fake.calls[0]["url"].endswith("/annotations/55/content/operations")
+    assert emitted == []
+
+
+# --- dispatch-level required-argument validation (usability fix 2) ---
+
+def test_validate_tool_arguments_missing_required():
+    msg = server._validate_tool_arguments("rossum_get_annotation", {"id": 5})
+    assert msg is not None
+    assert "annotation_id" in msg
+    assert "missing" in msg.lower()
+    assert "'id'" in msg                # names the unexpected key as likely misnamed
+
+
+def test_validate_tool_arguments_null_counts_as_missing():
+    msg = server._validate_tool_arguments("rossum_get_annotation", {"annotation_id": None})
+    assert msg is not None and "annotation_id" in msg
+
+
+def test_validate_tool_arguments_ok():
+    assert server._validate_tool_arguments(
+        "rossum_get_annotation", {"annotation_id": 5}) is None
+    # tools without required params accept empty args
+    assert server._validate_tool_arguments("rossum_whoami", {}) is None
+
+
+# --- auth-expiry ergonomics (usability fix 3): every path says rossum_set_token ---
+
+def test_http_request_status_not_connected_directs_to_set_token(monkeypatch):
+    monkeypatch.setattr(server, "_cached_token", None)
+    status, body = server._http_request_status("https://x/api/v1/annotations/1")
+    assert status is None
+    assert "rossum_set_token" in body
+
+
+def _fake_401(monkeypatch):
+    import io
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None, context=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", {},
+            io.BytesIO(b'{"detail":"Invalid token."}'))
+
+    monkeypatch.setattr(server.urllib.request, "urlopen", fake_urlopen)
+
+
+def _seed_connection(monkeypatch):
+    monkeypatch.setattr(server, "_cached_base_url", BASE)
+    monkeypatch.setattr(server, "_cached_token", "expired-token")
+    monkeypatch.setattr(server, "_token_validated", True)
+
+
+def test_http_request_raw_401_directs_to_set_token(monkeypatch):
+    _seed_connection(monkeypatch)
+    _fake_401(monkeypatch)
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    out = server._http_request_raw(1, f"{BASE}/api/v1/uploads", raw_body=b"x")
+    assert out is None
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    text = res["content"][0]["text"]
+    assert "rossum_set_token" in text
+    # 401 means invalid OR expired OR revoked — the message must not claim expiry only
+    assert "invalid, expired, or revoked" in text
+    assert server._token_validated is False          # connection invalidated
+
+
+def test_http_get_bytes_401_directs_to_set_token(monkeypatch):
+    _seed_connection(monkeypatch)
+    _fake_401(monkeypatch)
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    out = server._http_get_bytes(1, f"{BASE}/api/v1/documents/1/content")
+    assert out is None
+    res = emitted[-1]["result"]
+    assert res.get("isError")
+    assert "rossum_set_token" in res["content"][0]["text"]
+    assert "invalid, expired, or revoked" in res["content"][0]["text"]
+    assert server._token_validated is False
+
+
+_NO_AUTH_TOOLS = {
+    "rossum_set_token",                  # establishes the connection itself
+    "rossum_generate_export_settings",   # pure local transform
+    "data_storage_healthz",              # explicitly auth-free (live reachability probe)
+}
+
+
+def _dummy_args(schema):
+    """Minimal syntactically-valid arguments for a tool schema (required only)."""
+    args = {}
+    props = schema.get("properties", {})
+    for name in schema.get("required", []):
+        ptype = props.get(name, {}).get("type", "string")
+        if isinstance(ptype, list):
+            ptype = ptype[0]
+        args[name] = {
+            "integer": 1, "number": 1, "boolean": False,
+            "array": ["x"], "object": {"x": "y"},
+        }.get(ptype, "x")
+    return args
+
+
+def test_every_auth_tool_directs_to_set_token_when_disconnected(monkeypatch):
+    """Sweep: with no cached connection, every auth-dependent tool must emit the
+    'call rossum_set_token' guidance — never a raw exception or a silent no-op."""
+    monkeypatch.setattr(server, "_cached_base_url", None)
+    monkeypatch.setattr(server, "_cached_token", None)
+    monkeypatch.setattr(server, "_token_validated", False)
+
+    def no_network(*a, **k):
+        raise AssertionError("network call attempted before connection check")
+
+    for helper in ("_http_request", "_http_request_raw", "_http_get_bytes",
+                   "_http_get_typed", "_http_request_silent"):
+        monkeypatch.setattr(server, helper, no_network)
+    # _http_request_status stays real: with no token it must itself return the
+    # set_token message (covered above) without touching the network.
+
+    offenders = []
+    for name, tool in server.TOOLS.items():
+        if name in _NO_AUTH_TOOLS:
+            continue
+        emitted = []
+        monkeypatch.setattr(server, "write_message",
+                            lambda msg, _e=emitted: _e.append(msg))
+        try:
+            server.HANDLERS[name](1, _dummy_args(tool["inputSchema"]))
+        except Exception as e:  # noqa: BLE001 — collecting offenders
+            offenders.append((name, f"raised {type(e).__name__}: {e}"))
+            continue
+        if not emitted:
+            offenders.append((name, "emitted nothing"))
+            continue
+        res = emitted[-1]["result"]
+        text = res["content"][0]["text"]
+        if not res.get("isError") or "rossum_set_token" not in text:
+            offenders.append((name, text[:120]))
+    assert not offenders, offenders
+
+
+# --- rossum_set_token base_url alias (usability fix 4) ---
+
+def test_set_token_accepts_base_url_alias(monkeypatch):
+    monkeypatch.setattr(server, "_cached_base_url", None)
+    monkeypatch.setattr(server, "_cached_token", None)
+    monkeypatch.setattr(server, "_token_validated", False)
+    monkeypatch.setattr(server, "_probe_token", lambda base, tok: (True, "ok"))
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    server.HANDLERS["rossum_set_token"](
+        1, {"token": "tok", "base_url": "https://elis.rossum.ai"})
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert not emitted[-1]["result"].get("isError"), text
+    assert "Connected to https://elis.rossum.ai" in text
+    assert server._cached_base_url == "https://elis.rossum.ai"
+
+
+def test_set_token_schema_declares_base_url_alias():
+    props = server.TOOLS["rossum_set_token"]["inputSchema"]["properties"]
+    assert "base_url" in props           # schema-validating clients must allow it
+
+
+# --- review round: dispatch validation rejects unknown params unconditionally ---
+#
+# Every tool schema declares additionalProperties:false; the validator must
+# enforce it even when all required params are present — otherwise a misnamed
+# OPTIONAL argument (queue_id for queue, veiw for view) is silently dropped and
+# the tool "succeeds" with different semantics than the caller asked for.
+
+def test_validate_tool_arguments_rejects_unknown_optional():
+    # rossum_list_hooks has no required params; 'queue_id' should be 'queue'
+    msg = server._validate_tool_arguments("rossum_list_hooks", {"queue_id": 123})
+    assert msg is not None
+    assert "queue_id" in msg
+    assert "'queue'" in msg                  # suggests the declared counterpart
+
+
+def test_validate_tool_arguments_suggests_snake_case_counterpart():
+    msg = server._validate_tool_arguments(
+        "data_storage_find", {"collection_name": "invoices"})
+    assert msg is not None
+    assert "'collectionName'" in msg         # case-normalized match
+
+
+def test_validate_tool_arguments_suggests_close_typo():
+    msg = server._validate_tool_arguments(
+        "rossum_update_annotation_content",
+        {"annotation_id": 1, "operations": [], "veiw": "verbose"})
+    assert msg is not None
+    assert "'view'" in msg
+
+
+def test_validate_tool_arguments_lists_valid_params_on_unknown():
+    msg = server._validate_tool_arguments("rossum_list_hooks", {"bogus_xyz": 1})
+    assert msg is not None and "queue" in msg   # valid-parameter listing
+
+
+# --- review round: HTTP error-body reads must never raise; 401 ladder deduped ---
+
+def _fake_401_latin1(monkeypatch):
+    import io
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None, context=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", {},
+            io.BytesIO("échec d'authentification".encode("latin-1")))
+
+    monkeypatch.setattr(server.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_http_helpers_survive_non_utf8_401_body(monkeypatch):
+    """A Latin-1 401 body (corporate proxy / SSO page) must not raise
+    UnicodeDecodeError past the 401 branch into -32603 — every helper must
+    still invalidate the connection and emit the rossum_set_token guidance."""
+    helpers = [
+        lambda: server._http_request(1, f"{BASE}/api/v1/queues/1"),
+        lambda: server._http_request_raw(1, f"{BASE}/api/v1/uploads", raw_body=b"x"),
+        lambda: server._http_get_bytes(1, f"{BASE}/api/v1/documents/1/content"),
+        lambda: server._http_get_typed(1, f"{BASE}/api/v1/tasks/1"),
+    ]
+    for call in helpers:
+        _seed_connection(monkeypatch)
+        _fake_401_latin1(monkeypatch)
+        emitted = []
+        monkeypatch.setattr(server, "write_message",
+                            lambda msg, _e=emitted: _e.append(msg))
+        out = call()                             # must not raise
+        assert out in (None, (None, None))
+        res = emitted[-1]["result"]
+        assert res.get("isError")
+        assert "rossum_set_token" in res["content"][0]["text"]
+        assert server._token_validated is False
+
+
+def test_401_message_has_single_source_of_truth():
+    """This PR's own history: rewording the 401 message required touching 5
+    copies. After deduplication through _emit_http_error it must exist once."""
+    src = R.SERVER_PY.read_text("utf-8")
+    assert src.count("invalid, expired, or revoked") == 1
+
+
+def test_http_helpers_emit_not_connected_without_token(monkeypatch):
+    """The no-token early paths must answer the request (docstrings promise
+    'error already sent'); a silent None would leave the MCP client hanging."""
+    monkeypatch.setattr(server, "_cached_base_url", None)
+    monkeypatch.setattr(server, "_cached_token", None)
+    monkeypatch.setattr(server, "_token_validated", False)
+    helpers = [
+        lambda: server._http_request(1, f"{BASE}/api/v1/queues/1"),
+        lambda: server._http_request_raw(1, f"{BASE}/api/v1/uploads", raw_body=b"x"),
+        lambda: server._http_get_bytes(1, f"{BASE}/api/v1/documents/1/content"),
+        lambda: server._http_get_typed(1, f"{BASE}/api/v1/tasks/1"),
+    ]
+    for call in helpers:
+        emitted = []
+        monkeypatch.setattr(server, "write_message",
+                            lambda msg, _e=emitted: _e.append(msg))
+        out = call()
+        assert out in (None, (None, None))
+        assert emitted, "no-token path must emit a tool_result"
+        res = emitted[-1]["result"]
+        assert res.get("isError")
+        assert "rossum_set_token" in res["content"][0]["text"]
+
+
+# --- review round: update_annotation_content compact-mode gaps ---
+
+def test_update_fields_projection_includes_datapoint_and_row_ids(monkeypatch):
+    """Rows created by 'add' ops are only reachable through the fields=[...]
+    read-back — so that projection must carry the datapoint ids (and row ids)
+    needed for follow-up replace/remove ops."""
+    ops = [{"op": "add", "id": 300,
+            "value": [{"schema_id": "item_desc", "content": {"value": "Widget"}}]}]
+    _, emitted, _, _ = _run_update(
+        monkeypatch,
+        {"annotation_id": 55, "operations": ops, "fields": ["item_desc"]})
+    out = emitted_payload(emitted)
+    row = out["tables"]["line_items"]["rows"][0]
+    assert row["item_desc"]["id"] == 302      # cell datapoint id for replace ops
+    assert row["_row_id"] == 301              # tuple id for remove-row ops
+
+
+def test_update_verbose_with_fields_applies_projection(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    _, emitted, _, _ = _run_update(
+        monkeypatch,
+        {"annotation_id": 55, "operations": ops,
+         "view": "verbose", "fields": ["customer_match"]})
+    out = emitted_payload(emitted)
+    assert out["result"] == _OPS_TREE                       # full echo intact
+    assert out["fields"]["customer_match"]["value"] == "ACME"  # not silently dropped
+
+
+def test_update_fields_filter_drops_unmatched_tables(monkeypatch):
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+    _, emitted, _, _ = _run_update(
+        monkeypatch,
+        {"annotation_id": 55, "operations": ops, "fields": ["customer_match"]})
+    out = emitted_payload(emitted)
+    # line_items has no requested cell -> no {} row skeletons re-bloating the response
+    assert out["tables"] == {}
+
+
+def test_update_marks_failed_blocker_readback(monkeypatch):
+    ann = {"id": 55, "status": "to_review",
+           "automation_blocker": f"{BASE}/api/v1/automation_blockers/9"}
+
+    def fake_status(url, *, method="GET", body=None):
+        if "automation_blockers" in url:
+            return 502, "bad gateway"
+        return 200, ann
+
+    monkeypatch.setattr(server, "_http_request_status", fake_status)
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+
+    def responder(url, method, body):
+        if url.endswith("/content/operations"):
+            return _OPS_TREE
+        return None
+
+    _, emitted = run_handler(
+        monkeypatch, "rossum_update_annotation_content",
+        {"annotation_id": 55, "operations": ops}, responder)
+    out = emitted_payload(emitted)
+    assert out["status"] == "to_review"
+    # a failed blocker read must NOT read as "no blocker" (null)
+    assert out["blocker"] is not None
+    assert "read-back failed" in out["blocker"]
+
+
+def test_update_marks_failed_annotation_readback(monkeypatch):
+    # pre-write status guard succeeds; the post-write read-back fails
+    status_responses = iter([
+        (200, {"id": 55, "status": "to_review", "automation_blocker": None}),
+        (502, "bad gateway"),
+    ])
+    monkeypatch.setattr(server, "_http_request_status",
+                        lambda url, method="GET", body=None: next(status_responses))
+    ops = [{"op": "replace", "id": 101, "value": {"content": {"value": "ACME"}}}]
+
+    def responder(url, method, body):
+        if url.endswith("/content/operations"):
+            return _OPS_TREE
+        return None
+
+    _, emitted = run_handler(
+        monkeypatch, "rossum_update_annotation_content",
+        {"annotation_id": 55, "operations": ops}, responder)
+    out = emitted_payload(emitted)
+    assert "status" not in out                # unknown, not fabricated
+    assert "read-back failed" in out["_meta"]["read_back"]

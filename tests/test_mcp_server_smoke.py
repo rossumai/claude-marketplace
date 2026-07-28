@@ -91,3 +91,21 @@ def test_server_boots_handshakes_and_lists_tools():
 
     # ping → empty result
     assert responses.get(3, {}).get("result") == {}, "ping should return an empty result"
+
+
+def test_tools_call_missing_required_param_is_clean_validation_error():
+    """A misnamed/missing required argument must yield a readable tool_result
+    naming the parameter — not an internal KeyError surfaced as -32603."""
+    responses, proc = _drive_server([
+        _rpc("initialize", 1, {"capabilities": {}}),
+        _rpc("tools/call", 2, {"name": "rossum_get_annotation",
+                               "arguments": {"id": 55}}),
+    ])
+    assert proc.returncode == 0
+    resp = responses[2]
+    assert "error" not in resp, f"got JSON-RPC error instead of tool_result: {resp}"
+    result = resp["result"]
+    assert result.get("isError") is True
+    text = result["content"][0]["text"]
+    assert "annotation_id" in text
+    assert "Internal error" not in text

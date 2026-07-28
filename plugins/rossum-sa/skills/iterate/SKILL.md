@@ -94,7 +94,7 @@ Pick the right one based on **which hook event** your deliverable listens for, o
 | **Soft re-fire** ⭐ default | `rossum_refire_annotation` `mode="validate"` | `user_update`, `started` (per actions list) | Iterating on validation rules, MDH matching, field-update hooks, formulas. Returns updated datapoints inline plus the full compact annotation view. |
 | **Status toggle** | `rossum_refire_annotation` `mode="toggle"` | `annotation_content.started` + any status-listening hooks | Hook listens **only** to `started`, or you need full content re-render side-effects. |
 | **Re-upload** | `rossum_refire_annotation` `mode="reupload"` | `annotation_content.initialize`, full OCR, doc-type detection | Iterating on `initialize` hooks, OCR-adjacent logic, anything depending on fresh extraction. **Produces a new annotation ID** (returned in the response). |
-| **Direct PATCH + validate** | `rossum_patch_annotation` (field PATCH) → `rossum_validate_content` `actions=["user_update"]` | `user_update` | Testing a hook that reacts to one specific datapoint change. Note: schema field PATCH may require a different endpoint — confirm with the user. |
+| **Direct edit + re-fire** | `rossum_update_annotation_content` → `rossum_refire_annotation` `mode="validate"` `actions=["user_update"]` | `user_update` | Testing a hook that reacts to one specific datapoint change. The content edit itself needs **no** start/cancel lock. |
 
 ### Soft re-fire — the canonical path
 
@@ -139,11 +139,11 @@ rossum_refire_annotation(annotation_id=<id>, mode="reupload", poll_timeout=180)
 
 Fetches the source PDF, uploads it to the same queue, polls past `importing`, and defensively auto-restores from `deleted` if a custom customer dedup hook transitioned the new annotation (see Gotchas — the stock Duplicate Handling extension does not delete). **Returns a new annotation ID** in `_refire.target_annotation_id` — record the mapping in your task list. Use only when your change touches OCR or `annotation_content.initialize` hooks.
 
-### Direct PATCH + validate
+### Direct edit + re-fire
 
 When a hook reacts to one specific datapoint change, you can mutate that datapoint and then re-fire `user_update` to make the hook see the change. Two-step:
-1. `rossum_patch_annotation` (or, for content datapoints, `rossum_update_annotation_content` — writes datapoint values via the content-operations endpoint).
-2. `rossum_validate_content` with `actions=["user_update"]`.
+1. `rossum_update_annotation_content` — writes datapoint values via the content-operations endpoint. **No review lock needed**: the endpoint edits `to_review`/`postponed` annotations directly and leaves the status untouched — do not wrap it in start/cancel. (A `reviewing` annotation is allowed only when the session is your own; the tool refuses foreign sessions.) **Caveat:** the bulk endpoint returns HTTP 200 but silently no-ops on enum-typed and `ui_configuration.type=manual` fields (e.g. `document_type`) — read back with `fields=[...]` to confirm the edit landed; for those fields use the per-datapoint `PATCH /annotations/{id}/content/{datapoint_id}` instead.
+2. `rossum_refire_annotation` `mode="validate"` with `actions=["user_update"]` — the re-fire (unlike the edit) DOES need the review session; bare `rossum_validate_content` on a non-started annotation returns HTTP 409.
 
 For most iteration loops you will NOT need this — soft re-fire on the saved annotation already exercises the hook chain.
 
@@ -185,10 +185,11 @@ Look for:
 
 ## Gotchas
 
-- **`cancel` is automatic in `mode="validate"`** — the MCP tool wraps cancel in try/finally. If you ever call `rossum_start_annotation` standalone, you MUST call `rossum_cancel_annotation` afterwards (the start tool's success message includes a reminder).
+- **The start/cancel lock is for `content/validate` and `confirm` only — NOT for content edits.** `POST /content/operations` (i.e. `rossum_update_annotation_content`) succeeds without a review session on `to_review` and `postponed` annotations and preserves the status; wrapping it in start/cancel just fires needless `annotation_content.started` events. `content/validate` and `confirm`, by contrast, return HTTP 409 unless the annotation is in `reviewing`.
+- **`cancel` is automatic in `mode="validate"`** — the MCP tool wraps cancel in try/finally. If you ever call `rossum_start_annotation` standalone, you MUST call `rossum_cancel_annotation` afterwards (the start tool's success message includes a reminder). Cancel restores the **pre-start** status — a `postponed` annotation returns to `postponed`, not `to_review`.
 - **`content/validate` actions must include the trigger your hook listens on.** If the hook only listens on `started` and you send `actions=["user_update"]`, the hook will not fire. Cross-check the hook's `events` array against the actions list.
 - **Custom dedup hooks may auto-delete re-uploads (defensive).** Some customer queues have a custom hook on `annotation_content.initialize` that PATCHes `status: deleted` for duplicate documents. The **stock Rossum Duplicate Handling extension does NOT do this** — its valid actions are `fill_field`, `forward_annotation`, `mark_duplicate`, `show_message`, `stop_automation`, `apply_label`; none transition status. (`mark_duplicate` flags the annotation but leaves it in `to_review`.) For customer-custom delete patterns, `mode="reupload"` defensively detects `status: deleted` after upload and restores via PATCH. There is now a `rossum_upload_document` tool for uploading a local file to a queue (modern `/uploads` API); note it performs the upload but **not** the dedup auto-restore, so on a queue with a custom delete-on-duplicate hook, replicate the `status: deleted` → `to_review` check yourself.
-- **`reviewing` lock blocks other writes.** Between start and cancel the annotation is locked to the calling user. Don't try to PATCH content from another caller in that window.
+- **The `reviewing` lock scopes validate/confirm — raw content writes bypass it.** Between start and cancel the annotation is locked to the calling user: `content/validate` and `confirm` from another caller 409. Raw `content/operations` from another caller still lands, which is worse — it mutates values under the reviewer's live session. That is why `rossum_update_annotation_content` refuses a `reviewing` annotation unless the session is the caller's own.
 - **Engine re-extraction is not triggered by status toggle.** Only the hook chain re-runs. If your change touches OCR or extraction itself, use `mode="reupload"` — toggle will not produce different captured values.
 - **Hook outputs are unstable on re-open.** If you open the annotation in the Rossum UI between re-fires, that itself fires `annotation_content.started` again and may overwrite your last-seen state. Capture immediately after each re-fire.
 - **`.rossum-cache/` should be gitignored.** The MCP server writes the raw merged payload there on every `rossum_get_annotation` / `rossum_refire_annotation` call. Add `.rossum-cache/` to the project's `.gitignore` when you start using `iterate`.

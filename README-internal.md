@@ -47,9 +47,10 @@ against the live API. For each tool:
    - test_hook (read-shaped but executes): pick a FUNCTION hook (not a webhook — avoid external
      side effects), call test_hook with its event/action; auto-resolve or pass annotation_id.
      Confirm it returns the hook's response/messages without mutating the annotation.
-   - update_annotation_content: on a to_review annotation, replace one datapoint value (start→ops→
-     cancel is auto-managed), re-read via get_annotation_content to confirm it persisted, then revert
-     the value to leave the document unchanged.
+   - update_annotation_content: on a to_review annotation, replace one datapoint value (direct
+     write — no start/cancel; the tool status-guards itself), re-read via get_annotation_content
+     to confirm it persisted, then revert the value to leave the document unchanged. Also verify
+     the guard: calling it on a confirmed/exported annotation must refuse without writing.
    - Users: create_user (inactive from birth — is_active=false — with a throwaway
      username, so a run that dies mid-loop never leaves an account that can log in) →
      list_users (verify) → patch_user (assign a queue + change role via group_ids;
