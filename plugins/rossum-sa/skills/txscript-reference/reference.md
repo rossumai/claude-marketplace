@@ -78,7 +78,44 @@ The raw `payload` dict passed to `rossum_hook_request_handler` carries:
 
 `TxScript.from_payload(payload)` wraps this so `t.field.<id>` works regardless of whether the raw `content` tree shipped with the event.
 
-> **Enabling `t.field` / schema metadata:** in the hook's webhook settings, enable **Schemas** under *Additional notification metadata* so the schema ships in the payload. **Backward compatibility:** `from rossum_python import RossumPython` is an accepted alias for `from txscript import TxScript`.
+> **Backward compatibility:** `from rossum_python import RossumPython` is an accepted alias for `from txscript import TxScript`.
+
+#### Hook object prerequisites
+
+`TxScript.from_payload()` reads the schema out of the payload, and the schema only ships if the
+**hook object** asks for it. This is configuration on the hook, not in the code:
+
+```jsonc
+// hook.json
+{ "sideload": ["schemas"] }
+```
+
+In the UI the same setting is **Schemas** under *Additional notification metadata*.
+
+**Never remove `sideload` from a hook that uses TxScript.** It looks like unused boilerplate during
+a tidy-up; it is load-bearing. Clearing it fails **every** invocation:
+
+```
+CallFunctionException, PayloadError: Schema sideloading must be enabled!
+```
+
+What makes this expensive to diagnose:
+
+- The exception is raised **by the `TxScript.from_payload()` call itself**. Statements above that
+  line do run, but since `from_payload` is conventionally the first statement, in practice no
+  useful work happens.
+- `GET /hooks/logs` puts only the one-line summary above in `message`. The **traceback** —
+  including the failing line number and `t = TxScript.from_payload(payload)` — is in the row's
+  **`output`** field, which most tooling projects away. See
+  [Runtime & debugging](#runtime--debugging).
+- It repeats `retry_count + 1` times per annotation (default `retry_count` is 4).
+- To anyone watching the document rather than the logs, the only symptom is **the target fields
+  are empty**.
+
+So: "hook writes nothing, no error in my code" + a TxScript hook ⇒ check `sideload` first.
+
+The Request Processor needs the same setting for its own reasons — see
+`export-pipeline-reference` → *Hook-level prerequisites*.
 
 ### Field Access
 ```python
@@ -395,7 +432,32 @@ Both `add` and `remove` can be sent in the same call — useful for "swap label 
 
 ### Runtime & debugging
 - Python 3.12 runtime (AWS Lambda-style). Store configuration in `hook.settings` and credentials in `hook.secrets` (declare their expected key names in `hook.secrets_schema`) — never hard-code them.
-- `print(...)` output appears in Extensions → Logs → Detail under the `output` key (alongside `t.show_info` messages).
+- `print(...)` output appears in Extensions → Logs → Detail under the `output` key (alongside `t.show_info` messages), **and is retrievable from the API** — see below.
+
+#### Where `print()` output actually lives
+
+A `GET /hooks/logs` row carries stdout in an **`output`** field. The trap is that `message` is
+**empty** (`""`) for a run that succeeded, so a tool showing only `message` makes prints look
+like they vanished. Verified live on a function hook:
+
+| Field | Successful run | Failed run |
+|---|---|---|
+| `message` | `""` | one-line exception summary |
+| `output` | every `print(...)` line | prints **plus the full traceback** with line numbers |
+
+Full key set on a log row: `action, annotation_id, end, event, hook_id, hook_type, log_level,
+message, organization_id, output, queue_id, request, request_id, response, settings, start,
+status, status_code, timestamp, uuid`.
+
+- **`output` is not truncated.** A hook printing 4001 lines returned ~296,000 characters intact.
+  Ask for it deliberately on one run; don't fetch it across a broad log listing.
+- `request` / `response` stay `null` unless the hook's `config.payload_logging_enabled` is true.
+- Filter to one run with `GET /hooks/logs?request_id=<uuid>` (a row's `uuid` equals its `request_id`).
+- `GET /hooks/runs/{uuid}/logs` returns HTTP 200 but **zero rows** — it is not where prints are.
+  `GET /hooks/{id}/logs` and `GET /hooks/{id}/runs` are **404**.
+
+Retrieval is for **debugging a specific run**. It is not a monitoring substitute: there is no
+structured querying, no alerting, and no retention guarantee — see `coding-best-practices` §2.7.
 - Prefer single-threaded code; reach for `asyncio`/`httpx` only for genuinely I/O-bound parallel calls.
 - Catch specific exceptions rather than a broad `except Exception`.
 
