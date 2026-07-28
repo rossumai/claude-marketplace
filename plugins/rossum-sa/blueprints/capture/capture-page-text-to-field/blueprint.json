@@ -1,0 +1,16 @@
+{
+  "name": "capture-page-text-to-field",
+  "axis": "capture",
+  "summary": "Park whole-page OCR text into schema fields on initialize, so an LLM/reasoning field (which cannot read the document) has content to work with.",
+  "maturity": "standard",
+  "params": {
+    "first_page_field": {"required": true, "description": "schema id receiving the FIRST page's text; plain string field, ui_configuration.type 'data'"},
+    "last_page_field":  {"required": true, "description": "schema id receiving the LAST page's text; on a 1-page document it receives the same text as first_page_field"},
+    "max_chars":        {"default": 20000, "description": "per-field truncation cap; keeps a long page from bloating the annotation and the downstream prompt"}
+  },
+  "produces": ["«first_page_field»", "«last_page_field»"],
+  "consumes": [],
+  "provenance": "Lifted from a field-built function hook (2026-07). Verified live on a 6-page and a 1-page document, and the page_data semantics re-verified against a purpose-built 25-page document: the 20-page default, the silent >20 truncation, ascending result order, and texts-has-no-position all confirmed by API probe.",
+  "reference": "rossum-reference#page-data-ocr-text-and-spatial-data",
+  "notes": "Reasoning fields are feature-gated and separately billed — confirm the org has them before designing around this. Fails OPEN: any fetch/parse error logs and writes empty strings rather than blocking the document. Uses granularity=texts so no line joining or reading-order reconstruction is needed. Requires sideload: [\"schemas\"] on the hook (TxScript) — clearing it fails every run before any useful work. Pairs with a reasoning field naming these fields in its context; prefer two narrow labelled fields over one concatenated blob, since context entries are presented to the model by field label."
+}

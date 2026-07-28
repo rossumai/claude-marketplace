@@ -1,6 +1,6 @@
 # mdh-fanout-matches-to-selectable-table
 
-> **Maturity: `candidate` (unproven).** Authored from the handbook *Multiple data matching results* pattern + the Winning Group `2026-06-30-callup-multi-order-update` design. It has **not** been live-validated yet. Verify against `txscript-reference` and a soft re-fire before promoting to `standard`.
+> **Maturity: `candidate` (unproven).** Authored from the handbook *Multiple data matching results* pattern + a field design for multi-order call-up updates. It has **not** been live-validated yet. Verify against `txscript-reference` and a soft re-fire before promoting to `standard`.
 
 Use this blueprint when **one** captured reference legitimately matches **several** master-data records and the operator must act on a **subset** of them (not just pick one). MDH collapses multiple matches into a single enum selection; this serverless hook works around that by fanning every match option into a multivalue table, one row per match, each with a yes/no select flag. The operator ticks the subset to act on, and the hook maintains a hidden, pre-filtered list of the selected keys ready to hand to an export `iterate_over`.
 

@@ -15,7 +15,7 @@
   },
   "produces": ["«target_table»", "«export_list_field»"],
   "consumes": ["«source_match_field»", "«hash_source_field»"],
-  "provenance": "DESIGN-STAGE, unproven: handbook solutionarchitecthandbook.mrtnzlml.com/cookbook/multiple-data-matching-results (fan-out + hash guard) + Winning Group spec 2026-06-30-callup-multi-order-update (subset-select flag + filtered export). Not yet live-validated.",
+  "provenance": "DESIGN-STAGE, unproven: handbook solutionarchitecthandbook.mrtnzlml.com/cookbook/multiple-data-matching-results (fan-out + hash guard) + a field spec for multi-order call-up updates (subset-select flag + filtered export). Not yet live-validated.",
   "reference": "txscript-reference#serverless-hooks",
   "notes": "Composes with export-iterate-line-items (point its iterate_over at export_list_field). Keep-ALL-with-flag, never prune rows — selections stay auditable and non-destructive. iterate_over has no inline filter, so it must be handed the pre-filtered export_list_field. Block >1 matches with a separate add_automation_blocker rule. CANDIDATE: verify the TxScript option .value/.label attributes and multivalue write shape against txscript-reference and a live soft re-fire before promoting to standard."
 }

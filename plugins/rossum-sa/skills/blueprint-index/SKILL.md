@@ -1,6 +1,6 @@
 ---
 name: blueprint-index
-description: Index of the rossum-sa blueprint library — vetted, parameterized, composable building blocks (matching, export) lifted from the reference packs. Consult when assembling a Rossum implementation to reuse a known-good pattern instead of writing one from scratch; tells you which blueprints exist, what they produce/consume, and where they live.
+description: Index of the rossum-sa blueprint library — vetted, parameterized, composable building blocks (capture, matching, export) lifted from the reference packs. Consult when assembling a Rossum implementation to reuse a known-good pattern instead of writing one from scratch; tells you which blueprints exist, what they produce/consume, and where they live.
 user-invocable: false
 ---
 
@@ -14,6 +14,12 @@ is a `blueprint.json` contract + a `fragment.*` config body (with `«param»` se
 To use a blueprint: read its `blueprint.json` for `params`/`produces`/`consumes`, copy the
 fragment, fill the `«param»` seams, and confirm its `consumes` fields exist in the
 schema. See `blueprints/README.md` for the full contract.
+
+## Capture (`blueprints/capture/`)
+
+| blueprint | summary | produces |
+|--------|---------|----------|
+| `capture-page-text-to-field` | park first/last page OCR text into schema fields on `initialize`, so a reasoning field or LLM prompt has document content to read | first_page_field, last_page_field |
 
 ## Matching (`blueprints/matching/`)
 
