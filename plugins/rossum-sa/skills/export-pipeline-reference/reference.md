@@ -73,11 +73,6 @@ The Request Processor requires schema sideloading on the hook. (Response handler
 
 **Fix:** Add `"sideload": ["schemas"]` to the hook config.
 
-The same prerequisite applies to any hook using TxScript, where clearing it is a common and
-expensive mistake. `txscript-reference` → *Hook object prerequisites* owns the full write-up:
-why the only visible symptom is empty fields, where the traceback actually lives, and the
-retry amplification.
-
 ---
 
 ## Settings Structure

@@ -575,7 +575,7 @@ Annotations represent extracted data from documents and track the full processin
 | POST | `/v1/annotations/{id}/validate` | Validate content |
 | POST | `/v1/annotations/{id}/purge` | Purge deleted |
 | GET | `/v1/annotations/{id}/time_spent` | Get time spent |
-| GET | `/v1/annotations/{id}/page_data` | OCR text / spatial data — `granularity` required; see [Page data](#page-data-ocr-text-and-spatial-data) |
+| GET | `/v1/annotations/{id}/page_data` | Get spatial data |
 | POST | `/v1/annotations/{id}/page_data/translate` | Translate spatial data |
 | POST | `/v1/annotations/search` | Search annotations |
 
@@ -643,65 +643,6 @@ Annotations represent extracted data from documents and track the full processin
 | GET | `/v1/pages/{id}` | Retrieve page |
 
 **Attributes**: `id`, `url`, `annotation`, `page_number` (1-indexed), `image` (URL), `width`, `height`
-
-> `GET /v1/pages?annotation=<id>` returns pages in **arbitrary order** (observed `1,4,6,13,12,…`).
-> Sort by `number` yourself; never trust list position.
-
-### Page data (OCR text and spatial data)
-
-```
-GET /v1/annotations/{id}/page_data?granularity=<g>[&page_numbers=1,25]
-```
-
-The way to get **OCR text** out of a document — including a clean whole-page text blob for
-feeding an LLM or a reasoning field's parked context field.
-
-**`granularity` is required.** Omitting it is `HTTP 400 {"granularity":["This field is required."]}`;
-an unknown value gives `"\"x\" is not a valid choice."` without listing the valid ones.
-
-| `granularity` | Items per page | Item shape |
-|---|---|---|
-| `texts` | exactly **one** | `{"text": "<the whole page>"}` — **no `position` key** |
-| `lines` | one per line | `{"position": [x1,y1,x2,y2], "text": …}` |
-| `words` | one per word | `{"position": […], "text": …}` |
-| `chars` | one per character | `{"position": […], "text": …}` |
-| `barcodes` | one per barcode | `[]` when the page has none |
-
-**Use `texts` for a page-text blob.** It returns the full page as a single string, so there is no
-line joining and no reading-order reconstruction to get wrong. The other granularities exist for
-spatial work and hand back dozens-to-thousands of fragments per page.
-
-**Response**
-
-```json
-{"results": [{"page_number": 1, "granularity": "texts", "items": [{"text": "…"}]}]}
-```
-
-#### `page_numbers` defaults to the first 20 pages — and every limit fails silently
-
-Verified live against a 25-page document:
-
-| Request | Returns |
-|---|---|
-| *(no `page_numbers`)* | 20 results, pages **1–20** — so `results[-1]` is page 20, **not** the last page |
-| `page_numbers=6,7,…,26` (21 entries) | pages **6–25** — truncated to the first 20 **of your list**, no error |
-| `page_numbers=25,24,23` | `[23,24,25]` — **always ascending**, request order ignored |
-| `page_numbers=1,1,1,25` | `[1,25]` — duplicates collapsed |
-| `page_numbers=99` / `0` / `-1` | `results: []`, HTTP 200 — out-of-range silently dropped |
-| `page_numbers=` (empty) | treated as absent → the 20-page default |
-| `page_numbers=abc` | HTTP 400 `Invalid value, expected to be a comma separated list of integers.` |
-
-Only a non-numeric value errors. Everything else — the 20-page cap, an over-long list, a page that
-does not exist — returns HTTP 200 with quietly wrong or missing data.
-
-**Therefore:**
-1. **Always pass `page_numbers` explicitly** when you care about specific pages. For first+last of
-   an `n`-page document that is `page_numbers=1,{n}` — get `n` from `GET /v1/pages?annotation=<id>`.
-2. **Match results by `page_number`, never by array index.** `results[-1]` is the highest page
-   number returned, which on a 21+ page document defaults to page 20.
-
-> The community-documented caveat that the **Full Page Search** extension "only reads the first 20
-> pages" is this API default surfacing, not a limitation of that extension.
 
 ---
 
@@ -1303,141 +1244,16 @@ For the full reference — field/annotation access, helpers (`is_set`/`is_empty`
 
 ## Reasoning Fields
 
-Reasoning fields are "inline LLM fields" that generate predictions based on configured prompts.
-
-**They are not a schema `type`.** A reasoning field is an ordinary datapoint — usually
-`"type": "string"` — marked by **`ui_configuration.type: "reasoning"`** and carrying `prompt` and
-`context` properties. Sending `"type": "reasoning"` is rejected
-(`reasoning not among date,number,enum,string,button`), which reads like a typo but is really the
-wrong axis.
+Reasoning fields are "inline LLM fields" that generate predictions based on configured prompts. Schema type: `reasoning`.
 
 **Key characteristics**:
 - Best for single-value, single-task extraction (e.g., extract country code from address)
+- Aggressive caching: identical inputs produce identical outputs even when prompt changes
 - Not suitable for tasks requiring high accuracy or reproducibility (use formula fields for math)
 - Can be overridden from UI unless edit option is disabled
 - Always validate outputs with business rules when possible
 
-### Availability — feature-gated and separately billed
-
-Reasoning fields require **Rossum-side organization enablement** and are **billed separately**.
-
-**The gate is not enforced by the schema API.** A schema PATCH adding a correctly-shaped reasoning
-field is accepted on an organization that cannot run one — verified on a non-enabled sandbox. So a
-misconfiguration presents as a field that simply never produces a value, with no error anywhere.
-Confirm entitlement before designing around reasoning fields; do not treat "the PATCH worked" as
-evidence the feature is available.
-
-### The two properties that matter
-
-`prompt` and `context` are properties of the schema **datapoint** itself. A real production field:
-
-```jsonc
-{
-  "category": "datapoint",
-  "id": "recipient_country_code",
-  "label": "Bill to Country Code",
-  "type": "string",                              // the DATA type — not "reasoning"
-  "ui_configuration": {
-    "type": "reasoning",                         // <- this is what makes it a reasoning field
-    "edit": "disabled"
-  },
-  "prompt": "Extract the 2-letter ISO 3166-1 alpha-2 country code from the bill-to address. Examples: Danmark→DK, Deutschland→DE… If no country is found, output empty string.",
-  "context": ["field.recipient_address"],
-  "disable_prediction": true,                    // conventional: no engine prediction competing
-  "rir_field_names": [],
-  "hidden": true
-}
-```
-
-`disable_prediction: true` with empty `rir_field_names` is the conventional companion shape — the
-value comes from the prompt, not from extraction.
-
-| Property | Type | Meaning |
-|---|---|---|
-| `prompt` | string | The instruction. Structure it: guidelines, field logic, fallback, examples. |
-| `context` | array | What the model is allowed to see. **Field references only.** |
-
-### `context` takes field references only — there is no document context
-
-`context` accepts TxScript-style references: **`field.<schema_id>`**, plus **`self.attr.label`**
-and **`self.attr.description`**. That is the whole vocabulary. (A production queue's seven
-reasoning fields used exactly two forms between them: `field.<id>` and `self.attr.label`.)
-
-There is **no whole-document, page-text, or attachment context.** A reasoning field cannot read
-the document. This is the single most important thing to know when designing one, because it
-inverts the natural approach.
-
-> **`context` entries are not validated.** The schema API accepts `["document"]`, `["ocr"]`,
-> `["field.does_not_exist"]` and `["self.attr.bogus"]` without complaint — only a non-list value
-> is rejected (`Expected a list of items but got type "str"`). An unsupported entry is stored and
-> then silently contributes nothing. So a plausible-looking `"context": ["document"]` will pass
-> review, pass the API, and quietly starve the model. Treat the vocabulary above as closed.
-
-**Consequence — the "park it in a field" pattern.** Any document content a reasoning field needs
-must first be written into a schema field, by a hook or a formula, and that field then named in
-`context`:
-
-```
-hook / formula  ──writes──>  schema field  ──named in──>  reasoning field's context
-```
-
-To park raw page text, fetch it with `GET /annotations/{id}/page_data?granularity=texts`
-(see [Page data](#page-data-ocr-text-and-spatial-data)) and write it to a plain `string` field
-carrying `"ui_configuration": {"type": "data"}`.
-
-### Prefer several narrow context fields over one blob
-
-Context entries are presented to the model **labelled by the source field's `label`**. So field
-labels are prompt surface, not decoration — and splitting content across a few well-labelled
-fields beats concatenating everything into one field with hand-rolled `### SECTION` markers. The
-platform already provides the delimiting; hand-rolled markers just add tokens the model has to
-re-parse. Name the parked fields for what they contain (`Page text — first page`), not for their
-mechanism (`hook_output_1`).
-
-### Iterating on a prompt
-
-Folklore holds that caching is aggressive enough that *identical inputs produce identical outputs
-even after the prompt changes*, making prompt edits invisible until you switch documents. **That
-did not reproduce.** Measured on the same annotation with byte-identical context content:
-
-| Change | Re-fire used | Result |
-|---|---|---|
-| context content changed | re-extract | recomputed against the new content |
-| prompt changed, input identical | re-extract | new prompt took effect |
-| prompt changed, input identical | **soft re-fire** (`start → content/validate → cancel`) | new prompt took effect |
-
-So a reasoning field **recomputes on an ordinary soft re-fire**, and prompt edits are picked up on
-identical input. Prompt iteration is therefore cheap: edit the prompt, soft re-fire the same
-document, read the value — no need to re-extract or find a fresh document.
-
-Caching may still deduplicate a genuinely unchanged prompt+input pair, which is harmless. Do not
-plan around prompt edits being swallowed.
-
-### `edit` and `no_recalculation`
-
-- `ui_configuration.edit` — `"enabled"` (default) lets a reviewer overwrite the generated value;
-  set it to `"disabled"` to make the field read-only in the UI.
-- `no_recalculation` — when set, the field is generated once and not recomputed on subsequent
-  events, which pins a value a reviewer has accepted.
-
-### A hook writing the context field works — same event chain
-
-**Yes, a reasoning field recalculates from content a hook wrote to its context field within the
-same event chain.** The ordering resolves correctly; you do not need a second pass, and you do not
-need the context source to be a formula field.
-
-Verified directly: a hook on `annotation_content.initialize` wrote a unique sentinel into a plain
-string field, and a reasoning field whose `context` named that field returned the sentinel on the
-same run. Repeated with a second, different sentinel to rule out a stale value.
-
-```
-hook (initialize) writes  zz_parked_text = "SENTINEL=ZEBRA-7734-QUARTZ"
-reasoning field, context: ["field.zz_parked_text"]
-                  output: "ZEBRA-7734-QUARTZ"          ← same run
-```
-
-This is what makes the *park it in a field* pattern above viable end to end: a hook can fetch page
-text, park it, and have a reasoning field consume it in one pass.
+**Configuration**: Add field of type "reasoning" in queue schema with a structured prompt covering guidelines, field logic, fallback procedures, and examples.
 
 ---
 
