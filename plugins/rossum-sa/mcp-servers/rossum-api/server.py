@@ -209,7 +209,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.33.0"
+_SERVER_VERSION = "0.34.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -2434,7 +2434,13 @@ def handle_list_audit_logs(request_id, arguments):
     "rossum_list_hook_logs",
     "Lists recent hook execution logs. Essential for debugging hook failures — shows "
     "which hooks ran, their status (succeeded/failed/skipped), timing, and error messages. "
-    "Filter by hook ID, annotation, queue, status, or time range.",
+    "Filter by hook ID, annotation, queue, status, or time range.\n"
+    "STDOUT: a hook's print() output is NOT in 'message' — 'message' is empty for a run that "
+    "succeeded, and holds only the one-line exception summary for one that failed. The printed "
+    "lines (and, on a failure, the full traceback with line numbers) live in the row's 'output' "
+    "field, which is omitted by default because it is untruncated — a hook printing in a loop "
+    "produced ~296,000 characters on a single row. Pass include_output=true to fetch it, "
+    "narrowed to one hook/annotation.",
     {
         "type": "object",
         "properties": {
@@ -2470,6 +2476,15 @@ def handle_list_audit_logs(request_id, arguments):
                 "type": "integer",
                 "description": "Maximum entries to return (default: 20, max: 200).",
             },
+            "include_output": {
+                "type": "boolean",
+                "description": (
+                    "Include each row's 'output' field — the hook's print() lines, plus the full "
+                    "traceback on a failed run. Off by default: 'output' is untruncated and can "
+                    "run to hundreds of thousands of characters per row. Narrow with hook/"
+                    "annotation and a small max_results before turning this on."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -2482,9 +2497,12 @@ def handle_list_hook_logs(request_id, arguments):
                 "timestamp_after", "timestamp_before"):
         if key in arguments:
             params.append((key, arguments[key]))
+    pick_fields = _HOOK_LOG_FIELDS
+    if arguments.get("include_output"):
+        pick_fields = _HOOK_LOG_FIELDS + ("output",)
     _rossum_list(
         request_id, "/api/v1/hooks/logs", params,
-        max_results=max_results, pick_fields=_HOOK_LOG_FIELDS,
+        max_results=max_results, pick_fields=pick_fields,
     )
 
 
@@ -3514,7 +3532,14 @@ _SECRETS_SCHEMA_DOC = (
     "declared keys to prefill '{\"<key>\": \"__change_me__\"}' instead of an empty {} (API-side, "
     "GET /hooks/{id}/secrets_keys stays [] until a human saves values). Existing hooks may carry "
     "shapes that predate this validation (e.g. $schema/required) — normalize before re-submitting "
-    "one. Secret VALUES are entered by a human in the UI — never through this tool."
+    "one. Secret VALUES are entered by a human in the UI — never through this tool. "
+    "CANNOT BE CLEARED: the API rejects null ('This field may not be null.') and {} ('type' is a "
+    "required property), so the field can never be made absent again — and Rossum auto-populates "
+    "the open map {\"type\": \"object\", \"additionalProperties\": {\"type\": \"string\"}} on every "
+    "hook create, including creates that send no secrets_schema at all. To clean up a hook that "
+    "carries the open map but reads no secrets, PATCH the closed empty schema "
+    "{\"type\": \"object\", \"additionalProperties\": false} — that is the canonical "
+    "'this hook takes no secrets' value, and it is accepted."
 )
 
 
@@ -5962,13 +5987,19 @@ def handle_import_email(request_id, arguments):
 @_tool(
     "rossum_refire_annotation",
     "Re-fire an annotation through the hook chain — the main inner-loop iteration primitive. "
-    "Three modes:\n"
+    "Four modes:\n"
     "  - 'validate' (default, fastest): start → content/validate(actions) → cancel-in-finally. "
     "Fires hooks listening on 'user_update' and 'started' actions. Returns the resulting "
     "compact annotation view (same shape as rossum_get_annotation).\n"
     "  - 'toggle': PATCH status postponed → to_review → wait → read. Fires "
     "'annotation_content.started' plus any status-listening hooks. Slower; use when soft "
     "validate is not enough.\n"
+    "  - 'reextract' (preferred for initialize hooks): PATCH status→'importing' with "
+    "rir_poll_id=null and messages=[] — the API call behind the UI's Re-extract button — then "
+    "poll past 'importing'. Fires 'annotation_content.initialize' and re-runs OCR/extraction "
+    "IN PLACE: same annotation id, no new document blob. CAVEAT: re-extraction REPLACES existing "
+    "extracted content, so never point it at a document a human has been working on — use "
+    "'reupload' when the original must stay pristine.\n"
     "  - 'reupload': fetch source PDF → upload to same queue → poll past 'importing' → "
     "auto-restore if the new annotation lands in 'deleted' (defensive: handles customer-custom "
     "dedup hooks that PATCH status:deleted on initialize. The stock Rossum Duplicate Handling "
@@ -5988,7 +6019,7 @@ def handle_import_email(request_id, arguments):
             },
             "mode": {
                 "type": "string",
-                "enum": ["validate", "toggle", "reupload"],
+                "enum": ["validate", "toggle", "reextract", "reupload"],
                 "description": "Re-fire pattern (default: 'validate').",
             },
             "actions": {
@@ -6005,7 +6036,7 @@ def handle_import_email(request_id, arguments):
             },
             "poll_timeout": {
                 "type": "integer",
-                "description": "reupload mode only — max seconds to wait for the new annotation to leave 'importing' (default 180).",
+                "description": "reextract/reupload modes — max seconds to wait for the annotation to leave 'importing' (default 180).",
             },
             "view": {
                 "type": "string",
@@ -6082,6 +6113,33 @@ def handle_refire_annotation(request_id, arguments):
                 return
         refire_meta["wait_seconds"] = wait_seconds
         time.sleep(wait_seconds)
+
+    elif mode == "reextract":
+        # The API call behind the UI's Re-extract button — undocumented in the public
+        # OpenAPI spec. Clearing rir_poll_id is what makes the platform re-run extraction
+        # rather than re-serve the previous result; messages=[] drops stale hook messages.
+        # Unlike reupload this re-imports IN PLACE, so target_aid stays the source id.
+        poll_timeout = int(arguments.get("poll_timeout", 180))
+        patch_resp = _http_request(
+            request_id, _resource_url(base_url, "annotations", annotation_id),
+            method="PATCH",
+            body={"status": "importing", "rir_poll_id": None, "messages": []},
+        )
+        if patch_resp is None:
+            return
+        settled = _poll_until(
+            lambda: _http_request(
+                request_id, _resource_url(base_url, "annotations", annotation_id)
+            ),
+            lambda a: a.get("status") not in ("importing", "created"),
+            timeout=poll_timeout,
+        )
+        if settled is None:
+            return
+        refire_meta["poll_timeout"] = poll_timeout
+        refire_meta["final_status"] = settled.get("status")
+        if settled.get("status") in ("importing", "created"):
+            refire_meta["timed_out"] = True
 
     elif mode == "reupload":
         poll_timeout = int(arguments.get("poll_timeout", 180))
