@@ -18,6 +18,6 @@ Use this blueprint when the record you need to match lives in a sub-collection t
 
 ## Adapt
 
-The `$unwind` after `$lookup` expands each matched parent into one row per child record, so a parent with many child records will produce many rows before the child `$match` filters them down. For large sub-collections this can be expensive — add a `$limit` on the parent result before the `$lookup`, or push a filter into `$lookup.pipeline` (the `let`/`pipeline` form of `$lookup`) to filter the sub-collection server-side. The `status: "active"` guard on the parent match is example-specific; adapt it to your collection's equivalent active-record flag.
+The `$unwind` after `$lookup` expands each matched parent into one row per child record, so a parent with many child records will produce many rows before the child `$match` filters them down. For large sub-collections this can be expensive — add a `$limit` on the parent result before the `$lookup`, or push a filter into `$lookup.pipeline` (the `let`/`pipeline` form of `$lookup`) to filter the sub-collection server-side. If your collection has an active-record flag, add it to the parent `$match` yourself — the fragment deliberately ships without one, because a hardcoded `status: "active"` silently returns zero rows on any collection lacking that field.
 
 See `mdh-reference` (matching queries) for the underlying query grammar and scoring.

@@ -6,8 +6,7 @@
         "aggregate": [
           {
             "$match": {
-              "«parent_field»": "{supplier_id}",
-              "status": "active"
+              "«parent_field»": "{supplier_id}"
             }
           },
           {
