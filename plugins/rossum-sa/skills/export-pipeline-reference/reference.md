@@ -2,6 +2,14 @@
 
 A flexible, multi-stage engine for integrating Rossum with external APIs. Configure complex export workflows using JSON settings — no code required. Runs as a single serverless function hook, replacing the legacy multi-hook export pipeline.
 
+> **Provenance.** Every behavioural claim below was verified against the engine implementation
+> shipped by the current Store template, not against prose docs. Where behaviour is non-obvious the
+> responsible internal function is named (`fill_template`, `resolve_var`, `Requester.execute`,
+> `TokenCache`, `ResponseHandler.handle_response`) — these are the names that show up in hook-log
+> tracebacks, so they are what you grep for when debugging. Read the engine's `config.code` off a
+> deployed hook before changing this doc; other descriptions of the extension are known to drift
+> from it (e.g. `response.raw`, see [Response Handlers](#response-handlers)).
+
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
@@ -14,12 +22,13 @@ A flexible, multi-stage engine for integrating Rossum with external APIs. Config
 8. [Authentication](#authentication)
 9. [Response Handlers](#response-handlers)
 10. [Advanced Features](#advanced-features)
-11. [Common Patterns](#common-patterns)
-12. [SFTP Export Pattern](#sftp-export-pattern)
-13. [Complete Examples](#complete-examples)
-14. [Migration from Pipeline v1](#migration-from-pipeline-v1)
-15. [Field Reference](#field-reference)
-16. [Troubleshooting](#troubleshooting)
+11. [Failure Semantics](#failure-semantics)
+12. [Common Patterns](#common-patterns)
+13. [SFTP Export Pattern](#sftp-export-pattern)
+14. [Complete Examples](#complete-examples)
+15. [Migration from Pipeline v1](#migration-from-pipeline-v1)
+16. [Field Reference](#field-reference)
+17. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -59,11 +68,25 @@ To confirm the diagnosis before opening a ticket: add a temporary `call_api` sta
 
 ### Hook-level: `token_owner` for Rossum API access
 
-Function hooks that use `{payload.rossum_authorization_token}` (e.g. SFTP Export, or OAuth flows that cache tokens via `update_hook_secrets`) require `token_owner` to be set on the hook. Without it, the token field is absent from the payload.
+`token_owner` is **not optional** — it is the engine's very first check. `rossum_hook_request_handler`
+begins with `if not payload.get("rossum_authorization_token"): raise ValueError(...)`, and the token
+backs every Rossum-side operation: the `.@` fetch, `get_content` relation lookups, token-cache
+persistence (`update_hook_secrets`), and `document_relation` response handlers.
 
-**Symptom:** `KeyError: 'rossum_authorization_token'` on first invocation; OAuth flow cannot persist `update_hook_secrets`.
+**Symptom:** `ValueError: Rossum authorization token is required.` — raised before any stage runs, so
+no request is attempted and no config error is reported.
 
 **Fix:** Set `token_owner` to a user URL when creating the hook, or PATCH it onto an existing hook.
+
+### Events other than `annotation_content`
+
+The engine is event-agnostic. If `payload["event"] != "annotation_content"` it fetches
+`payload["annotation"]["content"]` itself (`GET`, 20 s timeout), writes it back into the payload and
+rewrites `payload["event"]` to `annotation_content` before handing the payload to `TxScript.from_payload`.
+
+So the same hook config works on `export`, `invocation` (manual/scheduled), and other events — the
+payload does not need to carry annotation content. The cost is one extra Rossum API call per run,
+and a failure here raises before any stage executes.
 
 ### Hook-level: `sideload: ["schemas"]`
 
@@ -119,6 +142,41 @@ Use `{variable.path}` syntax to inject dynamic values anywhere in the configurat
 | **Property** | `property.` | Data from `get_content` or response handlers | `{property.po_data}` |
 | **Sequence** | `sequence` | Current iteration index (0-based) | `{sequence}` |
 | **Token** | `token` | Auth token from `auth` config | `{token}` |
+| **Item** | *`iteration_item_name`* | Current item during `iterate_over` (default `item`) | `{item.value}` |
+
+`sequence` and `token` exist only while filling `auth` and `request` templates — `sequence` is `0`
+outside iteration. `evaluate` conditions and `get_content` queries are filled with `payload` /
+`field` / `property` only.
+
+### Value Resolution Rules
+
+`fill_template` treats a string one of two ways, and the distinction decides the **Python type** that
+reaches `requests`:
+
+| Form | Rule | Result |
+|------|------|--------|
+| **Exact match** — the placeholder is the whole string (surrounding whitespace allowed) | returns the resolved value **with its original type** | `"{payload.n}"` → `5` (int), `"{payload.d}"` → `{"a": 1}` (dict), `"{payload.b}"` → `b"..."` (bytes), unresolved → `None` |
+| **Composite** — any other text around the placeholder | `str(value)` per placeholder, and `None` → `""` | `"N={payload.n}"` → `"N=5"`, `"x={payload.nul}y"` → `"xy"` |
+
+This is why a JSON body can carry real numbers, objects and binary content (`"amount": "{field.total.value}"`
+as an exact match preserves the value), and why a composite URL never contains the literal `None`
+— a missing value silently collapses to an empty segment instead.
+
+### `{field.x.value}` vs `{field.x}`
+
+Both resolve, and they are **not** the same:
+
+| Expression | Resolves to | Notes |
+|------------|-------------|-------|
+| `{field.x.value}` | the raw captured string — **always `str`**, whatever the schema field's type | `"1234.50"` for a number field. This is the safe default. |
+| `{field.x}` | the txscript typed proxy (`StringValue`, `NumberValue`, `DateValue`, …) | `1234.5` (float-like) for a number field; a `str` subclass for a string field |
+
+In composite strings the two are interchangeable (both stringify). They diverge on **exact match**,
+where `{field.x}` hands a typed proxy straight to the request — harmless for `content`, but it means
+a numeric field renders as `1234.5` (not `"1234.50"`), and it changes how `evaluate` compares the
+value (see [Status Code Comparison](#status-code-comparison-fails)).
+
+**Prefer `{field.x.value}`** unless you specifically want the typed value in a JSON body.
 
 ### URL Auto-Fetching
 
@@ -141,7 +199,18 @@ When a variable resolves to a URL, use `.@` to fetch its content:
 **Rules:**
 - `.url` ending → returns URL string (no fetch)
 - `.@` operator → fetches the URL content (mandatory for accessing properties of fetched objects)
-- **Restricted to the hook's parent domain.** The fetch is allowed only when the URL's hostname shares the same final two dot-separated components as the hook's `base_url` (e.g. a hook on `elis.rossum.ai` can fetch anything ending in `rossum.ai`, including `api.elis.rossum.ai`; it cannot fetch `httpbin.org` or `*.rossum.app`). URLs that don't match return `None` silently — use a `call_api` stage with an explicit request to fetch from third-party hosts.
+- **If the value is not a URL at all**, `.@` is simply consumed and the value passes through unchanged — no fetch, no error.
+- **Restricted to the hook's parent domain.** `resolve_var.is_same_origin` compares the *last two* dot-separated labels of the URL host against those of the hook's `base_url` (e.g. a hook on `elis.rossum.ai` can fetch anything ending in `rossum.ai`, including `api.elis.rossum.ai`; it cannot fetch `httpbin.org` or `*.rossum.app`). Use a `call_api` stage with an explicit request to reach third-party hosts.
+- **A cross-origin `.@` is not always silent** — it depends on where the template is filled:
+
+| Where | `raise_exceptions` | Cross-origin `.@` result |
+|-------|--------------------|--------------------------|
+| `auth` and `request` templates | `True` | raises `ResolveVarError` → the whole `call_api` entry is aborted and logged, `exception_occurred` set |
+| `get_content` `explicit` queries, `evaluate` / handler conditions | `False` | resolves to `None` silently |
+
+The same split governs **every** unresolvable expression, not just `.@`: a typo in a `request` URL
+placeholder aborts that API call loudly, while the same typo in an `evaluate` condition just makes the
+condition false and skips the stage quietly.
 
 ### Function Wrappers
 
@@ -187,8 +256,37 @@ Check conditions before running a stage. If any condition fails, the entire stag
 | `$in` / `$nin` | In / not in list | `{"field.status.value": {"$in": ["draft", "pending"]}}` |
 | `$exists` | Field exists | `{"field.po_number.value": {"$exists": true}}` |
 | `$regex` | Regex match | `{"field.email.value": {"$regex": "@gmail\\.com$"}}` |
-| `$size` | Array length | `{"field.line_items": {"$size": {"$gt": 0}}}` |
+| `$size` | Array length — takes a plain int or a nested operator dict | `{"field.line_items": {"$size": {"$gt": 0}}}` |
 | `$and` / `$or` | Logical operators | `{"$and": [{...}, {...}]}` |
+
+`$and` and `$or` are the **only** logical operators — there is no `$not` or `$nor`. Invert by
+choosing the opposite comparison (`$ne`, `$nin`, `$exists: false`).
+
+**Operator edge cases** (from `LOCAL_FILTER_OPERATORS` / `evaluate_filter`):
+
+- `$gt` / `$gte` / `$lt` / `$lte` return **false** if either side is `None` — they never raise and never compare `None`.
+- `$regex` returns false unless the resolved value is a `str` (a number field referenced without `.value` will not match).
+- `$in` / `$nin` need an operand that supports `in`; anything else is false.
+- `$exists: true` means "resolved to something other than `None`"; `$exists: false` matches both a missing path and a `None` value. An **empty** field resolves to `""`, which *exists* — pair the two: `{"$exists": true, "$ne": ""}`.
+- Multiple operators in one condition dict are ANDed.
+- An operator the engine doesn't know fails the condition (no error) — a typo like `$gte:` vs `$get:` silently skips the stage.
+
+### Conditions are templated first
+
+`check_condition` runs `fill_template` over the condition **before** evaluating it, so placeholders
+work on the right-hand side. This lets you compare two dynamic values without a helper field:
+
+```json
+"evaluate": [
+  {
+    "name": "matches_expected_supplier",
+    "condition": {"field.supplier_id.value": {"$eq": "{property.expected_supplier_id}"}}
+  }
+]
+```
+
+An unresolvable placeholder here becomes `""` (conditions are filled with `raise_exceptions=False`),
+so the comparison quietly fails rather than erroring.
 
 ### Examples
 
@@ -245,6 +343,21 @@ Fetch data from relations or fields and store it in `property` for later use.
 
 ### Source Types
 
+Seven sources are accepted (`GetContentPhase.source`):
+
+| Source | Lists | Fetches documents? |
+|--------|-------|--------------------|
+| `document_relation` | `GET /document_relations?annotation=<id>` | no — metadata only |
+| `document_relation_content` | same | yes — **every** document in each matched relation |
+| `relation` | `GET /relations?annotation=<id>` | no |
+| `relation_content` | same | yes — one entry per related annotation |
+| `parent_relation` | `GET /relations?parent=<id>&type=attachment` | no |
+| `parent_relation_content` | same | yes — one entry per related annotation |
+| `explicit` | nothing — pure templating | only via `.@` |
+
+Relation lists are fetched **lazily and cached per run**, so several `get_content` rules against the
+same source cost one API call total.
+
 #### `document_relation_content` (Recommended — most common)
 
 Fetches document relations AND retrieves the actual document metadata/content.
@@ -269,7 +382,13 @@ Access filename: `{property.invoice_payload.original_file_name}`
 }
 ```
 
-**Important:** Only the first document in each relation's `documents[]` is fetched.
+**Every** document in each matched relation's `documents[]` is fetched (`get_content` loops
+`for document_url in result["documents"]`) and the results are flattened into one list. A single
+relation holding three documents therefore yields three entries — which is what makes
+`iterate_over: "property.<name>"` upload all of them (see [Iteration Over Document Relations](#iteration-over-document-relations)).
+
+Each entry is the **document** object (`original_file_name`, `content`, `mime_type`, …), not the
+relation — relation keys/IDs are not carried over. Use `document_relation` when you need those.
 
 #### `document_relation`
 
@@ -287,7 +406,7 @@ Use when you need relation IDs or to check if a relation exists.
 
 #### `relation`
 
-Fetches annotation relations.
+Fetches annotation relations (metadata only).
 
 ```json
 {
@@ -296,6 +415,43 @@ Fetches annotation relations.
   "query": {"type": {"$eq": "parent"}}
 }
 ```
+
+#### `relation_content`
+
+Same list as `relation`, then enriched: each related **annotation** in the relation becomes its own
+entry, carrying the relation's own keys plus `annotation`, `document`, and `content`.
+
+```json
+{
+  "name": "sibling_docs",
+  "source": "relation_content",
+  "query": {"type": {"$eq": "duplicate"}}
+}
+```
+
+Access: `{property.sibling_docs.original_file_name}` is **not** available here — the document object
+is nested. Use `{property.sibling_docs.document.original_file_name}` and
+`{property.sibling_docs.content.@}` (`content` is a URL; `.@` fetches the bytes).
+
+The enrichment batches its lookups — all annotations in one `GET /annotations?id=…`, all documents in
+one `GET /documents?id=…` — so cost is two calls regardless of how many relations matched.
+
+#### `parent_relation` / `parent_relation_content`
+
+Looks **up** the tree instead of down: `GET /relations?parent=<this annotation id>&type=attachment`,
+i.e. relations where the current annotation is the parent. The current annotation is stripped out of
+each relation's `annotations[]`, so only the other side remains.
+
+```json
+{
+  "name": "child_attachments",
+  "source": "parent_relation_content",
+  "query": {}
+}
+```
+
+`parent_relation` returns metadata only; `parent_relation_content` enriches exactly like
+`relation_content` (same `annotation` / `document` / `content` shape, same batched lookups).
 
 #### `explicit`
 
@@ -326,6 +482,12 @@ Multiple values:
 
 - **Exactly 1 match** → `property.name` is a single object (not a list)
 - **Multiple matches** → `property.name` is a list
+- **No match** → `property.name` is an empty list `[]`
+
+This auto-unwrapping is the single biggest footgun in `get_content`: a config written and tested
+against a document with two attachments (`{property.att[0].original_file_name}`) breaks on a document
+with one, and vice versa. `iterate_over` is immune — it normalises a bare object back into a one-item
+list — so **prefer iterating over indexing** whenever the match count can vary.
 
 ---
 
@@ -352,19 +514,64 @@ Execute HTTP requests with dynamic data.
 | `url` | String | Yes | API endpoint URL. Supports templating. |
 | `method` | String | Yes | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
 | `content` | Any | No | Request body. Format depends on `content_type`. |
-| `content_type` | String | No | `json`, `form`, `files`, or `multipart`. Default: `form`. |
-| `headers` | Object | No | Custom headers. |
-| `iterate_over` | String | No | Path to list variable to iterate over. |
+| `content_type` | String | No | `json`, `form`, `files`, or `multipart`. **Default: none** — see below. |
+| `headers` | Object | No | Custom headers. Supports templating. |
+| `params` | Object | No | Query-string parameters. Supports templating. Also signed into the OAuth 1.0a base string. |
+| `timeout` | Integer | No | Per-request timeout in seconds. **Default: 10.** |
+| `ignore_timeout` | Boolean | No | Treat a timeout as skippable instead of a pipeline error. Default `false`. |
+| `iterate_over` | String | No | Path to a list to iterate over. |
 | `iteration_item_name` | String | No | Variable name for current item (default: `item`). |
+
+The **10-second default `timeout`** catches people out: an ERP that takes 15 s to create an invoice
+fails every time with a timeout, no HTTP status, and (without `ignore_timeout`) a generic pipeline
+error. Raise `timeout` on any call to a system known to be slow.
 
 ### Content Types
 
-| Type | Sends As | Use For |
-|------|----------|---------|
-| `json` | `application/json` | Structured data |
-| `form` | `application/x-www-form-urlencoded` | Simple key-value pairs |
-| `files` | `multipart/form-data` | File uploads |
-| `multipart` | `multipart/form-data` | Mixed files and data fields |
+`Requester.execute` dispatches on `content_type` and maps `content` onto exactly one `requests`
+argument:
+
+| `content_type` | Sent as | `requests` arg | Use for |
+|----------------|---------|----------------|---------|
+| `json` | `application/json` (set by `requests`) | `json=` — **re-serializes** `content` | Structured data |
+| `form` | `application/x-www-form-urlencoded` | `data=` | Simple key-value pairs |
+| `files` | `multipart/form-data` | `files=` | File uploads |
+| `multipart` | `multipart/form-data` | `files=` + `data=` — list/tuple values become files, everything else form fields | Mixed files and data fields |
+| *omitted / `null`* | **whatever you set in `headers`** | `data=` — `content` passed through untouched | Pre-built raw bodies |
+
+Note there is no separate "default" branch: `form` and *omitted* take the same `data=` path. The
+difference is intent, and it matters for strings.
+
+### Raw bodies: omit `content_type`
+
+Because an omitted `content_type` routes `content` to `data=` unchanged, and an **exact-match**
+placeholder preserves the value's original type, you can send a body that was built elsewhere
+**verbatim** — set the `Content-Type` header yourself:
+
+```json
+{
+  "name": "patch_resource",
+  "request": {
+    "url": "https://api.example.com/v1/resources/{field.resource_id.value}",
+    "method": "PATCH",
+    "content": "{field.patch_body.value}",
+    "headers": {
+      "Content-Type": "application/json-patch+json",
+      "Authorization": "Bearer {token}"
+    }
+  }
+}
+```
+
+Here `field.patch_body` holds a pre-serialized JSON-Patch array (built by a formula or an upstream
+hook) and it hits the wire exactly as stored.
+
+**Do not set `content_type: "json"` for this.** That routes the body to `json=`, which serializes it
+*again* — a string body arrives as a JSON **string** containing your JSON (`"[{\"op\":\"replace\"…}]"`)
+rather than as an array, and the target API rejects it. The rule:
+
+- body is a **dict/list** you want serialized → `content_type: "json"`
+- body is **already a string** in its final form → omit `content_type`, set `Content-Type` in `headers`
 
 ### Request Examples
 
@@ -460,6 +667,18 @@ In multipart: list/tuple values are sent as files, string/other values as form f
 
 ## Authentication
 
+`auth` accepts one of **three** strategies, selected by a `type` discriminator:
+
+| `type` | Strategy | `{token}` available? | 401 retry? |
+|--------|----------|----------------------|------------|
+| `bearer` *(default — `type` may be omitted)* | Fetch a token from `url`, cache it, you place it in a header | yes | yes |
+| `oauth1` | OAuth 1.0a TBA — signs an `Authorization: OAuth …` header per request | **no** | **no** |
+| `oauth2_private_certificate` | OAuth 2.0 client credentials via a JWT client assertion signed with a private certificate | yes | yes |
+
+`type` is optional only for `bearer`; the other two require it. Whichever you pick, `auth` templates
+are filled with `raise_exceptions=True` — an unresolvable placeholder in `auth` aborts the whole
+`call_api` entry before any request is sent.
+
 ### OAuth Bearer Token
 
 ```json
@@ -486,25 +705,111 @@ In multipart: list/tuple values are sent as files, string/other values as form f
 }
 ```
 
-### Auth Object Fields
+### Auth Object Fields (`bearer`)
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `url` | String | Yes | Auth endpoint URL. Supports templating. |
+| `type` | String | No | `bearer` (the default when omitted) |
+| `url` | String | Yes | Auth endpoint URL. Supports templating. Also derives the cache key. |
 | `method` | String | Yes | HTTP method for auth request. |
-| `content_type` | String | No | `json` or `form`. |
+| `content_type` | String | No | `json` → `json=`; anything else (incl. omitted) → `data=`. |
 | `content` | Object | No | Auth request body (credentials). |
 | `headers` | Object | No | Custom headers for auth request. |
 | `params` | Object | No | Query parameters for auth request. |
 | `credential_key` | String | Yes | Dot-path to token in response (e.g., `access_token` or `data.token`). |
 
+The auth request always uses the fixed 10-second default timeout — `timeout` on the `request` object
+does not apply to it, and `ignore_timeout` never suppresses an auth timeout.
+
+If `credential_key` does not resolve in the response, the engine raises `ResolveVarError` and logs
+`Auth token not found at key '<key>'` — check that log line before assuming the credentials are wrong.
+
+### OAuth 1.0a (`type: "oauth1"`)
+
+For APIs using token-based auth with per-request HMAC signatures (e.g. NetSuite SuiteTalk REST).
+There is **no token endpoint and no `{token}` variable** — the engine computes an
+`Authorization: OAuth …` header for each request from the request's own method, URL and `params`,
+and injects it just before sending (so during `iterate_over` each per-item URL is signed correctly).
+
+```json
+"auth": {
+  "type": "oauth1",
+  "consumer_key": "{payload.secrets.consumer_key}",
+  "consumer_secret": "{payload.secrets.consumer_secret}",
+  "token_key": "{payload.secrets.token_key}",
+  "token_secret": "{payload.secrets.token_secret}",
+  "realm": "{field.account_id.value}",
+  "signature_method": "HMAC-SHA256"
+}
+```
+
+`signature_method` is `HMAC-SHA256` (default) or `HMAC-SHA1`. `realm` appears in the header but is
+excluded from the signature base string. **A 401 is not retried** — with per-request signatures a 401
+means bad credentials or clock skew, not an expired token.
+
+### OAuth 2.0 with a private certificate (`type: "oauth2_private_certificate"`)
+
+Client-credentials flow where the client secret is replaced by a JWT client assertion signed with your
+private key. Behaves like `bearer` downstream: exposes `{token}`, cached, retried on 401.
+
+```json
+"auth": {
+  "type": "oauth2_private_certificate",
+  "url": "https://api.example.com/oauth2/v1/token",
+  "client_id": "{payload.secrets.client_id}",
+  "certificate_id": "{payload.secrets.certificate_id}",
+  "private_certificate": "{payload.secrets.private_certificate}",
+  "scope": ["rest_webservices"],
+  "signature_algorithm": "PS256"
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `client_id` | — | becomes the JWT `iss` |
+| `certificate_id` | — | becomes the JWT header `kid` |
+| `private_certificate` | — | unencrypted RSA key in PEM, PKCS#1 or PKCS#8 |
+| `scope` | `["rest_webservices"]` | list or string |
+| `signature_algorithm` | `PS256` | `PS256/384/512`, `RS256/384/512` |
+| `assertion_expiry` | `3600` | JWT lifetime, seconds |
+| `audience` | the token `url` | JWT `aud` |
+| `credential_key` | `access_token` | dot-path in the token response |
+| `grant_type` | `client_credentials` | |
+| `client_assertion_type` | `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` | |
+| `additional_claims` | `{}` | merged into the JWT last — can override the defaults above |
+| `additional_token_params` | `{}` | merged into the token request body last |
+
+**Passphrase-protected / encrypted private keys are rejected** (`encrypted private keys are not
+supported by the built-in signer`) — the signer is dependency-free and handles unencrypted RSA only.
+Store the PEM in hook secrets and reference it, never inline.
+
 ### Token Behavior
 
-- Tokens are **cached** and reused for identical auth configs
-- Cache **persisted in hook secrets** — survives across function executions
-- Auto-**invalidated and refreshed** if API returns 401
-- Available as `{token}` in request templates
-- You **must** explicitly set the Authorization header: `"Authorization": "Bearer {token}"`
+For `bearer` and `oauth2_private_certificate` (`TokenCache`):
+
+- **Cache location** — `payload["secrets"]`, under the derived key
+  `_request_processor_token_cache_<sanitized_host>_<hash>`, where `<hash>` is the first 16 hex chars of
+  `sha256(json.dumps(auth_config, sort_keys=True))` and `<sanitized_host>` is the auth URL's hostname
+  with non-alphanumerics replaced by `_`, truncated to 32 chars.
+- **Persistence** — on a cache miss the fetched token is written into `payload["secrets"]` *and*
+  PATCHed onto the hook (`PATCH /hooks/{id}` with the full secrets dict), so it survives across
+  function executions. If that PATCH fails it is only logged as a warning — the run continues with an
+  in-memory token and re-fetches next time.
+- **Cache key is computed after templating.** The hash covers the *resolved* auth config, so two
+  `call_api` entries whose auth blocks differ only in a placeholder that resolves to the same value do
+  share a token. Conversely, changing anything real (a scope, a header, the URL) mints a separate
+  cache entry.
+- **401 handling** — the cached token is dropped from `payload["secrets"]`, a fresh one is fetched, the
+  current request is re-rendered with the new `{token}` and retried **once**. During `iterate_over`,
+  later items pick up the refreshed token as they are rendered. A second 401 is passed through to the
+  response handlers.
+- Available as `{token}` in `request` templates (`url`, `headers`, `params`, `content`).
+- You **must** place it yourself: `"Authorization": "Bearer {token}"`. The engine never sets an
+  Authorization header for token-based auth.
+
+> The invalidation on 401 removes the key from the in-memory payload only — it does not immediately
+> PATCH the deletion. A hook that 401s and then dies before the refreshed token is persisted will
+> re-fetch on the next run rather than serving a stale token.
 
 Because the pipeline **writes the cached token into hook secrets at runtime**, the
 hook's `secrets_schema` must use the **open string-map shape** — declare the static
@@ -532,7 +837,7 @@ Process API responses and extract/store data.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `condition` | Object | No | Filter query — handler only runs if condition passes. |
+| `condition` | Object | No | Filter query — handler only runs if condition passes. Evaluated **after** extraction. |
 | `target_type` | String | Yes | `schema_id`, `property`, or `document_relation`. |
 | `target_key` | String | Yes | Field name, property key, or relation key. Supports `{sequence}`. |
 | `value` | ValueConfig | No* | How to extract value. *Required for `schema_id` and `property`. |
@@ -541,9 +846,43 @@ Process API responses and extract/store data.
 
 | Type | Description | Notes |
 |------|-------------|-------|
-| `schema_id` | Write to a document field | Dicts stored as JSON string, numbers as string |
-| `property` | Store in property context | Available in later stages via `{property.key}` |
+| `schema_id` | Write to a document field | Dicts stored as JSON string. Repeated writes to one key collapse to a list — see [Iteration](#iteration-over-lists) |
+| `property` | Store in property context | Available in later stages via `{property.key}`. Overwrites a duplicate key and logs a warning |
 | `document_relation` | Save response as new Rossum document | Creates/updates relation with given key |
+
+### `{sequence}` in `target_key`
+
+`target_key` is run through `.format(sequence=…)`, where `sequence` is the current item index during
+`iterate_over` and `0` otherwise. Use it to fan results out to separate fields:
+
+```json
+{"target_type": "schema_id", "target_key": "line_result_{sequence}", "value": {"response.body": {"$jmespath": "id"}}}
+```
+
+> **Caveat for `document_relation`.** The `{sequence}` substitution reaches the uploaded document's
+> *name* but **not** the relation's `key` — the relation is created with the raw, unformatted
+> `target_key`. So `target_key: "resp_{sequence}"` during a 3-item iteration produces three documents
+> named `resp_0_response`, `resp_1_response`, `resp_2_response`, all attached to a single relation
+> whose key is the literal string `resp_{sequence}` — and because the relation is *replaced* each
+> time, only the last document survives. Use a static `target_key` for `document_relation` targets.
+
+### Handler conditions can test the extracted value
+
+Extraction runs first, and the result is exposed to the condition as `found_value`. This is the
+cleanest way to write "only store it if we actually got something":
+
+```json
+{
+  "condition": {"found_value": {"$exists": true, "$ne": ""}},
+  "target_type": "schema_id",
+  "target_key": "remote_id",
+  "value": {"response.body": {"$jmespath": "id"}}
+}
+```
+
+Conditions can also reference any `response.*` path, and are templated before evaluation like
+`evaluate` conditions. A handler whose condition fails returns "not handled" — which for
+`priority_response_handlers` means the next handler gets a turn.
 
 > **Important — `schema_id` targets must already exist in the schema.** Response handlers with `target_type: "schema_id"` use Python `setattr` on the annotation field tree. If `target_key` names a field that does not exist, the handler raises `AttributeError`, `exception_occurred` becomes true, and the export fails with the generic Automation Blocker message `"Some exception occurred during during export pipeline"` *(verbatim — the duplicated "during" is in the source)* — with no hint about which field is missing.
 >
@@ -559,29 +898,55 @@ Format: `{"context_path": {"$operator": "query"}}`
 | `$xmlpath` | XML responses | `"$xmlpath": ".//status"` |
 | `$regex` | Text/HTML responses | `"$regex": "Order: (\\d+)"` |
 
-**Context paths:**
+Exactly one operator per `value` — zero or two raises a config error. The shorthand
+`{"<context_path>": {"$op": "…"}}` must be a single-key dict, and no extra keys are accepted.
+
+**Operator specifics:**
+
+- `$xmlpath` **requires an XML response.** If the response `Content-Type` does not contain `xml` the
+  handler raises `ValueError: $xmlpath operator can only be used with XML responses`. Multiple matching
+  elements return a **list** of their texts; an element with no text returns its serialized XML.
+- `$regex` stringifies a non-string target first, so it also works on `response.body` dicts. It returns
+  capture **group 1** if the pattern has one, otherwise the whole match; no match → `None`.
+- `$jmespath` on a missing path returns `None` rather than erroring.
+
+**Context paths** (the keys of the response object the engine builds):
 
 | Path | Type | Description |
 |------|------|-------------|
 | `response.status_code` | Integer | HTTP status code |
-| `response.headers` | Object | Normalized headers (underscores, lowercase) |
-| `response.raw` | List | Raw headers as tuples |
-| `response.body` | Any | Parsed body (JSON object/array, XML string, text, or bytes) |
+| `response.headers` | Object | Normalized headers (`-` → `_`, lowercased) |
+| `response.headers_raw` | List | Header name/value tuples, original casing |
+| `response.body` | Any | Parsed body — **only present for recognised content types**, see below |
 | `response.text` | String | Response as text |
 | `response.content` | Bytes | Raw response bytes |
 | `response.url` | String | Final URL (after redirects) |
 | `response.ok` | Boolean | True if status < 400 |
+| `response.reason` | String | HTTP reason phrase (`OK`, `Not Found`, …) |
 | `response.elapsed` | Float | Request duration in seconds |
-| `response` | Object | All response fields as one object |
+| `response.encoding` | String | Response encoding |
+| `response.cookies` | Object | Response cookies |
+| `response` | Object | All of the above as one object |
+
+> **`response.raw` does not exist.** The key is `headers_raw`. `response.raw` (and
+> `{"response": {"$jmespath": "raw"}}`) silently resolves to `None` — it does not error, so a handler
+> written against it stores an empty field and looks like an API problem. Some other descriptions of
+> this extension still list `response.raw`; the engine has only `headers_raw`.
 
 **Body parsing by content type:**
 
-| Content-Type | Parsed As |
-|--------------|-----------|
-| `application/json` | JSON object/array |
-| Contains `xml` | String (use `$xmlpath`) |
-| Contains `text` | Plain text string |
-| Other/unknown | Raw bytes |
+| `Content-Type` header | `response.body` |
+|-----------------------|-----------------|
+| contains `application/json` | JSON object/array |
+| contains `xml` | the XML **string** (use `$xmlpath`) |
+| contains `text` | plain text string |
+| contains `unknown`, **or the header is absent** | **not set at all** |
+| anything else | raw bytes |
+
+When `body` is not set, `response.body` resolves to `{}` (an empty dict), not `None` — so a
+`$jmespath` against it returns `{}`/`None` rather than failing. A response with no `Content-Type`
+header is common for `204 No Content` and some file-upload endpoints: read `response.text`,
+`response.status_code` or `response.ok` instead of `response.body`.
 
 ### Response Handler Examples
 
@@ -615,11 +980,11 @@ Format: `{"context_path": {"$operator": "query"}}`
   "value": {"response.body": {"$jmespath": "message"}}
 }
 
-// Custom response structure
+// Custom response structure (note: headers_raw, not raw)
 {
   "target_type": "schema_id",
   "target_key": "api_metadata",
-  "value": {"response": {"$jmespath": "{status_code: status_code, headers: headers, raw: raw}"}}
+  "value": {"response": {"$jmespath": "{status_code: status_code, headers: headers, raw: headers_raw}"}}
 }
 
 // Store in property for later stages
@@ -708,7 +1073,104 @@ Execute the same API call for each item in a list.
 4. `{sequence}` is the 0-based iteration index
 5. Global variables (`{field.*}`, `{payload.*}`) still accessible
 
-**Multiple values to single field:** If a response handler targets the same field during iteration, the processor auto-collects values into a list (e.g., `["ID1", "ID2", "ID3"]`).
+### The item is available across the whole request
+
+**The per-item variable resolves in `url`, `headers`, `params` **and** `content`** — the engine copies
+the whole request template and re-fills every one of those fields with that item's context on each
+pass. Per-item endpoints are therefore first-class:
+
+```json
+{
+  "name": "patch_each_line",
+  "request": {
+    "url": "https://api.example.com/v1/orders/{item.order_id.value}",
+    "method": "PATCH",
+    "content_type": "json",
+    "iterate_over": "field.line_items",
+    "content": {"quantity": "{item.item_qty.value}"},
+    "headers": {"X-Line-Index": "{sequence}", "Authorization": "Bearer {token}"}
+  }
+}
+```
+
+> **This changed.** Earlier engine versions filled `url` and `headers` **once**, with a context that
+> did not contain the item — a per-item placeholder in the URL path raised `ResolveVarError` and the
+> whole `call_api` entry failed. If you are reading an older config that hoisted per-item values into
+> the body and used a static collection URL, that workaround is no longer necessary.
+
+Two consequences worth knowing:
+
+- Values are substituted into the URL by plain string interpolation, with **no percent-encoding**. An
+  item value containing `?`, `#`, or `/` will change the URL's structure rather than being escaped.
+  Only put values you trust the shape of into a URL path.
+- A `.@` fetch expression in `url` or `headers` is re-evaluated **per item**, so it fires N times. Keep
+  `.@` in `content`, or resolve it once in a `get_content` stage and reference the `property`.
+
+### What `item` actually is
+
+`iterate_over` accepts more than a plain list — the engine normalises the resolved value: a list is
+used as-is; any other sequence (which is what txscript multivalue fields are) is expanded
+element-wise; a single object is wrapped as a one-item list; `None` or empty logs a warning and skips
+the call entirely. What each `item` *is* depends on what you point at, and getting this wrong is the
+most common iteration error:
+
+| `iterate_over` | Each `item` is | Access a value with |
+|----------------|----------------|---------------------|
+| A **table** (multivalue of tuples), e.g. `field.line_items` | the row/tuple | `{item.<column_schema_id>.value}` |
+| A **simple multivalue** (children are datapoints), e.g. `field.tags` | the datapoint itself | `{item.value}` |
+| A **child column**, e.g. `field.tag` | — | **must** append `.all_values`: `field.tag.all_values`, then `{item.value}` |
+| A list of dicts from `property` / `payload` | the dict | `{item.<key>}` |
+
+**Table (multivalue of tuples)** — `item` is the row, so you name the column:
+
+```json
+{
+  "iterate_over": "field.line_items",
+  "content": {"sku": "{item.item_sku.value}", "qty": "{item.item_qty.value}"}
+}
+```
+
+`{item.value}` on a table row raises `ResolveVarError` — a row has no single value.
+
+**Simple multivalue** — `item` is already the datapoint, so there is no column to name:
+
+```json
+{
+  "url": "https://api.example.com/v1/tags/{item.value}",
+  "iterate_over": "field.tags"
+}
+```
+
+`{item.<child_schema_id>.value}` here — e.g. `{item.tag.value}` when the multivalue is `tags` and its
+child datapoint is `tag` — **raises** `ResolveVarError` (an `AttributeError` on the child's schema id).
+This is the mirror image of the table case and the two are easy to confuse: the container's schema id
+is what you iterate, and for a simple multivalue the child's schema id must **not** appear in the
+placeholder. A bare `{item}` also works and stringifies the value.
+
+**Child column** — pointing `iterate_over` at the column inside a multivalue (`field.tag` rather than
+`field.tags`) fails with `TypeError: The multivalue field value is not a list by itself, use the
+.all_values property to access the list`, which aborts the whole `call_api` entry. Add `.all_values`
+(`field.tag.all_values`) and each `item` is a datapoint, accessed as `{item.value}`.
+
+### Multiple values to a single field
+
+If more than one response handler write lands on the same `schema_id` **during a run**, the engine
+collects them and writes a **list** at the end instead of letting the last one win:
+
+| Writes to one `target_key` | Field value |
+|----------------------------|-------------|
+| 1 | the scalar, e.g. `"ID1"` |
+| 3 | the list `["ID1", "ID2", "ID3"]`, in request order |
+
+This is what makes "POST each line item, keep every returned id" a two-line config. Two caveats:
+
+- **It is per-run, not per-iteration.** Two *different* stages whose handlers target the same
+  `schema_id` also produce a list (`["A", "B"]`) — even with no `iterate_over` anywhere. If you want
+  the second stage to overwrite the first, use different fields, or route one through `property`.
+- The count depends on how many requests actually reached a handler, so a document with one line item
+  yields a scalar and a document with two yields a list. Anything reading that field downstream (a
+  formula, an export template) must tolerate both. Use `target_key: "..._{sequence}"` instead when you
+  need a stable shape.
 
 ### Iteration Over Document Relations
 
@@ -761,6 +1223,73 @@ Access later:
   "query": {"key": {"$eq": "api_response"}}
 }
 ```
+
+### Tolerating Timeouts (`ignore_timeout`)
+
+Set `ignore_timeout: true` on a **request** to make a timeout non-fatal:
+
+```json
+{
+  "name": "optional_enrichment",
+  "request": {
+    "url": "https://api.example.com/v1/enrich/{field.doc_id.value}",
+    "method": "GET",
+    "timeout": 5,
+    "ignore_timeout": true
+  }
+}
+```
+
+The engine catches the timeout, logs a warning, and moves on without setting the error flag — so the
+export is not blocked by a best-effort call.
+
+Scope, precisely:
+
+- **Timeouts only.** Both connect and read timeouts are suppressed; a plain connection error, DNS
+  failure or TLS error is *not* — those still record a pipeline error.
+- **Request only.** A timeout while fetching an `auth` token is always reported. `ignore_timeout` also
+  does not extend to the 401-retry's *own* failures beyond its timeout.
+- **Per item.** During `iterate_over` only the timed-out item is skipped; remaining items still run.
+- No response handler runs for a skipped request, so any field it would have written stays empty —
+  guard downstream logic on the field being empty rather than assuming the call happened.
+
+---
+
+## Failure Semantics
+
+Worth being explicit, because most of it is silent:
+
+| Situation | Engine behaviour | Pipeline error? |
+|-----------|------------------|-----------------|
+| **Non-2xx response** (400/404/500…) | Response handlers run **normally** on the error response | **No** |
+| Request transport failure (connection error, non-ignored timeout) | logged, that request skipped, loop continues to the next item | Yes |
+| Timeout with `ignore_timeout: true` | logged as a warning, that request skipped | No |
+| Unresolvable placeholder in `auth` or `request` | `ResolveVarError`, the whole `call_api` entry is abandoned | Yes |
+| `iterate_over` resolves to `None` / empty | warning, the `call_api` entry is skipped | No |
+| Exception inside a response handler (e.g. unknown `schema_id`) | logged with the full response | Yes |
+| `evaluate` condition false | stage skipped | No |
+
+**Non-2xx responses are recorded, never raised.** A `500` with body `{"error": "boom"}` will happily
+populate your `status_code` and `error` fields and finish the run clean. Nothing in the engine inspects
+`response.ok` on your behalf — if a failed export must block the document, you have to make it do so:
+capture the status code into a field and gate the next stage (`evaluate`) on it, and/or add a Rule that
+fires on the failure field.
+
+When any of the "Yes" rows occur, one error message is appended to the annotation at the end of the
+run — verbatim:
+
+```
+Some exception occurred during during export pipeline - request processor run. Check log for details.
+```
+
+*(The duplicated "during" is in the source.)* It carries no indication of which stage, call, or field
+failed — the hook log is the only diagnostic. Set `"debugging": true` to have every response logged
+with status and body.
+
+Errors are contained rather than fatal: a failed request skips to the next item, a failed `call_api`
+entry skips to the next entry, and later stages still execute. That means a pipeline can partially
+succeed — e.g. create a remote record but fail to attach the scan — so put the ordering-sensitive calls
+behind `evaluate` conditions on the previous stage's captured status code.
 
 ---
 
@@ -1220,32 +1749,38 @@ Hook 3: Submit invoice
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | String | Yes | Key to store result in `property` |
-| `source` | String | Yes | `relation`, `document_relation`, `document_relation_content`, or `explicit` |
+| `source` | String | Yes | `relation`, `relation_content`, `document_relation`, `document_relation_content`, `parent_relation`, `parent_relation_content`, or `explicit` |
 | `query` | Object/List | Yes | Filter query (relations) or template list (explicit) |
 
-### Auth Object
+### Auth Object — `bearer` (default)
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `url` | String | Yes | Auth endpoint URL |
+| `type` | String | No | `bearer` when omitted |
+| `url` | String | Yes | Auth endpoint URL; also derives the token cache key |
 | `method` | String | Yes | HTTP method |
-| `content_type` | String | No | `json` or `form` |
+| `content_type` | String | No | `json` → `json=`, anything else → `data=` |
 | `content` | Object | No | Auth request body |
 | `headers` | Object | No | Custom headers |
 | `params` | Object | No | Query parameters |
 | `credential_key` | String | Yes | Dot-path to token in response |
 
+For `type: "oauth1"` and `type: "oauth2_private_certificate"` fields, see [Authentication](#authentication).
+
 ### Requester Object
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `url` | String | Yes | API endpoint URL |
-| `method` | String | Yes | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
-| `content` | Any | No | Request body |
-| `content_type` | String | No | `json`, `form`, `files`, `multipart` |
-| `headers` | Object | No | Custom headers |
-| `iterate_over` | String | No | Path to list for iteration |
-| `iteration_item_name` | String | No | Item variable name (default: `item`) |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `url` | String | Yes | — | API endpoint URL |
+| `method` | String | Yes | — | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| `content` | Any | No | `null` | Request body |
+| `content_type` | String | No | `null` | `json`, `form`, `files`, `multipart`; omitted → raw `data=` |
+| `headers` | Object | No | `null` | Custom headers |
+| `params` | Object | No | `null` | Query-string parameters |
+| `timeout` | Integer | No | `10` | Per-request timeout, seconds |
+| `ignore_timeout` | Boolean | No | `false` | Skip instead of erroring on timeout |
+| `iterate_over` | String | No | `null` | Path to list for iteration |
+| `iteration_item_name` | String | No | `item` | Item variable name |
 
 ### ResponseHandler Object
 
@@ -1260,8 +1795,9 @@ Hook 3: Submit invoice
 
 Format: `{"context_path": {"$operator": "query"}}`
 
-- `context_path`: `response`, `response.body`, `response.headers`, `response.text`
-- Operator: exactly one of `$jmespath`, `$xmlpath`, `$regex`
+- `context_path`: any path into the response object — `response`, `response.body`, `response.headers`, `response.headers_raw`, `response.text`, `response.status_code`, …
+- Operator: exactly one of `$jmespath`, `$xmlpath`, `$regex` (zero or two is a config error)
+- The shorthand dict must have exactly one key; extra keys are rejected
 
 ---
 
@@ -1273,7 +1809,12 @@ Format: `{"context_path": {"$operator": "query"}}`
 
 ### Token Not Caching
 **Problem:** New token requested every time.
-**Fix:** Ensure auth config object is identical across all calls (cache key is the entire auth object).
+**Fix:** The cache key is a hash of the **resolved** auth config, so any real difference (a scope, an
+extra header, a different URL) mints a separate entry — make the auth blocks byte-identical across
+calls. If they already are, check the log for `Failed to update secrets on API`: persisting the token
+is a `PATCH /hooks/{id}` and it needs `token_owner` set and the hook's `secrets_schema` open to extra
+string keys (see [Authentication](#authentication)). Without persistence the token is cached only
+within a single run.
 
 ### Handler Not Running
 **Problem:** Response handler doesn't execute.
@@ -1289,7 +1830,54 @@ Format: `{"context_path": {"$operator": "query"}}`
 
 ### Status Code Comparison Fails
 **Problem:** Evaluate condition on status code doesn't match.
-**Fix:** Status codes stored as strings in fields. Use `{"$in": ["200", "201"]}` not `{"$in": [200, 201]}`.
+**Fix:** The handler writes the status code as an **int**, but you read it back through the schema
+field, so what you compare against depends on the field's type *and* on whether you wrote `.value`:
+
+| Condition path | String-typed field | Number-typed field |
+|----------------|--------------------|--------------------|
+| `field.sc` | matches `"200"` / `["200","201"]` | matches `200` / `[200,201]` |
+| `field.sc.value` | matches `"200"` | matches `"200"` |
+
+`{field.x.value}` is always the raw string, whatever the schema type — so **use `.value` and compare
+against strings** and the condition works either way:
+
+```json
+{"field.api1_status_code.value": {"$in": ["200", "201"]}}
+```
+
+Referencing the field without `.value` (as several examples in this doc do) works only while the field
+stays string-typed; switching it to a number field silently breaks every such condition.
+
+### Per-item Value in the URL Raises `ResolveVarError`
+**Problem:** `iterate_over` is set and the URL contains `{item...}`, but the call fails to resolve.
+**Fix:** On the current engine the item resolves in `url`, `headers`, `params` and `content`, so this
+should work — the usual cause is the **wrong item shape**. Iterating a simple multivalue gives
+datapoints (`{item.value}`), iterating a table gives rows (`{item.<column>.value}`); using one form
+against the other raises. See [What `item` actually is](#what-item-actually-is). If it genuinely cannot
+resolve in the URL at all, the hook is running an older engine build — re-check the Store template
+version.
+
+### Pre-built JSON Body Arrives Double-Encoded
+**Problem:** The target API reports the body is a string, not an object/array.
+**Fix:** You set `content_type: "json"` on a body that was already serialized to a string, so it was
+serialized twice. Omit `content_type` and set `Content-Type` in `headers` instead — see
+[Raw bodies](#raw-bodies-omit-content_type).
+
+### Field Sometimes Holds a List, Sometimes a Scalar
+**Problem:** Downstream logic breaks on some documents.
+**Fix:** Repeated response-handler writes to one `schema_id` collapse into a list, so the shape follows
+the number of requests that ran. Either tolerate both, or write to `target_key: "..._{sequence}"` for a
+fixed shape. Note this also triggers across *different stages* targeting the same field, with no
+iteration involved.
+
+### Export Reports an Error but Every Field Looks Right
+**Problem:** The generic `Some exception occurred during during export pipeline` message appears even
+though the data was written.
+**Fix:** The flag is set by *any* failure anywhere in the run, and the run continues afterwards — so a
+later optional call (an attachment upload, a second handler) failed while the main call succeeded. The
+hook log is the only place that says which. Also note the converse: a non-2xx response is **not** an
+error to the engine, so a failed export can finish with no message at all — see
+[Failure Semantics](#failure-semantics).
 
 ### Connect Timeouts to External Hosts
 **Problem:** Every call to a non-Rossum host hangs and times out at the TCP layer. No HTTP status. No body. Identical curl from your laptop succeeds.
@@ -1304,3 +1892,7 @@ Format: `{"context_path": {"$operator": "query"}}`
 5. **Debug with full responses** — `{"response": {"$jmespath": "@"}}` shows status, headers, body
 6. **Keep auth config identical** — reuse the same auth object for token caching to work
 7. **Secrets in hook secrets** — never hardcode credentials, use `{payload.secrets.*}`
+8. **Always write `.value`** — `{field.x.value}` is the raw string regardless of schema type; `{field.x}` is a typed proxy whose comparisons change if the field's type changes
+9. **Gate on the previous stage's status code** — non-2xx responses do not stop the pipeline, so a later stage will happily run against a record that was never created
+10. **Raise `timeout` for slow systems** — the default is 10 seconds
+11. **Iterate, don't index** — `get_content` unwraps a single match into a bare object, so `[0]` breaks on one-item documents while `iterate_over` handles both
