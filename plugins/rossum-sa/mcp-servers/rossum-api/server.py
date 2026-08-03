@@ -209,7 +209,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.34.0"
+_SERVER_VERSION = "0.34.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
