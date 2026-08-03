@@ -144,9 +144,11 @@ Use `{variable.path}` syntax to inject dynamic values anywhere in the configurat
 | **Token** | `token` | Auth token from `auth` config | `{token}` |
 | **Item** | *`iteration_item_name`* | Current item during `iterate_over` (default `item`) | `{item.value}` |
 
-`sequence` and `token` exist only while filling `auth` and `request` templates — `sequence` is `0`
-outside iteration. `evaluate` conditions and `get_content` queries are filled with `payload` /
-`field` / `property` only.
+`sequence` and `token` exist **only while filling the `request` object** — `sequence` is `0` outside
+iteration. They are *not* available in `auth`: the auth block is filled before the token exists, with
+`payload` / `field` / `property` only, and because auth fills with `raise_exceptions=True`, a
+`{token}` or `{sequence}` placeholder there aborts the whole `call_api` entry. `evaluate` conditions
+and `get_content` queries likewise see only `payload` / `field` / `property`.
 
 ### Value Resolution Rules
 
@@ -201,16 +203,21 @@ When a variable resolves to a URL, use `.@` to fetch its content:
 - `.@` operator → fetches the URL content (mandatory for accessing properties of fetched objects)
 - **If the value is not a URL at all**, `.@` is simply consumed and the value passes through unchanged — no fetch, no error.
 - **Restricted to the hook's parent domain.** `resolve_var.is_same_origin` compares the *last two* dot-separated labels of the URL host against those of the hook's `base_url` (e.g. a hook on `elis.rossum.ai` can fetch anything ending in `rossum.ai`, including `api.elis.rossum.ai`; it cannot fetch `httpbin.org` or `*.rossum.app`). Use a `call_api` stage with an explicit request to reach third-party hosts.
-- **A cross-origin `.@` is not always silent** — it depends on where the template is filled:
+- **What a cross-origin `.@` does depends on where the template is filled** — and in conditions it does not fetch at all:
 
-| Where | `raise_exceptions` | Cross-origin `.@` result |
-|-------|--------------------|--------------------------|
-| `auth` and `request` templates | `True` | raises `ResolveVarError` → the whole `call_api` entry is aborted and logged, `exception_occurred` set |
-| `get_content` `explicit` queries, `evaluate` / handler conditions | `False` | resolves to `None` silently |
+| Where | Fetches? | Cross-origin `.@` result |
+|-------|----------|--------------------------|
+| `auth` and `request` templates | yes | raises `ResolveVarError` → the whole `call_api` entry is aborted and logged, `exception_occurred` set |
+| `get_content` `explicit` queries | yes | resolves to `None` silently |
+| `evaluate` and response-handler conditions | **never** | `.@` is consumed and the **raw URL string** passes through unchanged |
 
-The same split governs **every** unresolvable expression, not just `.@`: a typo in a `request` URL
-placeholder aborts that API call loudly, while the same typo in an `evaluate` condition just makes the
-condition false and skips the stage quietly.
+Conditions are the exception because they are filled without an API client at all, so `.@` is inert
+there regardless of origin — `{"payload.document.content.@": {"$ne": null}}` tests the URL string, not
+the document. Fetch in a `get_content` rule first and test the resulting `property`.
+
+Outside conditions, the same split governs **every** unresolvable expression, not just `.@`: a typo in
+a `request` URL placeholder aborts that API call loudly, while the same typo in a `get_content`
+`explicit` query yields `None` quietly.
 
 ### Function Wrappers
 
@@ -285,8 +292,29 @@ work on the right-hand side. This lets you compare two dynamic values without a 
 ]
 ```
 
-An unresolvable placeholder here becomes `""` (conditions are filled with `raise_exceptions=False`),
-so the comparison quietly fails rather than erroring.
+**An unresolvable placeholder on the right-hand side becomes `None`, not `""`** — conditions fill with
+`raise_exceptions=False`, and a placeholder that is the whole string takes the exact-match path, which
+returns the resolved value (here `None`) rather than interpolating. That has a trap:
+
+| Left side | Right side | Result |
+|-----------|------------|--------|
+| resolves | unresolvable → `None` | `$eq` false — the stage skips, which is usually what you wanted |
+| **also unresolvable → `None`** | unresolvable → `None` | `$eq` **true** — `None == None`, so the condition **passes** |
+
+So a typo in *both* sides of a comparison — or a stage guarding on two fields that are both absent —
+silently *fires* instead of skipping. This is the opposite of the safe default, and nothing is logged.
+
+Guard against it by asserting existence separately rather than relying on a comparison:
+
+```json
+"evaluate": [
+  {"name": "supplier_present", "condition": {"field.supplier_id.value": {"$exists": true, "$ne": ""}}},
+  {"name": "matches_expected", "condition": {"field.supplier_id.value": {"$eq": "{property.expected_supplier_id}"}}}
+]
+```
+
+Conditions in a composite string (`"prefix-{property.x}"`) do interpolate and yield `""` for an
+unresolved placeholder — only the whole-string form produces `None`.
 
 ### Examples
 
@@ -943,10 +971,16 @@ Exactly one operator per `value` — zero or two raises a config error. The shor
 | contains `unknown`, **or the header is absent** | **not set at all** |
 | anything else | raw bytes |
 
-When `body` is not set, `response.body` resolves to `{}` (an empty dict), not `None` — so a
-`$jmespath` against it returns `{}`/`None` rather than failing. A response with no `Content-Type`
-header is common for `204 No Content` and some file-upload endpoints: read `response.text`,
-`response.status_code` or `response.ok` instead of `response.body`.
+When `body` is not set, what `response.body` resolves to depends on which path reads it:
+
+- **In a `value` extractor** — `{}` (an empty dict), because the context walk substitutes an empty dict
+  for each missing segment. A `$jmespath` against it returns `{}`/`None` rather than failing.
+- **In a `condition`** — `None`, because conditions resolve the path directly with no such
+  substitution. So `{"response.body": {"$exists": false}}` is the way to test for a bodyless response;
+  `{"$eq": {}}` will not match.
+
+A response with no `Content-Type` header is common for `204 No Content` and some file-upload endpoints:
+read `response.text`, `response.status_code` or `response.ok` instead of `response.body`.
 
 ### Response Handler Examples
 
@@ -1157,19 +1191,33 @@ placeholder. A bare `{item}` also works and stringifies the value.
 If more than one response handler write lands on the same `schema_id` **during a run**, the engine
 collects them and writes a **list** at the end instead of letting the last one win:
 
-| Writes to one `target_key` | Field value |
-|----------------------------|-------------|
+| Writes to one `target_key` | Value handed to the field |
+|----------------------------|---------------------------|
 | 1 | the scalar, e.g. `"ID1"` |
-| 3 | the list `["ID1", "ID2", "ID3"]`, in request order |
+| 3 | the Python list `["ID1", "ID2", "ID3"]`, in request order |
 
-This is what makes "POST each line item, keep every returned id" a two-line config. Two caveats:
+This is what makes "POST each line item, keep every returned id" a two-line config. Three caveats, and
+the first one bites hardest:
+
+- **The list is coerced by the target field's schema type — you do not get a list back.** The engine
+  hands a Python list to a datapoint, and the datapoint stringifies it:
+
+  | Target field type | Stored / read back as |
+  |-------------------|------------------------|
+  | `string` | the Python **repr**: `"['ID1', 'ID2', 'ID3']"` — single quotes, not JSON, not parseable by a JSON reader |
+  | `number` | `.value` is the same repr string, but reading the field back gives **`None`** — effectively corrupt |
+
+  So this is only safe for a **string** field you intend to read as opaque text. If anything downstream
+  (a formula, a rule, an export template) has to parse the individual ids, do **not** rely on the
+  collapse — fan out with `target_key: "..._{sequence}"`, or capture into `property` and build the
+  payload yourself.
 
 - **It is per-run, not per-iteration.** Two *different* stages whose handlers target the same
   `schema_id` also produce a list (`["A", "B"]`) — even with no `iterate_over` anywhere. If you want
   the second stage to overwrite the first, use different fields, or route one through `property`.
 - The count depends on how many requests actually reached a handler, so a document with one line item
-  yields a scalar and a document with two yields a list. Anything reading that field downstream (a
-  formula, an export template) must tolerate both. Use `target_key: "..._{sequence}"` instead when you
+  yields a scalar `"ID1"` and a document with two yields the repr `"['ID1', 'ID2']"`. Anything reading
+  that field downstream must tolerate both shapes. Use `target_key: "..._{sequence}"` instead when you
   need a stable shape.
 
 ### Iteration Over Document Relations
@@ -1268,6 +1316,7 @@ Worth being explicit, because most of it is silent:
 | `iterate_over` resolves to `None` / empty | warning, the `call_api` entry is skipped | No |
 | Exception inside a response handler (e.g. unknown `schema_id`) | logged with the full response | Yes |
 | `evaluate` condition false | stage skipped | No |
+| **Exception in `get_content` or in evaluating a condition** | **propagates out — the hook fails hard** | **No message at all** |
 
 **Non-2xx responses are recorded, never raised.** A `500` with body `{"error": "boom"}` will happily
 populate your `status_code` and `error` fields and finish the run clean. Nothing in the engine inspects
@@ -1286,10 +1335,18 @@ Some exception occurred during during export pipeline - request processor run. C
 failed — the hook log is the only diagnostic. Set `"debugging": true` to have every response logged
 with status and body.
 
-Errors are contained rather than fatal: a failed request skips to the next item, a failed `call_api`
-entry skips to the next entry, and later stages still execute. That means a pipeline can partially
-succeed — e.g. create a remote record but fail to attach the scan — so put the ordering-sensitive calls
-behind `evaluate` conditions on the previous stage's captured status code.
+**Only the `call_api` phase is protected.** Inside it errors are contained: a failed request skips to
+the next item, a failed `call_api` entry skips to the next entry, and later stages still execute. That
+means a pipeline can partially succeed — e.g. create a remote record but fail to attach the scan — so
+put ordering-sensitive calls behind `evaluate` conditions on the previous stage's captured status code.
+
+The `evaluate` and `get_content` phases have **no such protection** — neither is wrapped in a
+`try`/`except`. An exception there (a relations lookup that errors, a malformed `$regex` in a query, a
+`$size` against something unmeasurable) propagates straight out of the handler: the hook fails at the
+platform level, **no stages after it run, and no error message is attached to the annotation** — not
+even the generic one above. The symptom is a hook that appears to have done nothing, with the traceback
+visible only in the hook log. This is the one failure mode that can leave an export silently
+un-attempted, so keep `get_content` queries simple and validate them before relying on them.
 
 ---
 
@@ -1552,6 +1609,13 @@ Export files to SFTP using Rossum's `file-storage-export` service:
 ### Real-World: Coupa Integration (5-stage)
 
 A production configuration that creates a Coupa invoice, uploads scans, attaches URL, uploads related documents, and attaches email:
+
+> **Reproduced as deployed, including one habit worth not copying.** Every field reference below is
+> written bare (`{field.coupa_invoice_id}`, `{field.oauth_url}`) rather than with `.value`. That works
+> here only because those fields are string-typed — the bare form resolves to a typed proxy, so if any
+> of them were ever changed to a number field the `evaluate` conditions comparing against `"200"` /
+> `""` would silently stop matching and the whole chain would go quiet. In new configs write
+> `{field.x.value}`; see [`{field.x.value}` vs `{field.x}`](#fieldxvalue-vs-fieldx).
 
 ```json
 {
