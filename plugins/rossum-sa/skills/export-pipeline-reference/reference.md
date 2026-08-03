@@ -9,6 +9,10 @@ A flexible, multi-stage engine for integrating Rossum with external APIs. Config
 > tracebacks, so they are what you grep for when debugging. Read the engine's `config.code` off a
 > deployed hook before changing this doc; other descriptions of the extension are known to drift
 > from it (e.g. `response.raw`, see [Response Handlers](#response-handlers)).
+>
+> This doc describes the engine shipped by the **current Store template**. An already-deployed hook may
+> be running an older build — check before applying anything here, see
+> [the engine version is frozen at creation](#hook-level-the-engine-version-is-frozen-at-creation).
 
 ## Table of Contents
 
@@ -77,6 +81,34 @@ persistence (`update_hook_secrets`), and `document_relation` response handlers.
 no request is attempted and no config error is reported.
 
 **Fix:** Set `token_owner` to a user URL when creating the hook, or PATCH it onto an existing hook.
+
+### Hook-level: the engine version is frozen at creation
+
+**A hook keeps the engine code it was created with.** Installing a newer Store template elsewhere does
+not upgrade an existing hook, and neither does a `prd2 push` that leaves `config.code` alone. So "what
+the current engine does" and "what this hook does" are different questions — a `settings` config that
+works against a freshly installed hook can fail on one deployed months earlier, with no version number
+anywhere to warn you.
+
+Read the hook's `config.code` and grep for a marker of the behaviour you depend on:
+
+| Marker in `config.code` | Build supports |
+|-------------------------|----------------|
+| `item_request.fill_template` | per-item filling of `url` / `headers` / `params` (not just the body) |
+| `from collections.abc import Sequence` | element-wise expansion of a multivalue `iterate_over` |
+| `ignore_timeout` | `timeout` and `ignore_timeout` on a request |
+| `oauth2_private_certificate` | the OAuth 1.0a and private-certificate auth types |
+
+An older build fails in two specific ways that look like config bugs rather than version skew:
+
+- A per-item placeholder in `url` / `headers` raises `ResolveVarError` — the older code filled those
+  **once** with a context that had no item, then re-filled only `content` per item.
+- `iterate_over` on a multivalue field made **one** request with the whole container as the item,
+  instead of one request per element — the older normalization only wrapped non-lists, it did not
+  expand other sequences. This one is silent: no error, just a single wrong call.
+
+The fix is to replace the hook's `config.code` with the current template's, not to work around it in
+`settings`.
 
 ### Events other than `annotation_content`
 
@@ -1127,10 +1159,12 @@ pass. Per-item endpoints are therefore first-class:
 }
 ```
 
-> **This changed.** Earlier engine versions filled `url` and `headers` **once**, with a context that
-> did not contain the item — a per-item placeholder in the URL path raised `ResolveVarError` and the
-> whole `call_api` entry failed. If you are reading an older config that hoisted per-item values into
-> the body and used a static collection URL, that workaround is no longer necessary.
+> **This changed, and hooks do not auto-upgrade.** Earlier engine versions filled `url` and `headers`
+> **once**, with a context that did not contain the item — a per-item placeholder in the URL path raised
+> `ResolveVarError` and the whole `call_api` entry failed. If you are reading an older config that
+> hoisted per-item values into the body and used a static collection URL, that workaround is no longer
+> necessary *on a current build*. Before relying on this, confirm the hook actually runs a build that
+> supports it — see [the engine version is frozen at creation](#hook-level-the-engine-version-is-frozen-at-creation).
 
 Two consequences worth knowing:
 
