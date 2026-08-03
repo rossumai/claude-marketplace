@@ -10,7 +10,7 @@ This skill provides the complete configuration reference for the **Request Proce
 
 For the full configuration guide, field reference, patterns, and examples, see [reference.md](reference.md).
 
-**IMPORTANT — hook setup:** The Request Processor runs as a single serverless function hook. Create it via the Rossum API (or prd2), then configure the `settings` JSON. The function code lives in `elis-serverless-functions/generic-functions/experimental/attachment_processor/`.
+**IMPORTANT — hook setup:** The Request Processor runs as a single serverless function hook. Install it from the Store ("Request Processor"), or create the hook via the Rossum API (or prd2) from that hook template, then configure the `settings` JSON. To read the exact engine behaviour for a given deployment, pull `config.code` off the deployed hook — that is the authoritative version for that org.
 
 Use this knowledge when:
 - Building a new export pipeline that sends data to external APIs (Coupa, SAP, NetSuite, custom REST)
