@@ -123,10 +123,12 @@ rossum_refire_annotation(annotation_id=<id>, mode="validate", actions=["user_upd
 What it does, atomically:
 
 1. `POST /annotations/{id}/start` — locks to caller.
-2. `POST /annotations/{id}/content/validate` — fires the hook chain.
+2. `POST /annotations/{id}/content/validate` — fires the hook chain **for the requested actions**. `user_update` fires off the back of *changed datapoints*, so a validate that changes nothing can legitimately produce zero hook runs.
 3. `POST /annotations/{id}/cancel` — **in a try/finally**, so the lock is always released even on the error path.
 4. Fetches annotation, content, automation_blocker, and recent hook logs.
 5. Returns the **compact merged view** (same shape as `rossum_get_annotation`) plus a `_refire` section showing what was done, and writes the raw payload to `.rossum-cache/annotations/<aid>.json`.
+
+> **All three calls return 200/204 and bump `modified_at` whether or not any hook ran.** A clean status transition is not evidence of execution — see [Prove the hook ran](#prove-the-hook-ran--before-you-interpret-the-result) before you read anything into the result.
 
 **Action selection.**
 - `["user_update"]` — fastest. Use when iterating on a rule or formula that recomputes on field edits.
@@ -175,6 +177,33 @@ Rossum has `POST /api/v1/internal/annotations/reautomate` — a batch endpoint t
 
 **It is Rossum-staff-only.** Verified live (NXP sandbox, 2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
 
+## Prove the hook ran — before you interpret the result
+
+**A hook that never ran and a hook that ran and skipped look identical from outside.** Both leave the field unchanged; both return 200/204; both bump `modified_at`. Skip this step and you will eventually "diagnose" a logic bug in code that never executed — and every fix you then invent to explain the non-effect is unfalsifiable.
+
+Establish execution *first*, in this order of preference:
+
+1. **A hook log entry timestamped after your re-fire** — `recent_hooks` in the re-fire response, or `rossum_list_hook_logs(hook=<id>, annotation=<id>)`. A *fresh* timestamp is proof; an entry from an earlier run is not.
+2. **`rossum_test_hook`** — returns `{generated_payload, hook_result}`, where `hook_result.log` is the hook's own output and `stacktrace` its failure. It needs no log endpoint, which makes it the harness of record when logs are unavailable (see Gotchas). It is a dry-run: it does not mutate the annotation.
+3. **A UI open** — genuinely fires `annotation_content.started`. Fine as a cross-check, but it overwrites your last-seen state (see Gotchas).
+
+**Never infer execution from the absence of an effect.** If none of the three is available, say so and stop — do not build a root-cause hypothesis on a guess about whether the code ran.
+
+### "The payload is missing field X" has a real answer — don't hand-build one
+
+When the hypothesis is *"the hook ran, but its gate skipped because field X isn't in the payload"*, do not construct a payload by hand and delete X from it. That shows only that the gate **could** skip on such a payload — never that the live payload looks that way. Ask the platform instead:
+
+```
+rossum_generate_hook_payload(hook_id=<id>, event="annotation_content", action="user_update", annotation_id=<id>)
+```
+
+It returns the payload the platform would actually send for that event/action against that annotation (credentials redacted), read-only, without executing the hook. Two facts worth knowing before you go looking:
+
+- **`annotation.queue` is always present** — it is a required field on the annotation serializer, so no code path omits it — and it is a **URL string** (`.../api/v1/queues/<id>`), never an int. `payload["annotation"]["queue"] == 1234` is therefore always false; parse the id out with `int(url.rsplit("/", 1)[1])`. A queue gate comparing the raw value to an integer fails silently and looks exactly like a missing field.
+- **Full queue objects** (`name`, settings) appear in a top-level `queues[]` array only when the hook's `sideload` list asks for them.
+
+Formulas and Rule `trigger_condition` expressions are a different matter: queue identity is not exposed to the formula language at all (see `txscript-reference`), so gate those on a field value, not on the queue.
+
 ## The iteration loop
 
 Repeat until the goal is met or the user stops you:
@@ -182,9 +211,10 @@ Repeat until the goal is met or the user stops you:
 1. **Edit local code.** Modify the `.py` file under the prd project's `formulas/`, `hooks/`, or `rules/` directory. **Never edit the `formula` field inside `schema.json` or the `code` field inside hook JSON** — `prd2 push` syncs `.py` files into JSON automatically. (Project rule, see `CLAUDE.md`.)
 2. **Push, gated.** Stage only the modified files and run `prd2 push <env> -io`. Confirm the file list with the user before executing.
 3. **Re-fire via `rossum_refire_annotation`** in the right mode. The default `validate` mode is correct for most cases.
-4. **Read the result.** Use the compact response's `fields`, `blocker.items`, and `recent_hooks` sections. If you need raw positions or OCR coordinates, `Read` the cache file at `_meta.full_payload_cache`.
-5. **Check the assertions — emit a PASS/FAIL table.** Evaluate each assertion from the goal list against the compact response and print a row per assertion: `assertion · field · expected · observed · ✅/❌`. The loop is **green only when every row passes**. If any fail → check `recent_hooks` for failures or `rossum_list_hook_logs(annotation=<id>)` for older logs; modify the code; loop. Do not declare success on a partial pass or a "looks right" — every assertion must be ✅, or you state which are still ❌ and keep going.
-6. **Bound the loop.** Default `--max-iterations=5`. After 5 unsuccessful iterations, stop and present the current state with the root-cause hypothesis — do not silently keep trying. The user decides whether to keep going.
+4. **Prove the hook ran.** Confirm a hook log entry timestamped after this re-fire, or fall back to `rossum_test_hook` (see [Prove the hook ran](#prove-the-hook-ran--before-you-interpret-the-result)). A 200/204 is not execution. If you cannot establish it, stop here and say so — everything after this step is worthless without it.
+5. **Read the result.** Use the compact response's `fields`, `blocker.items`, and `recent_hooks` sections. If you need raw positions or OCR coordinates, `Read` the cache file at `_meta.full_payload_cache`.
+6. **Check the assertions — emit a PASS/FAIL table.** Evaluate each assertion from the goal list against the compact response and print a row per assertion: `assertion · field · expected · observed · ✅/❌`. The loop is **green only when every row passes**. If any fail → check `recent_hooks` for failures or `rossum_list_hook_logs(annotation=<id>)` for older logs; modify the code; loop. Do not declare success on a partial pass or a "looks right" — every assertion must be ✅, or you state which are still ❌ and keep going.
+7. **Bound the loop.** Default `--max-iterations=5`. After 5 unsuccessful iterations, stop and present the current state with the root-cause hypothesis — do not silently keep trying. The user decides whether to keep going.
 
 Update tasks at every step. Each iteration is a task ("iteration 3: try X"), marked completed when the re-fire returns.
 
@@ -201,8 +231,13 @@ Look for:
 - `status: succeeded` but unexpected `updated_datapoints` → the hook ran but produced the wrong value. Trace inputs.
 - No log entry for the hook you just modified → the hook did not fire. Cross-check the trigger event in the hook JSON against the action you sent.
 
+**When log retrieval itself fails, switch harness — do not start guessing.** Log endpoints are not available in every deployment/token combination; `GET /hooks/{id}/logs` and the `/logs` and `/hook_logs` variants can all return 404. When that happens, `rossum_list_hook_logs` can tell you nothing about whether the hook fired, and "no logs" is **not** the same signal as "no log entry for this hook". Fall back to `rossum_test_hook`, which returns `log` and `stacktrace` inline in its response and so does not depend on any log endpoint.
+
 ## Gotchas
 
+- **A 200/204 and a bumped `modified_at` are not proof a hook ran.** `start`, `content/validate` and `cancel` all succeed and walk the status through the transition without necessarily emitting a content event that any hook listens for — a `validate` with no datapoint change can produce zero hook runs. Establish execution explicitly (see [Prove the hook ran](#prove-the-hook-ran--before-you-interpret-the-result)).
+- **Hook log retrieval can be unavailable per deployment.** `GET /hooks/{id}/logs` (and the `/logs`, `/hook_logs` variants) may 404 depending on environment and token. Then no-run and ran-and-skipped are externally identical, and `rossum_list_hook_logs` cannot break the tie — use `rossum_test_hook`, whose `log` comes back inline.
+- **`show_info` messages do not reliably surface on the annotation.** Don't use them as a debug channel: a missing message is not evidence that a branch was skipped. Read the `log` from `rossum_test_hook` instead.
 - **The start/cancel lock is for `content/validate` and `confirm` only — NOT for content edits.** `POST /content/operations` (i.e. `rossum_update_annotation_content`) succeeds without a review session on `to_review` and `postponed` annotations and preserves the status; wrapping it in start/cancel just fires needless `annotation_content.started` events. `content/validate` and `confirm`, by contrast, return HTTP 409 unless the annotation is in `reviewing`.
 - **`cancel` is automatic in `mode="validate"`** — the MCP tool wraps cancel in try/finally. If you ever call `rossum_start_annotation` standalone, you MUST call `rossum_cancel_annotation` afterwards (the start tool's success message includes a reminder). Cancel restores the **pre-start** status — a `postponed` annotation returns to `postponed`, not `to_review`.
 - **`content/validate` actions must include the trigger your hook listens on.** If the hook only listens on `started` and you send `actions=["user_update"]`, the hook will not fire. Cross-check the hook's `events` array against the actions list.
