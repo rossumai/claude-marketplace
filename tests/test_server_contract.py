@@ -653,6 +653,124 @@ def test_invoke_hook_defaults_empty_payload(monkeypatch):
     assert fake.calls[0]["body"] == {}
 
 
+# --- generate_payload: shape inspection without executing the hook ---
+
+# A payload shaped like the real thing: credentials at the top level, and the
+# annotation carrying `queue` as a URL (a required serializer field, so it is
+# always present — the fact that makes a `queue == <int>` gate silently dead).
+_GENERATED_PAYLOAD = {
+    "event": "annotation_content",
+    "action": "user_update",
+    "rossum_authorization_token": "super-secret-token",
+    "settings": {"queue_ids": [8199]},
+    "secrets": {"api_key": "hunter2"},
+    "annotation": {
+        "id": 12345,
+        "queue": "https://elis.rossum.ai/api/v1/queues/8199",
+        "status": "to_review",
+        "content": [{"schema_id": "invoice_id"}],
+    },
+    "hook": {"nested": {"token": "another-secret"}},
+}
+
+
+def test_generate_hook_payload_builds_body_and_redacts_credentials(monkeypatch):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_generate_hook_payload",
+        {"hook_id": 42, "event": "annotation_content", "action": "user_update",
+         "annotation_id": 12345},
+        lambda url, method, body: copy.deepcopy(_GENERATED_PAYLOAD)
+        if method == "POST" and url.endswith("/api/v1/hooks/42/generate_payload") else None,
+    )
+    call = fake.calls[0]
+    assert call["method"] == "POST"
+    assert call["body"] == {
+        "event": "annotation_content",
+        "action": "user_update",
+        "annotation": f"{BASE}/api/v1/annotations/12345",
+        "status": "to_review",
+        "previous_status": "importing",
+    }
+    out = emitted_payload(emitted)
+    # Credentials redacted at every depth...
+    assert out["rossum_authorization_token"] == "<redacted>"
+    assert out["secrets"] == "<redacted>"
+    assert out["hook"]["nested"]["token"] == "<redacted>"
+    # ...while the payload shape a caller is debugging survives intact.
+    assert out["annotation"]["queue"] == "https://elis.rossum.ai/api/v1/queues/8199"
+    assert out["settings"] == {"queue_ids": [8199]}
+    # The hook itself is never executed.
+    assert not any(c["url"].endswith("/test") for c in fake.calls)
+
+
+def test_generate_hook_payload_omits_annotation_for_non_annotation_events(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_generate_hook_payload",
+        {"hook_id": 42, "event": "email", "action": "received"},
+        lambda url, method, body: {"event": "email"},
+    )
+    assert fake.calls[0]["body"] == {"event": "email", "action": "received"}
+
+
+def test_test_hook_returns_generated_payload_alongside_result(monkeypatch):
+    """The generated payload is what answers 'what did the hook actually receive?'.
+    Discarding it is what pushes callers into hand-building payloads to guess."""
+    hook_result = {"log": "gate matched", "response": {"operations": []}, "stacktrace": None}
+
+    def responder(url, method, body):
+        if url.endswith("/generate_payload"):
+            return copy.deepcopy(_GENERATED_PAYLOAD)
+        if url.endswith("/hooks/42/test"):
+            return hook_result
+        return None
+
+    _, emitted = run_handler(
+        monkeypatch, "rossum_test_hook",
+        {"hook_id": 42, "event": "annotation_content", "action": "user_update",
+         "annotation_id": 12345},
+        responder,
+    )
+    out = emitted_payload(emitted)
+    assert out["hook_result"] == hook_result
+    assert out["generated_payload"]["annotation"]["queue"].endswith("/queues/8199")
+    assert out["generated_payload"]["rossum_authorization_token"] == "<redacted>"
+
+
+def test_test_hook_sends_unredacted_payload_to_the_platform(monkeypatch):
+    """Redaction is for what we show the caller — the hook must still execute
+    against the real token, or the dry-run stops being representative."""
+    def responder(url, method, body):
+        if url.endswith("/generate_payload"):
+            return copy.deepcopy(_GENERATED_PAYLOAD)
+        return {"log": ""}
+
+    fake, _ = run_handler(
+        monkeypatch, "rossum_test_hook",
+        {"hook_id": 42, "event": "annotation_content", "action": "user_update",
+         "annotation_id": 12345},
+        responder,
+    )
+    test_call = next(c for c in fake.calls if c["url"].endswith("/hooks/42/test"))
+    assert test_call["body"]["payload"]["rossum_authorization_token"] == "super-secret-token"
+
+
+def test_test_hook_include_payload_false_returns_bare_result(monkeypatch):
+    hook_result = {"log": "", "response": {}}
+
+    def responder(url, method, body):
+        if url.endswith("/generate_payload"):
+            return copy.deepcopy(_GENERATED_PAYLOAD)
+        return hook_result
+
+    _, emitted = run_handler(
+        monkeypatch, "rossum_test_hook",
+        {"hook_id": 42, "event": "annotation_content", "action": "user_update",
+         "annotation_id": 12345, "include_payload": False},
+        responder,
+    )
+    assert emitted_payload(emitted) == hook_result
+
+
 def test_create_hook_from_template_always_sends_queues(monkeypatch):
     """Regression: POST /api/v1/hooks/create requires 'queues' field even when
     queue_ids is omitted. Empty list [] means unattached — still accepted by the
