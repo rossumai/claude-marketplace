@@ -1418,9 +1418,24 @@ def build_child_cmd(dataset: str, config: str, *, resume: bool,
     child never writes the completed flag).  Partition children get an
     explicit --state-file (their pre-seeded plan) and are always launched
     with --resume.
+
+    Always passes --workers 1.  A child is a SERIAL crawler by definition --
+    either a whole dataset, or one partition whose id range comes from its
+    pre-seeded --state-file; it never partitions further.  Saying so
+    explicitly is also what keeps the child clear of main()'s
+    "config workers > 1 requires --supervise" guard: that guard exists to stop
+    a *human* silently serialising a dataset meant to be partitioned, and it
+    cannot tell that case apart from a supervisor-spawned child unless the
+    child's own argv says which it is.  Without it, every partition child of a
+    dataset whose CONFIG sets workers > 1 exits 1 on startup and the supervisor
+    crash-loops it to give-up.  Scope note: the guard reads the *config* value
+    and is skipped whenever --workers is passed, so `--supervise --workers N`
+    over a config without workers keys was always fine -- what was broken is
+    partitioning driven by the config (which is how --probe tells you to set
+    it up, and therefore the normal path).
     """
     cmd = [sys.executable, "-u", str(Path(__file__).resolve()),
-           "--dataset", dataset, "--config", config]
+           "--dataset", dataset, "--config", config, "--workers", "1"]
     if resume:
         cmd.append("--resume")
     if username:
