@@ -70,3 +70,59 @@ def test_config_workers_require_supervise(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         cbi.main()
     assert "workers" in str(exc.value) and "--supervise" in str(exc.value)
+
+
+def test_supervised_child_of_partitioned_dataset_survives_the_workers_guard(
+        monkeypatch, tmp_path):
+    """A child spawned for a workers>1 dataset must be able to actually START.
+
+    Regression: build_child_cmd used to omit --workers, so every partition
+    child re-read the config, saw workers > 1, tripped the guard above and
+    exited 1 on startup -- the supervisor then crash-looped it to give-up.
+    No dataset whose CONFIG set workers > 1 could run, making the partitioning
+    feature (probe suggestions, plan_partitions, the per-child rate split)
+    unreachable by its documented route. (`--supervise --workers N` over a
+    config without workers keys was unaffected: the guard reads the config
+    value and is skipped when --workers is passed.)
+
+    The two halves were each covered in isolation -- build_child_cmd's output
+    and the guard's message -- but nothing asserted they compose. This feeds
+    one into the other, which is the only way to catch it. Both asserts below
+    are load-bearing: reverting --workers 1 fails the argv-shape one, and
+    widening the guard to `if not args.supervise:` fails the composition one.
+    """
+    datasets = {"users": {"endpoint": "api/users", "collection": "users",
+                          "id_key": "id", "scope": "s", "fields": ["id"],
+                          "workers": 4}}
+    cfg = str(write_config(tmp_path, datasets=datasets))
+    state = tmp_path / "coupa_import_state_users_p1of4.json"
+
+    # both shapes the supervisor spawns: a partition child (own state file)
+    # and a whole-dataset child. Each used to trip the guard.
+    for state_file in (state, None):
+        cmd = cbi.build_child_cmd("users", cfg, resume=True, username=None,
+                                  password=None, state_file=state_file,
+                                  rate=1.0)
+
+        # the child says what it is: a serial crawler, never partitioning again
+        assert cmd[cmd.index("--workers") + 1] == "1"
+
+        # and that argv must not trip main()'s guard. Slice off the interpreter
+        # prefix by locating the script itself rather than by a fixed index.
+        script_at = next(i for i, a in enumerate(cmd)
+                         if a.endswith("coupa_bulk_import.py"))
+        monkeypatch.setattr(sys, "argv",
+                            ["coupa_bulk_import.py", *cmd[script_at + 1:]])
+        sentinel = RuntimeError("reached the import path")
+
+        def _boom(*a, **kw):
+            raise sentinel
+
+        # stop right after the guard so the test never touches Coupa or DS
+        monkeypatch.setattr(cbi, "import_dataset", _boom)
+        with pytest.raises(RuntimeError) as exc:
+            cbi.main()
+        assert exc.value is sentinel, (
+            f"child argv (state_file={state_file!r}) was rejected before "
+            "reaching the import path -- the workers guard fired on a "
+            "supervisor-spawned child")
