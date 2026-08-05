@@ -745,9 +745,10 @@ Hooks extend Rossum with custom logic. Three types: **webhooks**, **serverless f
 | PUT | `/v1/hooks/{id}` | Update hook |
 | PATCH | `/v1/hooks/{id}` | Partial update |
 | DELETE | `/v1/hooks/{id}` | Delete hook |
-| POST | `/v1/hooks/{id}/test` | Test hook |
+| POST | `/v1/hooks/{id}/test` | Dry-run the hook against a payload; returns `{log, response, stacktrace}`. Wrapped by `rossum_test_hook`, which generates the payload for you and returns it alongside the result |
+| POST | `/v1/hooks/{id}/generate_payload` | Build the payload the platform would send for an `event`/`action` against a real annotation, **without executing the hook**. Wrapped by `rossum_generate_hook_payload` (any event/action, credentials redacted) and `rossum_generate_export_payload` (export action, raw token for local template rendering) |
 | POST | `/v1/hooks/{id}/manual_trigger` | Manual trigger |
-| GET | `/v1/hooks/{id}/logs` | List call logs |
+| GET | `/v1/hooks/{id}/logs` | List call logs — **may return 404 depending on deployment and token**. When it does, `POST /test` is the only reliable evidence a hook executed, since it returns the hook's `log` inline |
 
 ### Hook Object Fields
 
@@ -759,7 +760,7 @@ Hooks extend Rossum with custom logic. Three types: **webhooks**, **serverless f
 - `config` (object): Extension-specific configuration
 - `queues` (array): Queue URLs this hook applies to
 - `active` (boolean): Enable/disable — check this (together with `queues`) before treating anything in the hook's settings as live behavior; inactive hooks are common leftovers in real implementations
-- `sideload` (array): Additional data to include in payloads
+- `sideload` (array): Extra objects to embed in the payload as top-level arrays — **opt-in per hook**. Accepted values mirror the annotation hook serializer's sideload fields: `queues`, `schemas`, `modifiers`, `modified_bys`, `created_bys`, `relations`, `child_relation`, `emails`, `related_emails`, `labels`, `notes`, `automation_blockers`, `pages`, `assignees`, `suggested_edits`. Without `queues` listed here the payload still carries `annotation.queue` (a URL), just no queue *object* — a hook needing the queue's `name` must sideload it or fetch the URL
 - `token_owner` (string): User identity for API access
 - `run_after` (array): Hook URLs that must run before this one
 - `description` (string): Human-readable description of what the hook does — always fill this in and keep it up to date when creating or modifying hooks
@@ -792,19 +793,57 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
   'https://<domain>.rossum.app/api/v1/hooks'
 ```
 
-**Example webhook payload**:
+**Example payload** (`annotation_content` / `user_update`; serverless functions receive the same shape):
 ```json
 {
-  "event": "annotation.confirmed",
+  "event": "annotation_content",
+  "action": "user_update",
+  "request_id": "3f8c1e...",
   "timestamp": "2024-01-15T10:30:00Z",
+  "hook": "https://<domain>.rossum.app/api/v1/hooks/456",
+  "base_url": "https://<domain>.rossum.app",
+  "rossum_authorization_token": "<temporary token for API callbacks>",
+  "settings": {},
+  "secrets": {},
+  "updated_datapoints": [98765],
   "annotation": {
     "id": 12345,
     "url": "https://<domain>.rossum.app/api/v1/annotations/12345",
-    "content": {"fields": {}}
+    "queue": "https://<domain>.rossum.app/api/v1/queues/8199",
+    "document": "https://<domain>.rossum.app/api/v1/documents/9876",
+    "schema": "https://<domain>.rossum.app/api/v1/schemas/321",
+    "status": "to_review",
+    "content": ["<the expanded content tree — sections → datapoints>"]
   },
-  "token": "temporary_api_token_for_webhook"
+  "document": {"id": 9876, "file_name": "invoice.pdf", "mime_type": "application/pdf"}
 }
 ```
+
+The `annotation` object is the **full annotation serialization** — every field `GET /v1/annotations/{id}` returns, with related objects as URLs — differing by event in one respect:
+
+- **`annotation_content` events**: `content` is the expanded content tree (a list of sections).
+- **`annotation_status` events**: `content` is a **URL** to the datapoint list rather than the tree, and an extra `previous_status` field is present.
+
+Don't reason about payload shape from memory or from a hand-built example. `POST /hooks/{id}/generate_payload` returns the real payload for a given event/action and annotation — MCP: `rossum_generate_hook_payload`.
+
+#### Getting the queue ID inside a hook
+
+`annotation.queue` is a **required** field on the annotation serializer, so every annotation payload carries it — but it is a **URL string**, never an int:
+
+```python
+def get_id_from_url(url: str) -> int:
+    _, id_ = url.rsplit("/", 1)
+    return int(id_)
+
+queue_id = get_id_from_url(payload["annotation"]["queue"])   # 8199
+```
+
+That is the idiom used throughout Rossum's own generic extensions. Consequences worth internalising:
+
+- `payload["annotation"]["queue"] == 8199` is **always false**. A queue gate written that way never matches — and from the outside it is indistinguishable from a hook that never ran at all.
+- For the queue's `name` or settings you need the object, not the URL: add `queues` to the hook's `sideload` and read `payload["queues"][0]`, or `GET` the URL.
+- Starting from a document rather than an annotation: `GET /v1/annotations/{id}` → `queue`, or `GET /v1/documents/{id}` → `annotations[]` → then the annotation.
+- **In formula fields and Rule `trigger_condition` expressions the queue is not available at all** — queue identity is not exposed to the formula language. Gate those on a field value instead (see `txscript-reference`).
 
 ### Serverless Function Extension
 
