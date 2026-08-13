@@ -584,11 +584,49 @@ A schema-field formula derives a field's value from other fields. It's a Python 
 
 Formulas run in a sandboxed expression runtime, with hard limits distinct from serverless functions:
 
-- **Max 2000 characters** per formula.
+- **Max 2000 characters** per formula — **comments and blank lines count.** The whole `formulas/<field_id>.py` file is pushed as one string, so a comment block explaining the logic consumes the same budget as the logic. Adding a reasoning header to a ~1700-char formula is enough to break it.
 - **No I/O** — a formula cannot make HTTP requests or access the document/file objects. Use a serverless function for lookups and enrichment.
 - **A formula must never reference its own field** (circular-reference error).
 - **Extensions cannot overwrite a formula field's value.** If a hook needs to write the value, use a separate `data`-type field, not a `formula` field.
 - For operations over **200+ line-item rows**, prefer a serverless function — large formulas hit the size/compute limits.
+
+### Diagnosing a length overrun
+
+`prd2 push` surfaces the overrun as a validation error on the schema, not on the formula:
+
+```
+HTTP 400  {"content": {"...": ["Ensure this field has no more than 2000 characters."]}}
+```
+
+Two things make this misleading:
+
+- **It does not name the field.** The message is the generic max-length validation on the schema's `content`, so it tells you a formula is too long but not which one.
+- **It can repeat for every schema in the push.** A push that touches many queues reports the failure per schema, which reads like a global auth or connectivity fault rather than one oversized formula.
+
+Measure locally before pushing. This counts characters rather than bytes — a `wc -c` scan overstates any formula containing non-ASCII text and will flag files that are actually within the limit. `rglob` makes it depth-independent, so run it from anywhere in the project tree, whether the queues sit at the root or under an org directory:
+
+```bash
+python3 - <<'PY'
+import pathlib
+for p in sorted(pathlib.Path(".").rglob("formulas/*.py")):
+    n = len(p.read_text("utf-8"))
+    if n > 2000:
+        print(f"{n:>5}  {p}")
+PY
+```
+
+Drop the `if` to list every formula with its count, which is what you want when deciding where a comment can still safely go.
+
+### Explanation has to live outside the formula
+
+Because comments count against the 2000-char budget, a formula is the wrong place for design reasoning. When a formula is non-obvious, keep a **one-line pointer** in the file and put the actual explanation where it has room:
+
+```python
+# why: see docs/formulas/vendor_match.md
+default_to(field.po_line_description_match, field.supplier_default_item_desc_match)
+```
+
+`prd2` only round-trips `formulas/<field_id>.py`, so a sibling Markdown file in the project is never pushed and cannot affect the limit. This is a hard constraint, not a style preference — a formula near the limit will break the next time someone documents it inline.
 
 ## Where formulas live
 
