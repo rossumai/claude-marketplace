@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, in-place re-extract, and re-upload — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", or when the user invokes a goal-style prompt.
+description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, in-place re-extract, re-upload, and export re-fire (status → exporting) — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", "re-test the export", "export this document again", or when the user invokes a goal-style prompt.
 argument-hint: [annotation-id-or-url] [--goal=<short description>] [--env=<name>] [--max-iterations=<N>]
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 ---
@@ -85,7 +85,7 @@ Re-firing **mutates the annotation you point at** — `validate`/`toggle` recomp
 
 Either way: **sandbox/UAT only**, never production.
 
-## The five re-fire patterns
+## The six re-fire patterns
 
 Pick the right one based on **which hook event** your deliverable listens for, or which side-effect you need to reproduce. When in doubt, start with **soft re-fire** — it is the lightest and fastest.
 
@@ -96,6 +96,7 @@ Pick the right one based on **which hook event** your deliverable listens for, o
 | **Re-extract** ⭐ for initialize | `rossum_refire_annotation` `mode="reextract"` | `annotation_content.initialize`, full OCR, doc-type detection | Iterating on `initialize` hooks or OCR-adjacent logic. Re-imports **in place**: same annotation ID, no duplicate document. **Replaces extracted content.** |
 | **Re-upload** | `rossum_refire_annotation` `mode="reupload"` | `annotation_content.initialize`, full OCR, doc-type detection | Same events as re-extract, but when the original must survive untouched. **Produces a new annotation ID** (returned in the response). |
 | **Direct edit + re-fire** | `rossum_update_annotation_content` → `rossum_refire_annotation` `mode="validate"` `actions=["user_update"]` | `user_update` | Testing a hook that reacts to one specific datapoint change. The content edit itself needs **no** start/cancel lock. |
+| **Export re-fire** | `rossum_patch_annotation` `status="exporting"` | the export leg only — export hook / connector, `annotation_status.changed` | Iterating on an export pipeline, export template, or connector against an annotation that has **already** exported. One PATCH, no lock, no re-upload. Does not re-run confirmation or approval routing. |
 
 ### Re-extract vs re-upload — both fire `initialize`
 
@@ -169,7 +170,25 @@ For most iteration loops you will NOT need this — soft re-fire on the saved an
 
 ### Confirm — the export / approval-routing trigger
 
-When the goal is about what happens **at confirmation** (export payload, approval-workflow routing, `annotation_content.confirmed` hooks), re-firing `validate` is not enough — you must actually confirm. Use `rossum_confirm_annotation` (`POST /annotations/{id}/confirm`): it transitions the annotation to `exported`/`exporting` (or `confirmed`, or `in_workflow`) and **fires the downstream export / approval routing** — a real, not-easily-reversible side effect, so it passes through the hard-gate like any write, and **never on prod**. Confirm the *correct* way (this endpoint), not by patching status directly. **Precondition:** the annotation must be in `reviewing` (i.e. started) first — call `rossum_start_annotation`, then confirm; confirming a `to_review` annotation returns HTTP 409. (Shipped via the `rossum_confirm_annotation` tool; if your server predates it, that tool may be absent — fall back to the UI for the confirm leg rather than patching status.)
+When the goal is about what happens **at confirmation** (export payload, approval-workflow routing, `annotation_content.confirmed` hooks), re-firing `validate` is not enough — you must actually confirm. Use `rossum_confirm_annotation` (`POST /annotations/{id}/confirm`): it transitions the annotation to `exported`/`exporting` (or `confirmed`, or `in_workflow`) and **fires the downstream export / approval routing** — a real, not-easily-reversible side effect, so it passes through the hard-gate like any write, and **never on prod**. Confirm the *correct* way (this endpoint), not by patching status to `confirmed` directly — a status PATCH skips the very confirmation logic you are usually trying to test. (The one exception is re-firing the export leg of an annotation that has *already* confirmed and exported, where a status PATCH is the only primitive available — see **Export re-fire** below.) **Precondition:** the annotation must be in `reviewing` (i.e. started) first — call `rossum_start_annotation`, then confirm; confirming a `to_review` annotation returns HTTP 409. (Shipped via the `rossum_confirm_annotation` tool; if your server predates it, that tool may be absent — fall back to the UI for the confirm leg rather than patching status.)
+
+### Export re-fire — re-testing the export leg
+
+Once an annotation has exported, `rossum_confirm_annotation` cannot re-fire the export: confirmation is a one-time transition and the annotation is already past it. To re-run **just the export leg** — the export hook, the Request Processor pipeline, the export template, the connector — patch the status back to `exporting`:
+
+```
+rossum_patch_annotation(annotation_id=<id>, status="exporting")
+```
+
+That is the entire loop. Entering `exporting` is itself what triggers the export leg, so there is no start/cancel lock to take, no content to touch, and no re-upload. Edit the hook config or template, patch the status, read the hook log. This makes it by far the fastest way to iterate on export output.
+
+What it does and does not do:
+
+- **Fires** the export hook / connector and `annotation_status.changed`.
+- **Does not** fire `annotation_content.confirmed`, re-run approval-workflow routing, or re-evaluate validation rules. If the goal depends on confirmation-time logic rather than the export itself, use **Confirm** above against a fresh annotation instead.
+- **Outcome states.** A successful export returns the annotation to `exported`; a failure lands it in `failed_export`. An annotation that sits in `exporting` means the connector never reported back — read the hook log rather than re-patching, since a second PATCH while the first run is still in flight can double-fire the export.
+
+Because this re-sends whatever the export target is, treat it exactly like `confirm` for safety: it passes the hard-gate, and **never on prod** — a re-fire against a live connector re-delivers a real document downstream.
 
 ### Re-running automation in place — `reautomate` (internal, not available via SA tokens)
 

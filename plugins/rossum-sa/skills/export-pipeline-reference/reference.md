@@ -32,7 +32,8 @@ A flexible, multi-stage engine for integrating Rossum with external APIs. Config
 14. [Complete Examples](#complete-examples)
 15. [Migration from Pipeline v1](#migration-from-pipeline-v1)
 16. [Field Reference](#field-reference)
-17. [Troubleshooting](#troubleshooting)
+17. [Re-testing an Export](#re-testing-an-export)
+18. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -1896,6 +1897,36 @@ Format: `{"context_path": {"$operator": "query"}}`
 - `context_path`: any path into the response object — `response`, `response.body`, `response.headers`, `response.headers_raw`, `response.text`, `response.status_code`, …
 - Operator: exactly one of `$jmespath`, `$xmlpath`, `$regex` (zero or two is a config error)
 - The shorthand dict must have exactly one key; extra keys are rejected
+
+---
+
+## Re-testing an Export
+
+Iterating on a pipeline means running the same annotation through the export leg repeatedly. You do **not** need to re-upload the document or create a fresh annotation each time — and you cannot re-confirm one that has already exported, because confirmation is a one-time transition.
+
+Patch the status back to `exporting`:
+
+```bash
+curl -X PATCH 'https://<your-org>.rossum.app/api/v1/annotations/<annotation_id>' \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"status": "exporting"}'
+```
+
+Entering `exporting` is what triggers the export leg, so this single PATCH is the whole re-test — no review lock, no content edit, no re-upload. The edit-and-retest loop becomes:
+
+1. Change the hook's `settings` (the pipeline config) or the export template.
+2. PATCH the annotation to `exporting`.
+3. Read the hook log for that annotation to see the rendered request and the target's response.
+
+Notes:
+
+- A successful run returns the annotation to `exported`; a failure leaves it in `failed_export`. Either is a normal loop state — re-patch to run again.
+- An annotation that stays in `exporting` means the target never reported back. Read the log rather than re-patching: a second PATCH while the first run is in flight can double-deliver.
+- This re-sends to the real target, so **sandbox/UAT only**. Against a production connector it re-delivers a real document downstream.
+- Only the export leg re-runs. `annotation_content.confirmed` hooks, approval-workflow routing, and validation rules are **not** re-evaluated — if the bug is upstream of the export, re-firing this way will keep reproducing the same input.
+
+The equivalent MCP call is `rossum_patch_annotation(annotation_id=<id>, status="exporting")`. See the `iterate` skill for the full set of re-fire patterns and when each one applies.
 
 ---
 
