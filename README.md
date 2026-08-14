@@ -83,7 +83,7 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 | `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
 | `/rossum-sa:automation-report [queue-id-or-url]` | Diagnose what blocks queue automation and produce an actionable report with threshold, schema, and rule recommendations |
-| `/rossum-sa:plugin-feedback [description]` | Report friction with this plugin as a sanitized, human-confirmed GitHub issue — capability gaps, tool bugs, or wrong/missing Rossum facts |
+| `/rossum-sa:plugin-feedback [description]` | Report friction with this plugin as a sanitized, human-confirmed report — a GitHub issue, or an anonymous submission to the maintainers' private review queue (optionally with a contact email) |
 
 ## 📚 Autoloaded references
 
