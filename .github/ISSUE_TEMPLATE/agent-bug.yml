@@ -1,0 +1,47 @@
+name: Agent bug
+description: A plugin tool returned or did the wrong thing
+labels: ["agent-bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Metadata only — no raw payloads, field values, document content,
+        annotation/org IDs, emails, or file contents.
+  - type: input
+    id: tool_name
+    attributes:
+      label: Tool
+      placeholder: rossum_get_annotation
+    validations:
+      required: true
+  - type: input
+    id: error_class
+    attributes:
+      label: Error class (never the response body)
+      placeholder: HTTPError
+  - type: input
+    id: http_status
+    attributes:
+      label: HTTP status
+      placeholder: "400"
+  - type: input
+    id: expected
+    attributes:
+      label: Expected (one line, no raw values)
+    validations:
+      required: true
+  - type: input
+    id: got
+    attributes:
+      label: Got (one line, no raw values)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Anything else?
+      description: Free text — scrub anything resembling customer data.
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
