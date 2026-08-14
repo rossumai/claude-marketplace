@@ -124,10 +124,13 @@ After ANY edit to the form:
 1. Open the form's `viewform` URL in a browser, view page source, and search for
    each question's entry ID (they appear as bare integers inside
    `FB_PUBLIC_LOAD_DATA_`), or submit a test response and read the prefilled-link
-   IDs via the form editor's "Get pre-filled link".
+   IDs via the form editor's "Get pre-filled link". Strip any `?usp=…` query
+   suffix from the copied viewform link — the guards require the bare
+   `…/viewform` URL.
 2. Update `form_fields` in `feedback-config.json` — keys are the payload-contract
    fields plus `contact_email`, values are `entry.<digits>`.
 3. Run `python3 scripts/check_form_fields.py` — exit 0 with no `MISSING` lines.
-4. Run `python3 -m pytest tests/test_plugin_feedback_skill.py -q` (shape guards).
+4. Run `python3 -m pytest tests/test_plugin_feedback_skill.py tests/test_issue_templates.py -q`
+   (shape + contact-link guards).
 5. Send one live test submission via the skill's option (b) and confirm the row
    lands in the response Sheet, then delete the test row.

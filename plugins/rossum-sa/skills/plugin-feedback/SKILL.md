@@ -34,12 +34,16 @@ redact it. Show the rendered draft; the SA reviewing it is the FINAL gate.
 Search open issues in `target_repo` (from `feedback-config.json`) by signature
 (`METHOD /endpoint` for tool-request; tool + error class for agent-bug; pack +
 section for knowledge-gap). With `gh`, use `gh search issues`; without it,
-`curl -s "https://api.github.com/search/issues?q=repo:<target_repo>+state:open+<signature>"`.
+`curl -sG --data-urlencode "q=repo:<target_repo> state:open <signature>"
+https://api.github.com/search/issues`.
 If the search fails, skip dedup and continue — never block filing on it. On a
 confident match, propose commenting + 👍 instead of a new issue.
 
 ## 4. File it — the reporter chooses the channel
-Read `feedback-config.json`. After the SA confirms the draft, ask ONE question:
+Read `feedback-config.json`. If `form_url` is empty (e.g. a fork, or the form
+not yet provisioned), do not offer (b)/(c) — say why, and offer (a) + the
+clipboard fallback only. Otherwise, after the SA confirms the draft, ask ONE
+question:
 
 > How do you want to send this?
 > (a) GitHub issue — public and trackable
@@ -47,11 +51,14 @@ Read `feedback-config.json`. After the SA confirms the draft, ask ONE question:
 > (c) anonymous + contact email — same queue, but we can follow up
 
 - **(a) GitHub** — if `gh auth status` and `gh repo view <target_repo>` succeed:
-  ensure the three labels exist idempotently, then `gh issue create` (or comment
-  + `gh api` reaction on a dedup match) and print the issue URL. Without `gh`:
-  build a prefilled new-issue URL —
+  ensure the three labels exist idempotently (skip on a permission error —
+  external reporters cannot create labels; file anyway), then `gh issue create`
+  (or comment + `gh api` reaction on a dedup match) and print the issue URL.
+  Without `gh`: build a prefilled new-issue URL —
   `https://github.com/<target_repo>/issues/new?template=<route>.yml&labels=<route>&title=<signature>`
-  plus one query param per template field id, values URL-encoded
+  plus one query param per template field id — folding `signal`,
+  `corroborators`, and `counts` into the `description` value, since the
+  templates have no fields for them — values URL-encoded
   (`python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "<value>"`).
   Print the URL for the SA to open, review once more on GitHub, and submit.
 - **(b) Anonymous** — POST the draft to the Google Form: `curl -sS -o /dev/null
@@ -66,9 +73,7 @@ Read `feedback-config.json`. After the SA confirms the draft, ask ONE question:
   clipboard (`pbcopy` / `xclip`) and print `form_view_url` (and `mailto` if set)
   so the SA can paste manually.
 
-If `form_url` is empty (e.g. a fork), do not offer (b)/(c) — say why, and offer
-(a) + clipboard only. Never file into the repo the SA is `cd`'d into — always
-`target_repo`.
+Never file into the repo the SA is `cd`'d into — always `target_repo`.
 
 ## Hard rules
 - Human-in-the-loop always: classify → draft → SA reviews → only then file.
