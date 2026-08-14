@@ -67,3 +67,20 @@ def test_contract_doc_matches_code():
     doc = (SKILL / "reference/payload-contract.md").read_text()
     for field in m.FEEDBACK_FIELDS:
         assert f"`{field}`" in doc, f"contract field {field} missing from doc"
+
+def test_skill_offers_reporter_choice_ladder():
+    text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    for needle in (
+        "(a)", "(b)", "(c)",                    # the explicit reporter question
+        "issues/new?template=",                  # prefilled-URL rung
+        "form_url", "form_fields", "form_view_url",  # form rung + fallback
+        "contact_email",
+        "clipboard",
+        "api.github.com/search/issues",          # unauthenticated dedup
+    ):
+        assert needle in text, f"SKILL.md transport ladder missing {needle!r}"
+
+def test_skill_contact_email_privacy_rules():
+    text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    assert "NEVER reuse an email" in text
+    assert "do not offer (b)/(c)" in text  # unconfigured-form behavior
