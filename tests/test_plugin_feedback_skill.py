@@ -50,9 +50,10 @@ def test_config_form_shapes_when_set():
         r"https://docs\.google\.com/forms/d/e/[\w-]+/formResponse", cfg["form_url"])
     assert re.fullmatch(
         r"https://docs\.google\.com/forms/d/e/[\w-]+/viewform", cfg["form_view_url"])
-    contract = set(_load_detect_friction().FEEDBACK_FIELDS)
-    assert set(cfg["form_fields"]) == contract | {"contact_email"}, (
-        "form_fields must map exactly the payload-contract fields + contact_email"
+    # Lean form design: the whole sanitized draft travels as one JSON paragraph
+    # (payload), so the form maps 3 entries, not one per contract field.
+    assert set(cfg["form_fields"]) == {"route", "payload", "contact_email"}, (
+        "form_fields must map exactly route, payload, contact_email"
     )
     for field, entry in cfg["form_fields"].items():
         assert re.fullmatch(r"entry\.\d+", entry), f"{field}: bad entry id {entry!r}"

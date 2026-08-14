@@ -62,9 +62,10 @@ question:
   (`python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "<value>"`).
   Print the URL for the SA to open, review once more on GitHub, and submit.
 - **(b) Anonymous** — POST the draft to the Google Form: `curl -sS -o /dev/null
-  -w '%{http_code}' <form_url>` with one `--data-urlencode "<entry-id>=<value>"`
-  per mapped field in `form_fields`. Expect `200`. Tell the SA it lands in a
-  private, manually reviewed queue — not a public issue.
+  -w '%{http_code}' <form_url>` with `--data-urlencode` per `form_fields` entry —
+  `route` gets the route, `payload` gets the ENTIRE sanitized draft as one JSON
+  string. Expect `200`; a missing required field returns `400`. Tell the SA it
+  lands in a private, manually reviewed queue — not a public issue.
 - **(c) Anonymous + email** — same POST as (b), plus the `contact_email` entry
   filled ONLY with an address the SA types now, in answer to this question.
   NEVER reuse an email seen in the session, config, git, or environment. The

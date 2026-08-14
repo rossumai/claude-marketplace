@@ -127,8 +127,8 @@ After ANY edit to the form:
    IDs via the form editor's "Get pre-filled link". Strip any `?usp=…` query
    suffix from the copied viewform link — the guards require the bare
    `…/viewform` URL.
-2. Update `form_fields` in `feedback-config.json` — keys are the payload-contract
-   fields plus `contact_email`, values are `entry.<digits>`.
+2. Update `form_fields` in `feedback-config.json` — keys are `route`, `payload`,
+   and `contact_email`, values are `entry.<digits>`.
 3. Run `python3 scripts/check_form_fields.py` — exit 0 with no `MISSING` lines.
 4. Run `python3 -m pytest tests/test_plugin_feedback_skill.py tests/test_issue_templates.py -q`
    (shape + contact-link guards).

@@ -1,8 +1,12 @@
 {
   "target_repo": "rossumai/claude-marketplace",
   "labels": ["tool-request", "agent-bug", "knowledge-gap"],
-  "form_url": "",
-  "form_view_url": "",
-  "form_fields": {},
+  "form_url": "https://docs.google.com/forms/d/e/1FAIpQLSd_axYB3UhCoaO7XSIIC1auTQGQ8_Fxn2RqSbXRhiTCJ75Pog/formResponse",
+  "form_view_url": "https://docs.google.com/forms/d/e/1FAIpQLSd_axYB3UhCoaO7XSIIC1auTQGQ8_Fxn2RqSbXRhiTCJ75Pog/viewform",
+  "form_fields": {
+    "route": "entry.719279972",
+    "payload": "entry.2108006928",
+    "contact_email": "entry.747533112"
+  },
   "mailto": ""
 }
