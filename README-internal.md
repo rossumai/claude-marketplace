@@ -134,3 +134,25 @@ After ANY edit to the form:
    (shape + contact-link guards).
 5. Send one live test submission via the skill's option (b) and confirm the row
    lands in the response Sheet, then delete the test row.
+
+## Live-test the friction detector
+
+Run a session with the worktree/branch plugin sideloaded (the local copy takes
+precedence over the marketplace-installed one):
+
+    claude --plugin-dir ./plugins/rossum-sa
+
+Arm the detector with three failing calls of the SAME tool — e.g. "read
+/tmp/nope-1, then /tmp/nope-2, then /tmp/nope-3" (the streak is per-tool, not
+per-file). Two traps, both by design:
+
+1. **Any successful call of the armed tool resets its streak** — after arming,
+   verify state with a DIFFERENT tool (e.g. Bash `cat` of the state file), or
+   the check itself disarms the trigger.
+2. **The offer fires once per session** (`offered: true` latch). To re-test,
+   start a fresh session — new session id, fresh state.
+
+State lives at `~/.cache/rossum-sa/friction/<session_id>.json` (honors
+`$XDG_CACHE_HOME`). The nudge arrives on the next `UserPromptSubmit` or at
+`Stop`. Watch hooks fire with `claude --debug`; reload edits with
+`/reload-plugins`.

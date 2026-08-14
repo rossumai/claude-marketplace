@@ -86,8 +86,19 @@ def scan_frustration(prompt: str) -> bool:
 
 
 def _error_class(event: dict) -> str:
+    """One-line error class from a PostToolUseFailure event.
+
+    The documented event shape carries the failure as a top-level ``error``
+    string (verified live 2026-08-14: Read failures populate ONLY that key);
+    tool_response.error/.stderr are kept as fallbacks for older/other shapes.
+    Whitespace is collapsed so multi-line Bash errors ("Exit code 1\\n...")
+    stay a single sanitized line.
+    """
     resp = event.get("tool_response") or {}
-    return str(resp.get("error") or resp.get("stderr") or "unknown")[:80]
+    if not isinstance(resp, dict):
+        resp = {"error": str(resp)}
+    raw = event.get("error") or resp.get("error") or resp.get("stderr") or "unknown"
+    return " ".join(str(raw).split())[:80]
 
 
 ERROR_THRESHOLD = 3

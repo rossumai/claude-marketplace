@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / "plugins/rossum-sa/hooks/detect_friction.py"
 
@@ -44,6 +46,28 @@ def test_error_streak_and_reset():
     m.apply_event(st, {"hook_event_name": "PostToolUse",
                        "tool_name": "rossum_get", "tool_response": {"exit_code": 0}})
     assert st["tool_error_streaks"]["rossum_get"] == 0
+
+def test_error_class_reads_documented_top_level_error():
+    """The real PostToolUseFailure contract: failure text is event["error"],
+    NOT tool_response.error. Live 2026-08-14: Read failures carried only this
+    key and the old parser degraded every report to "unknown"."""
+    m = _load()
+    st = m.new_state("s")
+    ev = {"hook_event_name": "PostToolUseFailure", "tool_name": "Read",
+          "session_id": "s", "tool_response": {},
+          "error": "File does not exist."}
+    m.apply_event(st, ev)
+    assert st["last_error_class"] == "File does not exist."
+
+def test_error_class_flattens_multiline_bash_error():
+    m = _load()
+    st = m.new_state("s")
+    ev = {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+          "session_id": "s",
+          "error": "Exit code 1\nError: Cannot find module 'express'"}
+    m.apply_event(st, ev)
+    assert "\n" not in st["last_error_class"]
+    assert st["last_error_class"].startswith("Exit code 1 Error: Cannot find module")
 
 def test_devloop_cycles_need_prior_edit():
     m = _load()
@@ -110,18 +134,26 @@ def test_opt_out_env(monkeypatch):
     assert m.is_opted_out() is True
 
 
-def test_run_emits_nudge_once_then_silent(tmp_path, monkeypatch):
+@pytest.mark.parametrize("event_name", ["UserPromptSubmit", "Stop"])
+def test_run_emits_nudge_once_then_silent(tmp_path, monkeypatch, event_name):
+    # additionalContext delivery on Stop is not an explicitly documented harness
+    # contract — it was verified empirically in the live E2E of 2026-08-14, and
+    # this test pins our emission side so a regression is caught in CI.
     m = _load()
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.delenv("ROSSUM_SA_NO_FEEDBACK", raising=False)
     for _ in range(3):
         m.run(_fail() | {"session_id": "s9"})
-    out = m.run({"hook_event_name": "UserPromptSubmit",
-                 "prompt": "help", "session_id": "s9"})
+    nudge_event = {"hook_event_name": event_name, "session_id": "s9"}
+    if event_name == "UserPromptSubmit":
+        nudge_event["prompt"] = "help"
+    out = m.run(nudge_event)
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert "plugin-feedback" in ctx and out["continue"] is True
-    again = m.run({"hook_event_name": "UserPromptSubmit",
-                   "prompt": "again", "session_id": "s9"})
+    again_event = {"hook_event_name": event_name, "session_id": "s9"}
+    if event_name == "UserPromptSubmit":
+        again_event["prompt"] = "again"
+    again = m.run(again_event)
     assert again is None or "additionalContext" not in (again or {}).get(
         "hookSpecificOutput", {})
 
