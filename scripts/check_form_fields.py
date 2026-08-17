@@ -43,7 +43,7 @@ def main() -> int:
     form_url = cfg.get("form_url", "")
     view_url = cfg.get("form_view_url", "")
     fields = cfg.get("form_fields", {})
-    if not form_url and not fields:
+    if not form_url:
         print("form not configured (form_url empty) — nothing to check")
         return 0
     if not FORM_URL_RE.fullmatch(form_url):

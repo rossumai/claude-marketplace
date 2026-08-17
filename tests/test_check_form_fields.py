@@ -6,6 +6,7 @@ array, where entry IDs appear as bare integers — so presence is checked as a
 digit-substring, not as a name="entry.N" attribute.
 """
 import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,3 +36,19 @@ def test_missing_entries_flags_only_absent_ids():
 def test_missing_entries_empty_config_is_clean():
     m = _load_script()
     assert m.missing_entries(CANNED_HTML, {}) == {}
+
+def test_main_treats_empty_form_url_as_unconfigured_even_with_fields(tmp_path, monkeypatch):
+    """FINDING 5 regression: a fork that clears form_url but leaves
+    form_fields populated must exit 0 as "unconfigured", exactly as the
+    module docstring promises ("Exit 0: form unconfigured") — not fall
+    through to validating a URL shape that was never set. No network call
+    may happen on this branch."""
+    m = _load_script()
+    cfg_path = tmp_path / "feedback-config.json"
+    cfg_path.write_text(json.dumps({
+        "form_url": "",
+        "form_view_url": "",
+        "form_fields": {"payload": "entry.1"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(m, "CONFIG", cfg_path)
+    assert m.main() == 0

@@ -32,6 +32,7 @@ def new_state(session_id: str) -> dict:
         "frustration_hit": False,
         "edit_seen": False,
         "offered": False,
+        "progress_since_prompt": True,
     }
 
 
@@ -85,20 +86,40 @@ def scan_frustration(prompt: str) -> bool:
     return bool(FRUSTRATION_RE.search(prompt or ""))
 
 
-def _error_class(event: dict) -> str:
-    """One-line error class from a PostToolUseFailure event.
+# Allow-list extraction: error_class must never carry raw error text — real
+# messages embed org hostnames, annotation IDs, and file paths, all of which
+# the payload contract promises never leave the machine. A pattern either
+# matches a safe, generic class or the field degrades to "unknown".
+_ERROR_CLASS_PATTERNS = (
+    re.compile(r"\b[A-Z][A-Za-z0-9_]+(?:Error|Exception)\b"),
+    re.compile(r"\bHTTP[ /]?\d{3}\b", re.IGNORECASE),
+    re.compile(r"^Exit code \d+\b"),
+    re.compile(r"\b(?:ENOENT|ECONNREFUSED|ETIMEDOUT|EACCES|EPERM)\b"),
+    re.compile(r"\b(?:file|path|directory) does not exist\b", re.IGNORECASE),
+    re.compile(r"\bno such file or directory\b", re.IGNORECASE),
+    re.compile(r"\bpermission denied\b", re.IGNORECASE),
+    re.compile(r"\btimed? ?out\b", re.IGNORECASE),
+)
 
-    The documented event shape carries the failure as a top-level ``error``
-    string (verified live 2026-08-14: Read failures populate ONLY that key);
-    tool_response.error/.stderr are kept as fallbacks for older/other shapes.
-    Whitespace is collapsed so multi-line Bash errors ("Exit code 1\\n...")
-    stay a single sanitized line.
+
+def _error_class(event: dict) -> str:
+    """Extract a safe, generic error class from a PostToolUseFailure event.
+
+    Reads the documented top-level ``error`` first (tool_response.error/.stderr
+    kept as fallbacks), then matches ALLOW-LIST patterns only — the raw text is
+    never passed through. No match -> "unknown".
     """
     resp = event.get("tool_response") or {}
     if not isinstance(resp, dict):
         resp = {"error": str(resp)}
-    raw = event.get("error") or resp.get("error") or resp.get("stderr") or "unknown"
-    return " ".join(str(raw).split())[:80]
+    raw = " ".join(
+        str(event.get("error") or resp.get("error") or resp.get("stderr") or "").split()
+    )
+    for pattern in _ERROR_CLASS_PATTERNS:
+        m = pattern.search(raw)
+        if m:
+            return m.group(0)[:80]
+    return "unknown"
 
 
 ERROR_THRESHOLD = 3
@@ -139,19 +160,30 @@ def apply_event(state: dict, event: dict) -> dict:
     if ev == "PostToolUseFailure":
         state["last_tool"] = tool
         state["last_error_class"] = _error_class(event)
-        streak = state["tool_error_streaks"].get(tool, 0) + 1
-        state["tool_error_streaks"][tool] = streak
-        state["counts"]["tool_errors"] = max(state["counts"]["tool_errors"], streak)
+        if tool is not None:
+            streak = state["tool_error_streaks"].get(tool, 0) + 1
+            state["tool_error_streaks"][tool] = streak
+            state["counts"]["tool_errors"] = max(state["counts"]["tool_errors"], streak)
         if tool == "Bash" and state["edit_seen"]:
             state["counts"]["devloop_cycles"] += 1
     elif ev == "PostToolUse":
         if tool in ("Edit", "Write", "NotebookEdit"):
             state["edit_seen"] = True
-        state["tool_error_streaks"][tool] = 0
+        if tool is not None:
+            state["tool_error_streaks"][tool] = 0
         if tool == "Bash":
             state["counts"]["devloop_cycles"] = 0
+        state["progress_since_prompt"] = True
     elif ev == "UserPromptSubmit":
-        state["counts"]["reprompts"] += 1
+        # A "reprompt" is a user turn with NO successful tool call since the
+        # previous turn. Plain conversation must not build the corroborator —
+        # it lowers the error threshold, and counting every turn made TWO
+        # failures fire in any session longer than four turns.
+        if state.get("progress_since_prompt", True):
+            state["counts"]["reprompts"] = 0
+        else:
+            state["counts"]["reprompts"] += 1
+        state["progress_since_prompt"] = False
         if scan_frustration(event.get("prompt", "")):
             state["frustration_hit"] = True
     return state
@@ -161,23 +193,46 @@ _NUDGE_EVENTS = ("UserPromptSubmit", "Stop")
 
 
 def state_path(session_id: str) -> Path:
-    return _cache_dir() / "friction" / f"{session_id or 'nosession'}.json"
+    # No session_id -> per-process file, NOT a shared nosession.json: a shared
+    # file latches offered=true once and kills the detector for every future
+    # session that lacks an id.
+    name = session_id or f"nosession-{os.getpid()}"
+    return _cache_dir() / "friction" / f"{name}.json"
+
+
+def _valid_state(data) -> bool:
+    if not isinstance(data, dict):
+        return False
+    counts = data.get("counts")
+    return (
+        isinstance(counts, dict)
+        and {"tool_errors", "devloop_cycles", "reprompts"} <= counts.keys()
+        and isinstance(data.get("tool_error_streaks"), dict)
+        and isinstance(data.get("signals_tripped"), list)
+    )
 
 
 def load_state(session_id: str) -> dict:
     p = state_path(session_id)
     if p.exists():
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
+            data = json.loads(p.read_text(encoding="utf-8"))
         except (ValueError, OSError):
-            pass
+            data = None
+        # A structurally bad file must not kill the detector for the rest of
+        # the session: apply_event would raise, main() would swallow it, and
+        # save_state would never replace the poisoned file.
+        if _valid_state(data):
+            return data
     return new_state(session_id)
 
 
 def save_state(state: dict) -> None:
     p = state_path(state["session_id"])
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state), encoding="utf-8")
+    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, p)
 
 
 def build_nudge(signal_desc: str) -> str:

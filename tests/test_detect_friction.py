@@ -1,5 +1,6 @@
 # tests/test_detect_friction.py
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,7 @@ def test_error_class_reads_documented_top_level_error():
           "session_id": "s", "tool_response": {},
           "error": "File does not exist."}
     m.apply_event(st, ev)
-    assert st["last_error_class"] == "File does not exist."
+    assert st["last_error_class"] == "File does not exist"
 
 def test_error_class_flattens_multiline_bash_error():
     m = _load()
@@ -66,8 +67,28 @@ def test_error_class_flattens_multiline_bash_error():
           "session_id": "s",
           "error": "Exit code 1\nError: Cannot find module 'express'"}
     m.apply_event(st, ev)
-    assert "\n" not in st["last_error_class"]
-    assert st["last_error_class"].startswith("Exit code 1 Error: Cannot find module")
+    assert st["last_error_class"] == "Exit code 1"
+
+def test_error_class_is_allowlist_only_never_raw_text():
+    """BLOCKER regression (review 2026-08-17): raw error strings embed customer
+    hostnames, annotation IDs, and paths; only allow-listed classes may survive."""
+    m = _load()
+    cases = [
+        ("HTTP 404 for https://acme-corp.rossum.app/api/v1/annotations/8472913 not found",
+         "HTTP 404"),
+        ("File does not exist: /Users/vaclavrut/Projects/hyundai/queue_9912/invoice_backlog.csv",
+         "File does not exist"),
+        ("totally novel gibberish mentioning acme-corp and 8472913", "unknown"),
+    ]
+    for raw, expected in cases:
+        st = m.new_state("s")
+        ev = {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+              "session_id": "s", "error": raw}
+        m.apply_event(st, ev)
+        out = st["last_error_class"]
+        assert out == expected
+        for leak in ("acme", "8472913", "/Users", "hyundai", "queue_9912"):
+            assert leak not in out
 
 def test_devloop_cycles_need_prior_edit():
     m = _load()
@@ -85,13 +106,49 @@ def test_devloop_cycles_need_prior_edit():
 def test_reprompt_and_frustration():
     m = _load()
     st = m.new_state("s")
+    # First prompt of a session never counts as a reprompt (no progress could
+    # have happened before it yet) -> counter stays at 0.
     m.apply_event(st, {"hook_event_name": "UserPromptSubmit", "prompt": "please fix"})
-    assert st["counts"]["reprompts"] == 1 and st["frustration_hit"] is False
+    assert st["counts"]["reprompts"] == 0 and st["frustration_hit"] is False
+    # Second prompt with still no tool success in between IS a stalled turn.
     m.apply_event(st, {"hook_event_name": "UserPromptSubmit",
                        "prompt": "this is STILL broken, you keep failing"})
+    assert st["counts"]["reprompts"] == 1
     assert st["frustration_hit"] is True
     assert m.scan_frustration("that's not what I asked") is True
     assert m.scan_frustration("great, thanks") is False
+
+def test_reprompts_ignore_productive_turns():
+    """FINDING 2 regression: 4 normal prompts, each followed by a successful
+    tool call, plus 2 Bash failures must NOT fire — plain conversation with
+    progress in between must never build the reprompt corroborator."""
+    m = _load()
+    st = m.new_state("s")
+    for i in range(4):
+        m.apply_event(st, {"hook_event_name": "UserPromptSubmit", "prompt": f"turn {i}"})
+        m.apply_event(st, {"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                           "tool_response": {"exit_code": 0}})
+    for _ in range(2):
+        m.apply_event(st, _fail("Bash"))
+    assert m._corroborators(st) == []
+    assert m.evaluate(st) is None
+
+def test_reprompts_build_on_stalled_turns_and_lower_threshold():
+    """FINDING 2 regression: consecutive prompts with NO tool success in
+    between are genuinely stalled turns and must still build the
+    "reprompted_a_lot" corroborator, lowering the error threshold (3 -> 2)
+    so 2 same-tool failures fire. (The very first prompt of a fresh session
+    never counts, so reaching the reprompts threshold of 4 needs 5 prompts.)
+    """
+    m = _load()
+    st = m.new_state("s")
+    for i in range(5):
+        m.apply_event(st, {"hook_event_name": "UserPromptSubmit", "prompt": f"turn {i}"})
+    for _ in range(2):
+        m.apply_event(st, _fail("Read"))
+    assert "reprompted_a_lot" in m._corroborators(st)
+    desc = m.evaluate(st)
+    assert desc is not None and "repeated_tool_error" in desc
 
 
 def _fail(tool="rossum_get"):
@@ -166,6 +223,53 @@ def test_run_respects_optout(tmp_path, monkeypatch):
     out = m.run({"hook_event_name": "UserPromptSubmit",
                  "prompt": "help", "session_id": "s10"})
     assert out is None
+
+
+def test_load_state_rejects_malformed_shapes_and_recovers(tmp_path, monkeypatch):
+    """FINDING 4 regression: a structurally-bad state file (wrong top-level
+    type, or a dict missing required keys) must not kill the detector for the
+    rest of the session — load_state hands back a fresh valid state instead
+    of a shape apply_event/save_state can't handle."""
+    m = _load()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    for session_id, bad_payload in (
+        ("s4", "[]"),
+        ("s4b", _json.dumps({"session_id": "s4b"})),
+    ):
+        p = m.state_path(session_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(bad_payload, encoding="utf-8")
+        st = m.load_state(session_id)
+        assert m._valid_state(st)
+        assert st["session_id"] == session_id
+        # Must not raise on the recovered state.
+        m.apply_event(st, {"hook_event_name": "PostToolUse", "tool_name": "Bash"})
+        out = m.run({"hook_event_name": "UserPromptSubmit", "prompt": "hi",
+                     "session_id": session_id})
+        assert out is None or isinstance(out, dict)
+
+def test_state_path_no_session_is_pid_scoped_not_shared():
+    """FINDING 4 regression: the no-session fallback must be per-process, not
+    a shared nosession.json — a shared file latches offered=true once and
+    kills the detector for every future session lacking an id."""
+    m = _load()
+    p = m.state_path("")
+    assert str(os.getpid()) in p.name
+    assert p.name != "nosession.json"
+
+def test_missing_tool_name_does_not_pollute_streaks(tmp_path, monkeypatch):
+    """FINDING 6 regression: an event with no tool_name (tool is None) must
+    not create a None/"null" entry in tool_error_streaks, including across a
+    save/load round-trip (json.dumps would coerce a None key to "null")."""
+    m = _load()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    st = m.new_state("s6")
+    m.apply_event(st, {"hook_event_name": "PostToolUseFailure", "error": "boom"})
+    m.apply_event(st, {"hook_event_name": "PostToolUse"})
+    assert None not in st["tool_error_streaks"]
+    m.save_state(st)
+    reloaded = _json.loads(m.state_path("s6").read_text(encoding="utf-8"))
+    assert "null" not in reloaded["tool_error_streaks"]
 
 
 def test_main_always_exits_zero_on_internal_error(monkeypatch):
