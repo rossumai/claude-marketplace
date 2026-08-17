@@ -1,5 +1,6 @@
 # tests/test_detect_friction.py
 import importlib.util
+import json as _json
 import os
 from pathlib import Path
 
@@ -272,6 +273,77 @@ def test_missing_tool_name_does_not_pollute_streaks(tmp_path, monkeypatch):
     assert "null" not in reloaded["tool_error_streaks"]
 
 
+def test_load_state_requires_full_key_set_and_recovers(tmp_path, monkeypatch):
+    """OPEN FINDING 1 (re-review 2026-08-17): _valid_state previously checked
+    only counts/tool_error_streaks/signals_tripped, so a state file that had
+    those but was missing newer keys (edit_seen/offered/session_id/...)
+    passed validation and was handed back as-is. apply_event then raised
+    KeyError('edit_seen') on a Bash failure (state["edit_seen"] lookup) and
+    run() raised KeyError('offered') on a nudge event; main()'s outer
+    try/except swallowed the crash and the poisoned file was never replaced.
+    _valid_state must require the FULL new_state key set."""
+    m = _load()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    session_id = "s11"
+    poisoned = {
+        "counts": {"tool_errors": 0, "devloop_cycles": 0, "reprompts": 0},
+        "tool_error_streaks": {},
+        "signals_tripped": [],
+        # edit_seen, offered, session_id, last_tool, etc. deliberately absent
+    }
+    p = m.state_path(session_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps(poisoned), encoding="utf-8")
+    st = m.load_state(session_id)
+    assert set(m.new_state("")) <= set(st)          # fresh state, not the poisoned dict
+    assert st["session_id"] == session_id
+    assert st["edit_seen"] is False and st["offered"] is False
+    # Must not raise -- pre-fix this KeyError'd on state["edit_seen"].
+    m.apply_event(st, {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+                       "error": "boom"})
+    out = m.run({"hook_event_name": "Stop", "session_id": session_id})
+    assert out is None or isinstance(out, dict)
+    reloaded = _json.loads(p.read_text(encoding="utf-8"))
+    assert set(m.new_state("")) <= set(reloaded)    # file was rewritten with the full shape
+
+
+def test_error_class_rejects_glued_identifiers_leaking_tenant_data():
+    """OPEN FINDING 2 (re-review 2026-08-17): the Error/Exception allow-list
+    pattern allowed digits/underscores with no length cap, so a tenant name
+    or numeric ID glued onto "Error" (no word boundary to split on) rode
+    through as if it were a generic class name."""
+    m = _load()
+    cases = [
+        ("AcmeCorp8472913Error occurred while processing", "unknown"),
+        ("Tenant_QueueError raised", "unknown"),
+    ]
+    for raw, expected in cases:
+        st = m.new_state("s")
+        ev = {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+              "session_id": "s", "error": raw}
+        m.apply_event(st, ev)
+        out = st["last_error_class"]
+        assert out == expected
+        for leak in ("Acme", "8472913", "Tenant", "Queue"):
+            assert leak not in out
+
+def test_error_class_still_matches_real_exception_names():
+    """Companion to the fix above: letters-only, length-capped still matches
+    real, generic exception class names -- the fix must not overcorrect."""
+    m = _load()
+    cases = [
+        ("ModuleNotFoundError: No module named 'express'", "ModuleNotFoundError"),
+        ("raised HTTPError during request", "HTTPError"),
+        ("SSLCertVerificationError: certificate verify failed", "SSLCertVerificationError"),
+    ]
+    for raw, expected in cases:
+        st = m.new_state("s")
+        ev = {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+              "session_id": "s", "error": raw}
+        m.apply_event(st, ev)
+        assert st["last_error_class"] == expected
+
+
 def test_main_always_exits_zero_on_internal_error(monkeypatch):
     m = _load()
     import io
@@ -282,8 +354,6 @@ def test_main_always_exits_zero_on_internal_error(monkeypatch):
     monkeypatch.setattr(m, "run", boom)
     assert m.main() == 0
 
-
-import json as _json
 
 def test_hooks_json_wires_all_events():
     cfg = _json.loads((ROOT / "plugins/rossum-sa/hooks/hooks.json").read_text())

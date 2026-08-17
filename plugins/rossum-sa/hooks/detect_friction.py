@@ -54,6 +54,8 @@ def state_to_payload(state: dict, route: str, description: str) -> dict:
         "counts": {
             "errors": counts.get("tool_errors", 0),
             "cycles": counts.get("devloop_cycles", 0),
+            # Consecutive stalled turns since the last tool-call progress, NOT
+            # the session's total UserPromptSubmit count (see apply_event).
             "reprompts": counts.get("reprompts", 0),
         },
         "plugin_version": None,
@@ -91,7 +93,7 @@ def scan_frustration(prompt: str) -> bool:
 # the payload contract promises never leave the machine. A pattern either
 # matches a safe, generic class or the field degrades to "unknown".
 _ERROR_CLASS_PATTERNS = (
-    re.compile(r"\b[A-Z][A-Za-z0-9_]+(?:Error|Exception)\b"),
+    re.compile(r"\b[A-Z][a-zA-Z]{1,30}(?:Error|Exception)\b"),
     re.compile(r"\bHTTP[ /]?\d{3}\b", re.IGNORECASE),
     re.compile(r"^Exit code \d+\b"),
     re.compile(r"\b(?:ENOENT|ECONNREFUSED|ETIMEDOUT|EACCES|EPERM)\b"),
@@ -205,7 +207,8 @@ def _valid_state(data) -> bool:
         return False
     counts = data.get("counts")
     return (
-        isinstance(counts, dict)
+        set(new_state("")) <= set(data)
+        and isinstance(counts, dict)
         and {"tool_errors", "devloop_cycles", "reprompts"} <= counts.keys()
         and isinstance(data.get("tool_error_streaks"), dict)
         and isinstance(data.get("signals_tripped"), list)
