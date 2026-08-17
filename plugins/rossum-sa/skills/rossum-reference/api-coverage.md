@@ -20,7 +20,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `PATCH /annotations/{annotationID}` | ✅ covered | rossum_patch_annotation, rossum_refire_annotation |
 | `PUT /annotations/{annotationID}` | 🚫 not_planned |  |
 | `POST /annotations/{annotationID}/approve` | 🚫 not_planned |  |
-| `POST /annotations/{annotationID}/cancel` | ✅ covered | rossum_cancel_annotation, rossum_refire_annotation, rossum_update_annotation_content |
+| `POST /annotations/{annotationID}/cancel` | ✅ covered | rossum_cancel_annotation, rossum_refire_annotation |
 | `POST /annotations/{annotationID}/confirm` | ✅ covered | rossum_confirm_annotation |
 | `POST /annotations/{annotationID}/copy` | 🚫 not_planned |  |
 | `POST /annotations/{annotationID}/create_embedded_url` | 🚫 not_planned |  |
@@ -37,7 +37,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `POST /annotations/{annotationID}/rotate` | 🚫 not_planned |  |
 | `GET /annotations/{annotationID}/search` | ✅ via rossum_get | rossum_get |
 | `POST /annotations/{annotationID}/split` | 🚫 not_planned |  |
-| `POST /annotations/{annotationID}/start` | ✅ covered | rossum_refire_annotation, rossum_start_annotation, rossum_update_annotation_content |
+| `POST /annotations/{annotationID}/start` | ✅ covered | rossum_refire_annotation, rossum_start_annotation |
 | `POST /annotations/{annotationID}/start_embedded` | 🚫 not_planned |  |
 
 ## Annotation Content
@@ -230,7 +230,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `PATCH /hooks/{hookID}` | ✅ covered | rossum_patch_hook |
 | `PUT /hooks/{hookID}` | 🚫 not_planned |  |
 | `POST /hooks/{hookID}/duplicate` | ✅ covered | rossum_duplicate_hook |
-| `POST /hooks/{hookID}/generate_payload` | ✅ covered | rossum_generate_export_payload, rossum_test_hook |
+| `POST /hooks/{hookID}/generate_payload` | ✅ covered | rossum_generate_export_payload, rossum_generate_hook_payload, rossum_test_hook |
 | `POST /hooks/{hookID}/invoke` | ✅ covered | rossum_invoke_hook |
 | `GET /hooks/{hookID}/secrets_keys` | ✅ via rossum_get | rossum_get |
 | `POST /hooks/{hookID}/test` | ✅ covered | rossum_test_hook |

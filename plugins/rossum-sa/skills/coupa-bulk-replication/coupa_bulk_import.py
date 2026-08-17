@@ -3,21 +3,59 @@
 coupa_bulk_import.py
 
 Full initial load of Coupa master data into Rossum Data Storage.
-Replicates newest-first (sorted by updated_at DESC) so datasets are usable
-before the run completes.  Saves progress to coupa_import_state.json after
-every DS flush — safe to kill and resume at any time.
+Replicates newest-by-id first via id-cursor keyset pagination (order_by=id
+desc + id[lt]=<cursor>, offset always 0) — every page is an indexed seek,
+constant cost at any depth (offset pagination decayed linearly: observed
+throughput halved past ~2M rows).  Saves progress (the id cursor) to
+coupa_import_state.json after every DS flush — safe to kill and resume at
+any time.  State files written by pre-keyset script versions are refused
+on --resume: delete them and restart — already-loaded records dedupe.
+
+Every Coupa request is throttled (coupa.max_requests_per_second, default 20
+— Coupa allows 25/s per OAuth client; the supervisor splits the cap across
+children) and retried on 429/503/connection blips with blind exponential
+backoff (Coupa sends no Retry-After).
 
 Write strategy: insert_many (synchronous, 200 OK) in DS_BATCH_SIZE chunks.
 This is faster than async bulk_write and avoids async queue buildup after kill.
 
+Records are inserted exactly as received from Coupa, with auto-generated
+Mongo _ids — structurally identical to records written by the Coupa import
+extension (which upserts by the id FIELD and never touches _id).
+Duplicate protection is layered on that id field (config id_key):
+a unique partial index is the root guarantee (SKILL.md Phase 1 — verified
+at the start of every full run; a confirmed-missing or non-partial index
+ABORTS unless --no-unique-index-ok is passed); a pre-insert
+existence check before EVERY batch keeps accounting exact and avoids
+opaque-400 churn (re-inserts — smoke leftovers, resume overlap, mid-run
+anchor-window entries — are skipped, whichever batch they land in); the
+SKILL.md Phase 4 duplicate audit verifies the result.
+--smoke [N] is the supported config test: insert the newest N records
+(default 1), verify them, delete exactly what it landed; no state file is
+written and the exit code reflects success.
+
 Usage:
+    python coupa_bulk_import.py --probe              # sizing report + workers suggestion
     python coupa_bulk_import.py                      # all datasets, full load
     python coupa_bulk_import.py --dataset purchase_orders
-    python coupa_bulk_import.py --limit 1            # smoke test: 1 record each
+    python coupa_bulk_import.py --dataset users,suppliers
+    python coupa_bulk_import.py --smoke              # self-cleaning smoke test
+    python coupa_bulk_import.py --smoke 5 --dataset users
     python coupa_bulk_import.py --resume             # continue from saved state
-    python coupa_bulk_import.py --resume --dataset purchase_orders
 
-    # With auto token refresh (runs unattended):
+    # Recommended full-run flow: probe, put the suggested workers values
+    # into the config (datasets.<key>.workers), then run supervised —
+    # sleep-proof, self-healing, one child per dataset partition:
+    python coupa_bulk_import.py --probe
+    caffeinate -is python coupa_bulk_import.py --supervise --dataset all
+    # (Linux: systemd-inhibit ... ; relaunch with --resume added to skip
+    #  completed units and continue the rest.)
+
+    # Debugging a single id slice in the foreground:
+    python coupa_bulk_import.py --dataset users --id-range 1000:50000
+
+    # With auto token refresh (password-auth users only — SSO users must
+    # pre-stage a long-lived token in the config instead):
     python coupa_bulk_import.py --dataset purchase_orders \\
         --username user@example.com --password secret
 
@@ -34,7 +72,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
+import random
+import signal
+import subprocess
+import sys
 import time
+from collections import namedtuple
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,6 +97,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 COUPA_CLIENT_ID:     str = ""
 COUPA_CLIENT_SECRET: str = ""
 COUPA_BASE_URL:      str = ""
+COUPA_MAX_RPS:       float = 20.0
 
 ROSSUM_TOKEN:   str = ""
 ROSSUM_DS_URL:  str = ""
@@ -59,15 +105,37 @@ ROSSUM_API_URL: str = ""
 
 STATE_FILE    = Path("coupa_import_state.json")  # overridden by --state-file
 DS_BATCH_SIZE = 5000                              # records per insert_many call
+MIN_PARTITION = 50_000   # never split below this many records per worker —
+                         # overridden by config key "min_partition" in load_config
+
+
+def _utcnow_ts() -> str:
+    """Anchor timestamp — planner and importer MUST produce the same format
+    (children crawl the frozen set the planner defined)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+RE_REPLICATION_NOTICE = """
+   ================================================================
+   [NOTICE] >=90% of the first batch already exists in this
+   collection. insert-dedup does NOT update existing documents:
+   if you are re-replicating with a changed field list, stop this
+   run, drop (or blue-green swap) the collection, and start fresh.
+   A deliberate fresh run over a partially-loaded collection is
+   fine - duplicates are skipped, missing records are filled in.
+   ================================================================"""
 
 DATASETS: dict[str, dict] = {}
+
+CONFIG_PATH: Path | None = None  # set by load_config(); re-read on DS 401
 
 
 def load_config(path: Path) -> None:
     """Populate module-level configuration from a JSON file."""
-    global COUPA_CLIENT_ID, COUPA_CLIENT_SECRET, COUPA_BASE_URL
+    global COUPA_CLIENT_ID, COUPA_CLIENT_SECRET, COUPA_BASE_URL, COUPA_MAX_RPS
     global ROSSUM_TOKEN, ROSSUM_DS_URL, ROSSUM_API_URL
-    global DS_BATCH_SIZE, DATASETS
+    global DS_BATCH_SIZE, MIN_PARTITION, DATASETS, CONFIG_PATH
+
+    CONFIG_PATH = path
 
     if not path.exists():
         raise SystemExit(
@@ -79,16 +147,26 @@ def load_config(path: Path) -> None:
     cfg = json.loads(path.read_text())
 
     coupa = cfg.get("coupa") or {}
-    COUPA_CLIENT_ID     = coupa.get("client_id", "")
-    COUPA_CLIENT_SECRET = coupa.get("client_secret", "")
-    COUPA_BASE_URL      = (coupa.get("base_url") or "").rstrip("/")
+    COUPA_CLIENT_ID     = (coupa.get("client_id") or "").strip()
+    COUPA_CLIENT_SECRET = (coupa.get("client_secret") or "").strip()
+    COUPA_BASE_URL      = (coupa.get("base_url") or "").strip().rstrip("/")
+    COUPA_MAX_RPS       = float(coupa.get("max_requests_per_second", 20))
 
     rossum = cfg.get("rossum") or {}
-    ROSSUM_TOKEN   = rossum.get("token", "")
-    ROSSUM_DS_URL  = (rossum.get("ds_url") or "").rstrip("/")
-    ROSSUM_API_URL = (rossum.get("api_url") or "").rstrip("/")
+    ROSSUM_TOKEN   = (rossum.get("token") or "").strip()
+    ROSSUM_DS_URL  = (rossum.get("ds_url") or "").strip().rstrip("/")
+    ROSSUM_API_URL = (rossum.get("api_url") or "").strip().rstrip("/")
 
     DS_BATCH_SIZE = int(cfg.get("ds_batch_size", 5000))
+
+    min_partition = cfg.get("min_partition", 50_000)
+    if isinstance(min_partition, bool) or not isinstance(min_partition, int) \
+            or min_partition < 1:
+        raise SystemExit(
+            f"Config error: min_partition must be an integer >= 1 "
+            f"(got {min_partition!r})")
+    MIN_PARTITION = min_partition
+
     DATASETS      = cfg.get("datasets") or {}
 
     required = {
@@ -103,6 +181,56 @@ def load_config(path: Path) -> None:
         raise SystemExit(f"Missing required config keys: {', '.join(missing)}")
     if not DATASETS:
         raise SystemExit(f"Config file {path} defines no datasets")
+
+    seen: dict[str, str] = {}
+    for ds_key, ds_cfg in DATASETS.items():
+        if not ds_cfg.get("collection"):
+            raise SystemExit(
+                f"Config error: dataset '{ds_key}' has no collection set"
+            )
+        coll = ds_cfg["collection"]
+        if coll in seen:
+            raise SystemExit(
+                f"Config error: datasets '{seen[coll]}' and '{ds_key}' both target "
+                f"collection '{coll}'. Dedup and smoke cleanup key on the record "
+                "id per collection - one collection per dataset required."
+            )
+        seen[coll] = ds_key
+        workers = ds_cfg.get("workers", 1)
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+            raise SystemExit(
+                f"Config error: dataset '{ds_key}' workers must be an "
+                f"integer >= 1 (got {workers!r})")
+        try:
+            validate_extra_params(ds_cfg.get("extra_params"), dataset=ds_key)
+        except ValueError as exc:
+            raise SystemExit(f"Config error: {exc}") from exc
+
+
+def resolve_dataset_keys(arg: str, datasets: dict) -> list[str]:
+    """Resolve --dataset: 'all', a single key, or a comma-separated list."""
+    if arg == "all":
+        return list(datasets)
+    # dedupe order-preserving — a repeated key must not spawn two racing
+    # children (--supervise) or double-process the same dataset unsupervised
+    keys = list(dict.fromkeys(k.strip() for k in arg.split(",") if k.strip()))
+    unknown = [k for k in keys if k not in datasets]
+    if unknown:
+        raise SystemExit(
+            f"Unknown dataset(s): {', '.join(unknown)}. "
+            f"Available: {', '.join(sorted(datasets)) or '(none)'}"
+        )
+    return keys
+
+
+def default_state_path(dataset_arg: str, keys: list[str], state_file: str | None) -> Path:
+    """State-file selection: explicit --state-file wins; an explicit single
+    dataset gets its own file; 'all' and comma lists share STATE_FILE."""
+    if state_file:
+        return Path(state_file)
+    if dataset_arg != "all" and len(keys) == 1:
+        return Path(f"coupa_import_state_{keys[0]}.json")
+    return STATE_FILE
 
 
 # ── Rossum auth ──────────────────────────────────────────────────────────────────
@@ -120,10 +248,28 @@ def refresh_rossum_token(username: str, password: str) -> str:
     return token
 
 
+def reload_config_token() -> str:
+    """Re-read rossum.token from the config file.
+
+    A --resume relaunch always picks up a refreshed config token; this lets a
+    RUNNING job do the same on a DS 401 instead of dying (supervisor restart
+    stays the backstop).  Returns "" when the config is unreadable.
+    """
+    if CONFIG_PATH is None or not CONFIG_PATH.exists():
+        return ""
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return ((cfg.get("rossum") or {}).get("token") or "").strip()
+
+
 # ── Coupa auth ───────────────────────────────────────────────────────────────────
 
 def get_coupa_token(scope: str) -> str:
-    resp = requests.post(
+    # through coupa_call: a 429/503 on a MID-RUN token refresh must back off,
+    # not kill the child and burn supervisor restart budget on a transient
+    resp = coupa_call(lambda: requests.post(
         f"{COUPA_BASE_URL}/oauth2/token",
         data={
             "grant_type":    "client_credentials",
@@ -133,30 +279,22 @@ def get_coupa_token(scope: str) -> str:
         },
         verify=False,
         timeout=30,
-    )
-    resp.raise_for_status()
+    ))
     return resp.json()["access_token"]
 
 
-# ── Coupa pagination ─────────────────────────────────────────────────────────────
-
-def fetch_page(session: requests.Session, endpoint: str, fields: list,
-               offset: int, anchor_ts: str) -> list:
-    """Fetch one page of records sorted newest-first, anchored to anchor_ts."""
-    params = {
-        "fields":               json.dumps(fields),
-        "order_by":             "updated_at",
-        "dir":                  "desc",
-        "offset":               offset,
-        "updated-at[lt_or_eq]": anchor_ts,
-    }
-    resp = session.get(f"{COUPA_BASE_URL}/{endpoint}", params=params,
-                       verify=False, timeout=120)
-    resp.raise_for_status()
-    return resp.json() or []
+def make_coupa_session(scope: str) -> requests.Session:
+    """Authed Coupa API session — single factory for import, smoke, count."""
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({
+        "Authorization": f"Bearer {get_coupa_token(scope)}",
+        "Accept":        "application/json",
+    })
+    return session
 
 
-# ── Data Storage insert ──────────────────────────────────────────────────────────
+# ── Coupa rate limiting + backoff ────────────────────────────────────────────────
 
 _RETRYABLE = (
     requests.exceptions.SSLError,
@@ -164,37 +302,512 @@ _RETRYABLE = (
     requests.exceptions.Timeout,
 )
 
-def insert_batch(session: requests.Session, collection: str, records: list,
-                 _retries: int = 5) -> int:
-    """Synchronous insert_many — returns number of inserted documents.
 
-    Uses ordered=False so duplicate-key errors on resume are silently skipped
-    rather than aborting the whole batch.  Warns if fewer documents were
-    inserted than sent (document-level validation/size failures).
-    Retries on transient SSL/connection errors with exponential backoff.
+class RateLimiter:
+    """Min-interval throttle for Coupa requests (rate=None disables).
+
+    Per-process only (spec §4.5): the supervisor splits the aggregate cap
+    statically across children — no cross-process coordination.
     """
+
+    def __init__(self, rate: float | None):
+        self.min_interval = 1.0 / rate if rate else 0.0
+        self._last = 0.0
+
+    def wait(self) -> None:
+        if not self.min_interval:
+            return
+        now = time.monotonic()
+        wait_for = self._last + self.min_interval - now
+        if wait_for > 0:
+            time.sleep(wait_for)
+        self._last = time.monotonic()
+
+
+LIMITER = RateLimiter(None)   # configured in main() from --rate / config cap
+
+_BACKOFF_STATUSES = (429, 503)
+
+
+def coupa_call(fn, *, _attempts: int = 8, _base: float = 5.0, _cap: float = 240.0):
+    """Run a zero-arg callable returning a Response, throttled and retried.
+
+    Retries 429/503 and connection-level errors with BLIND exponential
+    backoff — Coupa sends no rate-limit headers and no Retry-After.
+    Any other HTTP error (401 token expiry, 400 bad query) propagates
+    immediately: token refresh and hard failures belong to the caller.
+    A 429 under our self-imposed cap means another consumer is draining
+    this OAuth client's budget — worth a loud line.
+    """
+    for attempt in range(1, _attempts + 1):
+        LIMITER.wait()
+        try:
+            resp = fn()
+            if resp.status_code in _BACKOFF_STATUSES:
+                raise requests.HTTPError(response=resp)
+            resp.raise_for_status()
+            return resp
+        except (*_RETRYABLE, requests.HTTPError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if isinstance(exc, requests.HTTPError) and status not in _BACKOFF_STATUSES:
+                raise
+            if attempt == _attempts:
+                raise
+            wait = min(_base * 2 ** (attempt - 1), _cap) * random.uniform(0.5, 1.0)
+            if status == 429:
+                print("   [WARN] Coupa 429 under the self-imposed cap — another "
+                      "consumer is draining this OAuth client's rate budget")
+            what = f"HTTP {status}" if status else type(exc).__name__
+            print(f"   [RETRY {attempt}/{_attempts}] Coupa {what} — backing off {wait:.0f}s")
+            time.sleep(wait)
+
+
+def ds_call_with_heal(call, ds_session: requests.Session,
+                      username: str | None = None,
+                      password: str | None = None):
+    """Run a DS-touching callable; on HTTP 401 refresh the token once, retry.
+
+    Prefers --username/--password login; otherwise re-reads rossum.token
+    from the config file (a fresh token dropped into the config heals
+    running jobs).  Shared by import flushes and every smoke DS call —
+    a smoke run must not leave residue because its final delete 401'd.
+    """
+    try:
+        return call()
+    except requests.HTTPError as exc:
+        # response can be None (adapter/middleware-constructed errors) —
+        # re-raise as-is instead of AttributeError'ing inside the heal
+        if exc.response is None or exc.response.status_code != 401:
+            raise
+        if username and password:
+            print("   [Rossum token expired — refreshing]")
+            new_token = refresh_rossum_token(username, password)
+        else:
+            print("   [Rossum 401 — re-reading token from config]")
+            new_token = reload_config_token()
+            if not new_token:
+                raise
+        ds_session.headers["Authorization"] = f"Bearer {new_token}"
+        return call()  # retry once — insert_batch re-runs its existence
+        #                check, so records persisted before the 401 dedupe
+
+
+# ── Coupa pagination ─────────────────────────────────────────────────────────────
+
+def ensure_id_field(fields: list) -> list:
+    """Cursor pagination needs the id column even when id_key != 'id'."""
+    return fields if "id" in fields else ["id", *fields]
+
+
+# extra_params lets a dataset config be a FILTERED SLICE of its Coupa
+# endpoint (e.g. a lookup slice needs lookup[name][in] + active; an invoice
+# load needs a created-at[gt_or_eq] floor) — merged into every Coupa call
+# fetch_page/fetch_at_rank make for that dataset. These keys are reserved
+# because the script itself manages them (cursor, anchor, projection);
+# letting a dataset override one would corrupt keyset pagination or
+# re-slice partitions mid-run.
+RESERVED_PARAM_KEYS = frozenset({
+    "fields", "order_by", "dir", "offset", "limit",
+    "updated-at[lt_or_eq]", "id[lt]", "id[gt]",
+})
+
+
+def validate_extra_params(extra, *, dataset: str) -> dict:
+    """Reject reserved keys loudly — overriding the cursor keys (order_by,
+    dir, id[lt], id[gt], ...) would corrupt keyset pagination or re-slice
+    partitions mid-run; failing at startup is much cheaper."""
+    if extra is None:
+        return {}
+    if not isinstance(extra, dict):
+        raise ValueError(
+            f"Dataset '{dataset}': extra_params must be an object of Coupa "
+            f"query parameters (got {type(extra).__name__})")
+    bad = sorted(RESERVED_PARAM_KEYS & set(extra))
+    if bad:
+        raise ValueError(
+            f"Dataset '{dataset}': extra_params may not override reserved "
+            f"key(s) {', '.join(bad)} — these are managed by the script "
+            "(cursor, anchor, projection)")
+    return dict(extra)
+
+
+def fetch_page(session: requests.Session, endpoint: str, fields: list,
+               anchor_ts: str, *, before_id: int | None = None,
+               id_gt: int | None = None, limit: int | None = None,
+               extra_params: dict | None = None) -> list:
+    """One keyset page: newest-by-id first, anchored, every page an indexed seek.
+
+    before_id: moving upper bound (exclusive) — the cursor.
+    id_gt:     static lower bound (exclusive) — partition floor (spec §4.3).
+    extra_params: dataset-specific Coupa query params (filtered-slice
+    datasets) merged in last — see validate_extra_params for the reserved
+    keys guarded against here as a last-resort belt on top of the
+    load_config-time check.
+    """
+    params = {
+        "fields":               json.dumps(fields),
+        "order_by":             "id",
+        "dir":                  "desc",
+        "offset":               0,
+        "updated-at[lt_or_eq]": anchor_ts,
+    }
+    if before_id is not None:
+        params["id[lt]"] = before_id
+    if id_gt is not None:
+        params["id[gt]"] = id_gt
+    if limit is not None:
+        params["limit"] = limit
+    if extra_params:
+        bad = RESERVED_PARAM_KEYS & set(extra_params)
+        if bad:
+            raise ValueError(f"extra_params may not override reserved key(s): "
+                             f"{', '.join(sorted(bad))}")
+        params.update(extra_params)
+    resp = coupa_call(lambda: session.get(f"{COUPA_BASE_URL}/{endpoint}",
+                                          params=params, verify=False, timeout=120))
+    return resp.json() or []
+
+
+def fetch_at_rank(session: requests.Session, endpoint: str, anchor_ts: str,
+                  rank: int, *, extra_params: dict | None = None) -> list:
+    """The record at ascending-id rank N, or [] past the end.
+
+    limit=1&offset=N — Coupa's only counting primitive (no count endpoint):
+    a record exists at rank N iff count > N. Also the boundary-rank probe
+    for partition planning (spec §4.3). Deep offsets are slow per call but
+    each plan needs only ~2*log2(C) + W-1 of them.
+    extra_params: see fetch_page — a filtered-slice dataset must count and
+    plan over the SAME slice it will import, not the whole endpoint.
+    """
+    params = {
+        "fields":               json.dumps(["id"]),
+        "order_by":             "id",
+        "dir":                  "asc",
+        "offset":               rank,
+        "limit":                1,
+        "updated-at[lt_or_eq]": anchor_ts,
+    }
+    if extra_params:
+        bad = RESERVED_PARAM_KEYS & set(extra_params)
+        if bad:
+            raise ValueError(f"extra_params may not override reserved key(s): "
+                             f"{', '.join(sorted(bad))}")
+        params.update(extra_params)
+    resp = coupa_call(lambda: session.get(f"{COUPA_BASE_URL}/{endpoint}",
+                                          params=params, verify=False, timeout=120))
+    return resp.json() or []
+
+
+def _bisect_count(probe) -> int:
+    """Exact record count given probe(offset) -> bool ("a record exists at offset").
+
+    Coupa has no count endpoint, but limit=1&offset=N returns a record iff
+    count > N.  Exponential growth finds an empty upper bound, binary search
+    pins the boundary — ~2*log2(count) probe calls total.
+    """
+    if not probe(0):
+        return 0
+    lo, hi = 0, 1          # invariant: probe(lo) True, probe(hi) unknown
+    while probe(hi):
+        lo, hi = hi, hi * 2
+    while hi - lo > 1:     # probe(lo) True, probe(hi) False
+        mid = (lo + hi) // 2
+        if probe(mid):
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
+# ── Data Storage insert ──────────────────────────────────────────────────────────
+
+class BatchResult(namedtuple("BatchResult",
+                             "inserted duplicates failed inserted_values")):
+    """One insert_batch outcome.
+
+    inserted_values: id_key values of records THIS call actually landed —
+    smoke cleanup deletes exactly these, never a concurrent writer's copy.
+    Conservative on ambiguity (unattributable write_errors → empty): smoke
+    residue is a better failure mode than deleting someone else's record.
+    Always normalized to a FRESH list per instance — never a shared
+    mutable default, never an alias of the caller's iterable.
+    """
+    __slots__ = ()
+
+    def __new__(cls, inserted, duplicates, failed, inserted_values=None):
+        return super().__new__(
+            cls, inserted, duplicates, failed,
+            [] if inserted_values is None else list(inserted_values))
+
+_DUPLICATE_KEY_CODE = 11000
+
+
+def _is_duplicate_error(err) -> bool:
+    """Mongo duplicate-key: code 11000, or E11000 in the message (shape varies)."""
+    if not isinstance(err, dict):
+        return "E11000" in str(err)
+    return err.get("code") == _DUPLICATE_KEY_CODE or "E11000" in str(err.get("errmsg", ""))
+
+
+def _existing_ids(session: requests.Session, collection: str,
+                  id_key: str, values: list) -> set:
+    """Return the subset of `values` already present under the id_key field.
+
+    Uses aggregate $match+$group (DISTINCT values) rather than find+limit:
+    pre-existing duplicate copies of one id could exhaust a find limit and
+    truncate the answer, which would let smoke cleanup delete records it
+    never inserted.  (DS REST quirk: find/aggregate take "query"/"pipeline";
+    the delete endpoints take "filter".)
+    Callers must never pass falsy id values — a falsy id is treated as
+    missing and its record always inserts (and is excluded from smoke-delete
+    filters), because a shared falsy value would collapse distinct records.
+    """
+    resp = session.post(
+        f"{ROSSUM_DS_URL}/data/aggregate",
+        json={"collectionName": collection,
+              "pipeline": [{"$match": {id_key: {"$in": values}}},
+                           {"$group": {"_id": f"${id_key}"}}]},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return {doc["_id"] for doc in resp.json().get("result") or []}
+
+
+def _index_status(index: dict, id_key: str) -> str | None:
+    """Classify one index spec against the id_key guarantee.
+
+    'ok'          — unique AND carries a partialFilterExpression covering
+                    id_key (the exact {"$exists": true} shape or any
+                    partial filter that mentions id_key);
+    'non_partial' — unique on id_key but WITHOUT a qualifying partial
+                    filter: the second id-less document would be rejected
+                    as a duplicate null;
+    None          — irrelevant to the guarantee.
+    """
+    keys = index.get("key") or index.get("keys") or {}
+    options = index.get("options") or {}
+    if not (index.get("unique") or options.get("unique")) or id_key not in keys:
+        return None
+    pfe = (index.get("partialFilterExpression")
+           or options.get("partialFilterExpression") or {})
+    return "ok" if id_key in pfe else "non_partial"
+
+
+def verify_unique_index(session: requests.Session, collection: str,
+                        id_key: str) -> str:
+    """Check the collection for the unique partial index on id_key.
+
+    The unique partial index is the ROOT duplicate guarantee (SKILL.md
+    Phase 1; DS support live-verified): the per-batch existence check
+    cannot see races — concurrent writers, records entering the frozen
+    anchor window mid-run, backdated updates — but the DB layer rejects
+    them all.  Never auto-creates: a collection loaded before this
+    guidance may already hold duplicates that would fail the index build,
+    so creation is a deliberate operator step.
+
+    Returns 'ok', 'missing', 'non_partial' (unique but would poison-fail
+    the second id-less document), or 'unknown' (listing failed — soft
+    warn only, never treated as confirmed-absent).
+    """
+    try:
+        resp = session.post(
+            f"{ROSSUM_DS_URL}/indexes/list",
+            json={"collectionName": collection, "nameOnly": False},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        indexes = resp.json().get("result") or []
+    except requests.RequestException as exc:
+        print(f"   [WARN] could not verify indexes on '{collection}' "
+              f"({type(exc).__name__}) — confirm the unique partial index "
+              "on the id field manually (see SKILL.md Phase 1)")
+        return "unknown"
+    statuses = {_index_status(ix, id_key)
+                for ix in indexes if isinstance(ix, dict)}
+    if "ok" in statuses:
+        return "ok"
+    if "non_partial" in statuses:
+        print(f"   [WARN] collection '{collection}' has a unique index on "
+              f"'{id_key}' WITHOUT a partial filter. The second id-less "
+              "document inserted would be rejected as a duplicate null and "
+              "surface as a poison failure. Drop it and recreate with "
+              f'options {{"unique": true, "partialFilterExpression": '
+              f'{{"{id_key}": {{"$exists": true}}}}}} (see SKILL.md Phase 1).')
+        return "non_partial"
+    print(f"   [WARN] collection '{collection}' has NO unique index on "
+          f"'{id_key}'. It makes duplicates impossible at the DB layer, "
+          "even across races the pre-insert check cannot see (concurrent "
+          "writers, mid-run anchor-window entries, backdated updates): "
+          f'create __{id_key}_unique_idx with keys {{"{id_key}": 1}} and '
+          f'options {{"unique": true, "partialFilterExpression": '
+          f'{{"{id_key}": {{"$exists": true}}}}}} (see SKILL.md Phase 1). '
+          "NOT auto-created: a collection loaded before this guidance may "
+          "hold duplicates that would fail the index build — audit first "
+          "(SKILL.md Phase 4).")
+    return "missing"
+
+
+def _collection_count(session: requests.Session, collection: str) -> int:
+    """Total documents in a collection (DS aggregate $count; 0 when empty)."""
+    resp = session.post(
+        f"{ROSSUM_DS_URL}/data/aggregate",
+        json={"collectionName": collection, "pipeline": [{"$count": "total"}]},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    result = resp.json().get("result") or []
+    return int(result[0]["total"]) if result else 0
+
+
+def _insert_singly(session: requests.Session, collection: str, docs: list,
+                   id_key: str) -> tuple[int, int, int, list]:
+    """Fallback for an opaque batch 400: insert per record, classifying 400s.
+
+    Returns (inserted, duplicates, failed, ok_values).  A single-record 400
+    is not necessarily a poison document: the unique-index layer rejects a
+    RACING duplicate (written by a concurrent writer after the batch's
+    existence check) with the same opaque 400.  A post-hoc existence check
+    on the record's id decides — present → duplicate (skipped, accounting
+    stays correct), absent → poison (failed, warned).  ok_values carries
+    the truthy id values of the singles that actually landed.
+    """
+    inserted = duplicates = failed = 0
+    ok_values: list = []
+    for doc in docs:
+        resp = session.post(
+            f"{ROSSUM_DS_URL}/data/insert_many",
+            json={"collectionName": collection, "documents": [doc], "ordered": False},
+            timeout=120,
+        )
+        if resp.status_code == 400:
+            rid = doc.get(id_key)
+            if rid and _existing_ids(session, collection, id_key, [rid]):
+                duplicates += 1  # unique index beat us to it — racing writer
+                continue
+            failed += 1
+            print(f"   [WARN] poison document skipped ({id_key}={doc.get(id_key, 'n/a')}): "
+                  f"{resp.text[:200]}")
+            continue
+        resp.raise_for_status()
+        landed = len((resp.json().get("result") or {}).get("inserted_ids") or [])
+        inserted += landed
+        if landed and doc.get(id_key):
+            ok_values.append(doc[id_key])
+    return inserted, duplicates, failed, ok_values
+
+
+def insert_batch(session: requests.Session, collection: str, records: list,
+                 id_key: str = "id", _retries: int = 5) -> BatchResult:
+    """Check-then-insert — returns BatchResult(inserted, duplicates, failed,
+    inserted_values).
+
+    Records keep their auto-generated Mongo _id (structurally identical to
+    records written by the Coupa import extension); dedup keys on the Coupa
+    id FIELD (id_key).  The existence check runs before EVERY batch — a
+    boundary-scoped variant (first flush only) was tried and rejected in
+    review: records entering the frozen anchor window mid-run (same-second
+    creations, backdated writes) shift the DESC stream into "provably
+    fresh" batches, and a 401 escaping mid-batch re-enters unchecked.  The
+    check costs ~one indexed query per 5k-record batch (~0.2% of wall
+    time); it also keeps accounting exact and avoids opaque-400 churn from
+    the unique-index layer (see SKILL.md Phase 1).
+    The DS REST layer reports duplicate-key write errors as an opaque
+    HTTP 400 ("batch op errors occurred") with no write_errors detail
+    (live-verified), so the check is what filters duplicates BEFORE
+    inserting; the 200-with-write_errors parsing is kept as a belt for
+    servers/races that do return per-document errors.
+    Retries the whole check+insert on transient SSL/connection errors;
+    the re-run existence check absorbs partially-applied batches.  A record
+    that shows up as "existing" only on a retry (not on the first attempt)
+    was persisted by the interrupted earlier attempt itself — it is counted
+    as "recovered" and added to inserted, not misclassified as a duplicate.
+    Records whose id_key value is missing or falsy never enter dedup
+    queries — they always insert (a shared falsy id would collapse distinct
+    records).
+    An opaque batch 400 on the (already-deduped) insert call means one or
+    more poison documents, not a duplicate — it falls back to _insert_singly
+    so the rest of the batch still lands instead of crash-looping the batch.
+    """
+    existing_first: set | None = None
     for attempt in range(1, _retries + 1):
         try:
+            values = [r[id_key] for r in records if r.get(id_key)]
+            existing = (_existing_ids(session, collection, id_key, values)
+                        if values else set())
+            if existing_first is None:
+                existing_first = existing
+            recovered = len(existing - existing_first)  # persisted by an interrupted earlier attempt
+            seen: set = set()
+            to_insert = []
+            for r in records:
+                rid = r.get(id_key)
+                if not rid:
+                    to_insert.append(r)  # falsy/missing id — always insert
+                elif rid not in existing and rid not in seen:
+                    seen.add(rid)
+                    to_insert.append(r)
+            duplicates = len(records) - len(to_insert) - recovered
+            if not to_insert:
+                if duplicates:
+                    print(f"   {duplicates} duplicate(s) skipped "
+                          "(expected after resume or smoke test)")
+                return BatchResult(recovered, duplicates, 0, [])
             resp = session.post(
                 f"{ROSSUM_DS_URL}/data/insert_many",
-                json={"collectionName": collection, "documents": records, "ordered": False},
+                json={"collectionName": collection, "documents": to_insert,
+                      "ordered": False},
                 timeout=120,
             )
+            if resp.status_code == 400:
+                # duplicates are pre-filtered — an opaque batch 400 means poison
+                # doc(s) or a racing duplicate rejected by the unique index;
+                # _insert_singly isolates and classifies per record
+                ins, late_dups, failed, ok_values = _insert_singly(
+                    session, collection, to_insert, id_key)
+                duplicates += late_dups
+                if duplicates:
+                    print(f"   {duplicates} duplicate(s) skipped "
+                          "(expected after resume or smoke test)")
+                if failed:
+                    print(f"   [WARN] {failed} document(s) failed in this batch (isolated per-record)")
+                return BatchResult(ins + recovered, duplicates, failed, ok_values)
             resp.raise_for_status()
-            body         = resp.json()
-            inserted     = len(body.get("result", {}).get("inserted_ids") or [])
-            write_errors = body.get("result", {}).get("write_errors") or []
-            if write_errors or inserted < len(records):
-                skipped = len(records) - inserted
-                print(f"   [WARN] {skipped} document(s) skipped in this batch "
-                      f"(write_errors={len(write_errors)}). "
-                      f"First error: {write_errors[0] if write_errors else 'n/a'}")
-            return inserted
-        except _RETRYABLE as exc:
+            body         = resp.json().get("result", {}) or {}
+            inserted     = len(body.get("inserted_ids") or [])
+            write_errors = body.get("write_errors") or []
+            late_dups    = sum(1 for e in write_errors if _is_duplicate_error(e))
+            failed       = max(len(to_insert) - inserted - late_dups, 0)
+            duplicates  += late_dups
+            if not write_errors:
+                ok_values = [d[id_key] for d in to_insert if d.get(id_key)]
+            else:
+                # attribute errors to documents only when every error carries
+                # a usable index; otherwise stay conservative (empty) — smoke
+                # residue beats deleting a record this call never landed
+                bad = {e.get("index") for e in write_errors
+                       if isinstance(e, dict) and isinstance(e.get("index"), int)}
+                if len(bad) == len(write_errors):
+                    ok_values = [d[id_key] for i, d in enumerate(to_insert)
+                                 if i not in bad and d.get(id_key)]
+                else:
+                    ok_values = []
+            if duplicates:
+                print(f"   {duplicates} duplicate(s) skipped "
+                      "(expected after resume or smoke test)")
+            if failed:
+                non_dup = [e for e in write_errors if not _is_duplicate_error(e)]
+                print(f"   [WARN] {failed} document(s) failed in this batch. "
+                      f"First error: {non_dup[0] if non_dup else 'n/a'}")
+            return BatchResult(inserted + recovered, duplicates, failed, ok_values)
+        except (*_RETRYABLE, requests.HTTPError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if isinstance(exc, requests.HTTPError) and status not in (429, 503):
+                raise               # 401 -> ds_call_with_heal; 400 handled above
             if attempt == _retries:
                 raise
             wait = 2 ** attempt
-            print(f"   [RETRY {attempt}/{_retries}] {type(exc).__name__}: {exc} — retrying in {wait}s")
+            print(f"   [RETRY {attempt}/{_retries}] {type(exc).__name__}"
+                  f"{f' (HTTP {status})' if status else ''}: retrying in {wait}s")
             time.sleep(wait)
 
 
@@ -206,11 +819,21 @@ def _updated_at(record: dict) -> str:
 # ── State file ───────────────────────────────────────────────────────────────────
 
 def load_state(path: Path) -> dict:
-    return json.loads(path.read_text()) if path.exists() else {}
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"State file {path} is corrupt ({exc}). "
+            "Inspect/restore it, or delete it to start the dataset fresh."
+        ) from exc
 
 
 def save_state(state: dict, path: Path) -> None:
-    path.write_text(json.dumps(state, indent=2))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(tmp, path)  # atomic — a kill mid-write can't truncate the state file
 
 
 # ── Per-dataset import ───────────────────────────────────────────────────────────
@@ -219,88 +842,174 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                    state: dict, ds_session: requests.Session,
                    state_path: Path = STATE_FILE,
                    username: str | None = None,
-                   password: str | None = None) -> None:
+                   password: str | None = None,
+                   no_unique_index_ok: bool = False,
+                   id_range: tuple[int, int] | None = None) -> None:
     cfg   = DATASETS[key]
     ds_st = state.get(key, {})
 
-    # Anchor: set once at start of a fresh run; reused on every resume so pagination
-    # stays consistent even if new records arrive in Coupa mid-run.
-    anchor_ts    = ds_st.get("anchor_updated_at") if resume else None
-    start_offset = ds_st.get("offset", 0)         if resume else 0
-    total        = ds_st.get("total_processed", 0) if resume else 0
+    if resume and ds_st.get("completed"):
+        print(f"\n── {key}: already complete — skipping ──")
+        return
+
+    if resume and ds_st and "last_id" not in ds_st:
+        raise SystemExit(
+            f"Dataset '{key}': state file {state_path} predates keyset "
+            "pagination (no last_id) and cannot be resumed by this version. "
+            "Delete the state file to restart the dataset fresh — already-"
+            "loaded records are skipped by the per-batch existence check — "
+            "or finish the run with the previous script version.")
+
+    # Anchor: set once at start of a fresh run; reused on every resume so the
+    # run's target set stays frozen even as Coupa keeps changing.
+    anchor_ts = ds_st.get("anchor_updated_at") if resume else None
+    total     = ds_st.get("total_processed", 0) if resume else 0
+    total_ins = ds_st.get("total_inserted", 0)  if resume else 0
+    part      = dict(ds_st.get("partition") or {}) if resume else {}
+    cursor    = ds_st.get("last_id") if resume else None
+
+    if id_range is not None:
+        wanted = {"id_gt": id_range[0] - 1, "id_lte": id_range[1]}
+        # an absent recorded range on a state with progress is a mismatch
+        # too — proceeding would drop the requested range on the floor
+        if resume and ds_st and (part.get("id_gt"), part.get("id_lte")) != \
+                (wanted["id_gt"], wanted["id_lte"]):
+            raise SystemExit(
+                f"Dataset '{key}': --id-range {id_range[0]}:{id_range[1]} does "
+                f"not match the range recorded in {state_path} "
+                f"(id_gt={part.get('id_gt')}, id_lte={part.get('id_lte')}). "
+                "Resume without --id-range, or use a different --state-file.")
+        if not part:
+            # fresh run — or a resume that never reached its first flush
+            # (empty/absent state file): without this seeding, such a resume
+            # would silently crawl the WHOLE dataset instead of the range
+            part = wanted
+            cursor = id_range[1] + 1
+
+    id_gt = part.get("id_gt")
 
     if anchor_ts is None:
-        anchor_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        anchor_ts = _utcnow_ts()
+
+    id_key = cfg.get("id_key", "id")
+    fields = ensure_id_field(cfg["fields"])
+    extra  = cfg.get("extra_params")
 
     print(f"\n── {key}  →  {cfg['collection']} ──")
-    if resume and start_offset:
-        print(f"   resuming at offset {start_offset}  (anchor: {anchor_ts})")
+    if part:
+        print(f"   partition id ({part.get('id_gt')}, {part.get('id_lte')}]")
+    if resume and cursor is not None:
+        print(f"   resuming below id {cursor}  (anchor: {anchor_ts})")
     else:
         print(f"   fresh run, anchor: {anchor_ts}")
 
-    token         = get_coupa_token(cfg["scope"])
-    coupa_session = requests.Session()
-    coupa_session.verify = False
-    coupa_session.headers.update({
-        "Authorization": f"Bearer {token}",
-        "Accept":        "application/json",
-    })
+    index_status = verify_unique_index(ds_session, cfg["collection"], id_key)
+    if index_status in ("missing", "non_partial") and not no_unique_index_ok:
+        # abort only on a CONFIRMED bad index — 'unknown' (listing failed)
+        # already soft-warned and proceeds
+        raise SystemExit(
+            f"Dataset '{key}': collection '{cfg['collection']}' lacks a "
+            f"qualifying unique partial index on '{id_key}' (see the warning "
+            "above). Create it first (SKILL.md Phase 1), or re-run with "
+            "--no-unique-index-ok to proceed with the per-batch check only "
+            "(concurrent-writer races unprotected).")
 
-    offset  = start_offset
+    if not resume:
+        preexisting = _collection_count(ds_session, cfg["collection"])
+        if 0 < preexisting < 100:
+            # a handful of leftovers (e.g. a hard-killed smoke run) is not a
+            # loaded collection — don't scare the operator into a wipe
+            print(f"   [NOTE] collection '{cfg['collection']}' already holds {preexisting} "
+                  "document(s) — a few leftovers (e.g. from a hard-killed smoke run) "
+                  "are harmless: every batch is existence-checked, so they dedupe "
+                  "automatically.")
+        elif preexisting >= 100:
+            print(f"   [WARN] collection '{cfg['collection']}' already holds {preexisting} "
+                  "document(s). Existing records are SKIPPED, never updated — if you are "
+                  "re-replicating (e.g. a changed field list), clear or blue-green swap "
+                  "the collection first (see SKILL.md).")
+
+    coupa_session = make_coupa_session(cfg["scope"])
+
     buffer: list = []
     last_ts = ds_st.get("last_updated_at", "n/a")
+    first_fresh_flush = not resume  # gates the >=90%-duplicates NOTICE only
+    first_page        = True        # gates the misconfigured-id_key fail-fast
 
     def flush(*, final: bool = False) -> None:
         """Insert buffered records into Data Storage and save state."""
-        nonlocal total, last_ts, buffer
+        nonlocal total, total_ins, last_ts, buffer, first_fresh_flush
         if not buffer:
             return
-        try:
-            insert_batch(ds_session, cfg["collection"], buffer)
-        except requests.HTTPError as exc:
-            if exc.response.status_code == 401 and username and password:
-                print("   [Rossum token expired — refreshing]")
-                new_token = refresh_rossum_token(username, password)
-                ds_session.headers["Authorization"] = f"Bearer {new_token}"
-                insert_batch(ds_session, cfg["collection"], buffer)  # retry once
-            else:
-                raise
-        total   += len(buffer)
-        last_ts  = _updated_at(buffer[-1])
-        buffer   = []
+        missing_ids = sum(1 for r in buffer if not r.get(id_key))
+        if missing_ids:
+            print(f"   [WARN] {missing_ids} record(s) missing/falsy '{id_key}' "
+                  "in this batch — inserted without dedup protection")
+        result = ds_call_with_heal(
+            lambda: insert_batch(ds_session, cfg["collection"], buffer, id_key),
+            ds_session, username, password)
+        batch_size = len(buffer)
+        total     += batch_size
+        total_ins += result.inserted
+        if first_fresh_flush:
+            first_fresh_flush = False
+            if batch_size and result.duplicates / batch_size >= 0.9:
+                print(RE_REPLICATION_NOTICE)
+        last_ts    = _updated_at(buffer[-1])
+        buffer     = []
         state[key] = {
-            "offset":            offset,
             "anchor_updated_at": anchor_ts,
+            "last_id":           cursor,
+            **({"partition": part} if part else {}),
             "last_updated_at":   last_ts,
             "total_processed":   total,
+            "total_inserted":    total_ins,
             **({"completed": True} if final else {}),
         }
         save_state(state, state_path)
-        print(f"   flushed → total {total:>7}  offset {offset:>7}  "
+        print(f"   flushed → total {total:>7}  last_id {cursor}  "
               f"last updated_at: {last_ts}")
 
     while True:
-        # Fetch one Coupa page; auto-refresh token on 401
+        # Fetch one keyset page; auto-refresh token on 401 (coupa_call already
+        # absorbed 429/503/conn blips before a 401 can reach here)
         try:
-            page = fetch_page(coupa_session, cfg["endpoint"], cfg["fields"],
-                              offset, anchor_ts)
+            page = fetch_page(coupa_session, cfg["endpoint"], fields,
+                              anchor_ts, before_id=cursor, id_gt=id_gt,
+                              extra_params=extra)
         except requests.HTTPError as exc:
-            if exc.response.status_code == 401:
+            if exc.response is not None and exc.response.status_code == 401:
                 print("   [Coupa token expired — refreshing]")
                 token = get_coupa_token(cfg["scope"])
                 coupa_session.headers["Authorization"] = f"Bearer {token}"
-                page = fetch_page(coupa_session, cfg["endpoint"], cfg["fields"],
-                                  offset, anchor_ts)
+                page = fetch_page(coupa_session, cfg["endpoint"], fields,
+                                  anchor_ts, before_id=cursor, id_gt=id_gt,
+                                  extra_params=extra)
             else:
                 raise
 
         if not page:
             flush(final=True)
-            if not buffer:  # flush already saved; ensure completed flag is set
+            # a non-empty final flush already wrote completed; this covers the
+            # nothing-buffered case (flush returned early without saving)
+            if not state.get(key, {}).get("completed"):
                 state[key] = {**state.get(key, {}), "completed": True}
                 save_state(state, state_path)
             print(f"   complete — {total} records total")
             break
+
+        # Fail fast on a misconfigured id_key: a typo'd key would otherwise
+        # blind-load the whole dataset with dedup never engaging.  Gated on
+        # "no progress yet", NOT on `not resume`: partition children always
+        # launch with --resume, and a resumed run killed before its first
+        # flush is effectively fresh too.  A mid-load resume (total > 0)
+        # must not abort on one falsy page — that would strand supervision.
+        if first_page and total == 0 and all(not r.get(id_key) for r in page):
+            raise SystemExit(
+                f"Dataset '{key}': every record on the first page is missing a "
+                f"usable '{id_key}' value — id_key is likely misconfigured for "
+                "this dataset (check the config; dedup would never engage)")
+        first_page = False
 
         # Honour --limit
         if limit is not None:
@@ -311,8 +1020,22 @@ def import_dataset(key: str, limit: int | None, resume: bool,
                 break
             page = page[:remaining]
 
+        # Cursor-advance guard: the crawl terminates ONLY via the cursor
+        # strictly decreasing toward the floor. An endpoint that silently
+        # ignores order_by=id / id[lt] (unsupported field, proxy quirk)
+        # would return the same top page forever — and the supervisor would
+        # see a healthy child and never intervene. Abort loudly instead.
+        new_cursor = page[-1].get("id")   # min id of the (possibly truncated) page
+        if not isinstance(new_cursor, int) \
+                or (cursor is not None and new_cursor >= cursor) \
+                or (id_gt is not None and new_cursor <= id_gt):
+            raise SystemExit(
+                f"Dataset '{key}': keyset cursor did not advance (page ended "
+                f"at id {new_cursor!r}, previous cursor {cursor!r}, floor "
+                f"{id_gt!r}) — the endpoint likely ignores order_by=id or "
+                "the id filters; aborting instead of looping forever")
         buffer.extend(page)
-        offset += len(page)
+        cursor = new_cursor
 
         if len(buffer) >= DS_BATCH_SIZE:
             flush()
@@ -323,7 +1046,733 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             break
 
 
+def smoke_dataset(key: str, n: int, ds_session: requests.Session,
+                  username: str | None = None,
+                  password: str | None = None) -> bool:
+    """Self-cleaning smoke test: insert the newest n records, verify, delete.
+
+    Returns True only when nothing failed: no failed inserts, every record
+    this run added was found on verification, and the cleanup deleted
+    exactly that many — so `--smoke && full-run` is a real gate.
+
+    Never reads or writes a state file.  The delete filter carries exactly
+    the id values THIS run's insert landed (BatchResult.inserted_values) —
+    never a concurrent writer's copy — with the pre-insert snapshot kept as
+    an extra intersection guard.  insert_batch's existence check means a
+    re-run after a hard-killed smoke does not double-insert.  Records with
+    a missing/falsy id_key value are excluded from the delete filter — they
+    stay behind as residue and are warned about.  Every DS call is wrapped
+    in the shared 401 heal, so an expiring token cannot leave residue.
+    """
+    cfg        = DATASETS[key]
+    id_key     = cfg.get("id_key", "id")
+    collection = cfg["collection"]
+    anchor_ts  = _utcnow_ts()
+
+    print(f"\n── smoke {key}  →  {collection} ──")
+
+    def heal(call):
+        return ds_call_with_heal(call, ds_session, username, password)
+
+    coupa_session = make_coupa_session(cfg["scope"])
+
+    fields = ensure_id_field(cfg["fields"])
+    extra  = cfg.get("extra_params")
+    records: list = []
+    cursor = None
+    while len(records) < n:
+        page = fetch_page(coupa_session, cfg["endpoint"], fields,
+                          anchor_ts, before_id=cursor, limit=n - len(records),
+                          extra_params=extra)
+        if not page:
+            break
+        records.extend(page)
+        cursor = page[-1].get("id")
+        if not isinstance(cursor, int):
+            break   # cannot advance the cursor safely — stop fetching
+    records = records[:n]
+    if not records:
+        print("   Coupa returned no records — nothing to smoke-test")
+        return True
+
+    values = [r[id_key] for r in records if r.get(id_key)]
+    if len(values) < len(records):
+        print(f"   [WARN] {len(records) - len(values)} record(s) have a "
+              f"missing/falsy '{id_key}' — inserted but excluded from the "
+              "smoke delete filter (residue stays behind)")
+
+    # Snapshot BEFORE inserting — belt on top of inserted_values: nothing
+    # that pre-existed this run may ever enter the delete filter.
+    pre_existing = (heal(lambda: _existing_ids(ds_session, collection,
+                                               id_key, values))
+                    if values else set())
+    result = heal(lambda: insert_batch(ds_session, collection, records, id_key))
+    print(f"   inserted {result.inserted}, duplicates {result.duplicates}, "
+          f"failed {result.failed}")
+    ok = result.failed == 0
+    if not ok:
+        print(f"   [WARN] smoke insert had {result.failed} failure(s)")
+
+    to_delete = [v for v in result.inserted_values if v not in pre_existing]
+    if to_delete:
+        found   = heal(lambda: _existing_ids(ds_session, collection,
+                                             id_key, to_delete))
+        missing = len(to_delete) - len(found)
+        if missing:
+            print(f"   [WARN] {missing} inserted record(s) not found on verification")
+            ok = False
+
+        def _delete():
+            resp = ds_session.post(
+                f"{ROSSUM_DS_URL}/data/delete_many",
+                # DS delete endpoints take "filter" — find/aggregate take
+                # "query"/"pipeline" (live-verified asymmetry; a 422 usually
+                # means the wrong key).
+                json={"collectionName": collection,
+                      "filter": {id_key: {"$in": to_delete}}},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return resp
+
+        resp = heal(_delete)
+        deleted = (resp.json().get("result") or {}).get("deleted_count")
+        shown = deleted if deleted is not None else "n/a"
+        print(f"   smoke cleanup: deleted {shown} record(s)")
+        if deleted != len(to_delete):
+            # a missing/unparseable count lands here too, by design:
+            # unknown is not success
+            print(f"   [WARN] cleanup shortfall: expected to delete "
+                  f"{len(to_delete)}, deleted {shown}")
+            ok = False
+    else:
+        print("   smoke cleanup: nothing to delete "
+              "(no records added by this run)")
+    remaining = heal(lambda: _collection_count(ds_session, collection))
+    print(f"   collection '{collection}' now holds {remaining} document(s)")
+    return ok
+
+
+SAMPLE_PAGES = 3   # keyset pages fetched (real field list) to measure rec/s
+
+
+def suggest_workers(count: int, rate: float, target_hours: float = 1.0,
+                    max_workers: int = 8,
+                    min_partition: int | None = None) -> int:
+    """Advisory only (spec §4.4): workers to bring one dataset under
+    target_hours, capped by max_workers and the min-partition floor
+    (floor semantics — no partition ever holds fewer than min_partition
+    records; same clamp the planner enforces, so the suggestion is never
+    silently clamped away at run time).
+    min_partition defaults to the module global MIN_PARTITION, read at
+    CALL time (not def time — a bare `= MIN_PARTITION` default would bind
+    the value in effect when this module loads, before load_config ever
+    runs, and a config-set min_partition would never be seen here).
+    Printed by --probe; the run path never calls this."""
+    if min_partition is None:
+        min_partition = MIN_PARTITION
+    if not count or not rate:
+        return 1
+    by_time = math.ceil(count / rate / 3600 / target_hours)
+    by_size = max(1, count // min_partition)
+    return max(1, min(by_time, by_size, max_workers))
+
+
+def measure_rate(session, endpoint: str, fields: list, anchor_ts: str,
+                 extra_params: dict | None = None) -> float:
+    """Sampled single-worker throughput (rec/s) over SAMPLE_PAGES keyset
+    pages with the dataset's REAL field list — record width dominates
+    per-record cost (~10x between narrow and wide datasets), so counts
+    alone cannot size workers. extra_params: see fetch_page — a filtered-
+    slice dataset must be sampled over its own slice, not the whole endpoint."""
+    fetched, cursor = 0, None
+    t0 = time.monotonic()
+    for _ in range(SAMPLE_PAGES):
+        page = fetch_page(session, endpoint, fields, anchor_ts, before_id=cursor,
+                          extra_params=extra_params)
+        if not page:
+            break
+        fetched += len(page)
+        cursor = page[-1].get("id")
+        if cursor is None:
+            break   # cannot advance the cursor safely — stop sampling
+    secs = time.monotonic() - t0
+    return fetched / secs if secs > 0 and fetched else 0.0
+
+
+def _dataset_progress(key: str, state: dict) -> tuple[dict, int]:
+    """(state entry, total_processed incl. partition files) for display.
+
+    Supervised runs keep per-dataset state files — fall back to them so a
+    --probe over the shared state still reuses the run's anchor/progress;
+    partitioned runs spread progress over per-partition files."""
+    ds_st = state.get(key) or load_state(
+        default_state_path(key, [key], None)).get(key, {})
+    done = ds_st.get("total_processed", 0)
+    parts = find_partition_states(key)
+    for p in parts:
+        done += load_state(p).get(key, {}).get("total_processed", 0)
+    if not ds_st and parts:
+        # a partitioned run never writes the per-dataset file — the shared
+        # anchor lives in every partition file; without this, the probe
+        # would invent a fresh now() anchor and understate %-complete
+        ds_st = load_state(parts[0]).get(key, {})
+    return ds_st, done
+
+
+def probe_datasets(keys: list[str], state: dict) -> None:
+    """Advisory sizing report: exact count (offset bisection), sampled
+    throughput, est duration at 1/2/4/8 workers, config-ready suggestion.
+    Writes nothing; also doubles as the keyset-query preflight."""
+    suggestions: dict[str, int] = {}
+    for key in keys:
+        cfg = DATASETS[key]
+        extra = cfg.get("extra_params")
+        ds_st, done = _dataset_progress(key, state)
+        anchor = ds_st.get("anchor_updated_at") \
+            or _utcnow_ts()
+        session = make_coupa_session(cfg["scope"])
+        n = _bisect_count(
+            lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off,
+                                           extra_params=extra)))
+        rate = measure_rate(session, cfg["endpoint"],
+                            ensure_id_field(cfg["fields"]), anchor,
+                            extra_params=extra)
+        pct = f"  ({done / n:.1%} processed)" if done and n else ""
+        print(f"   {key:<28} {n:>9}  anchor: {anchor}{pct}")
+        if rate:
+            ests = "  ".join(
+                f"{w}w:{n / rate / 3600 / w:5.1f}h" for w in (1, 2, 4, 8))
+            print(f"   {'':<28} {rate:7.1f} rec/s   est {ests}")
+        w = suggest_workers(n, rate)
+        if w > 1:
+            suggestions[key] = w
+    if suggestions:
+        print("\n   suggested config (set datasets.<key>.workers, "
+              "then run --supervise --dataset all):")
+        for key, w in suggestions.items():
+            print(f'     "{key}": {w}')
+        print("   (others: 1 — under the est-hours threshold)")
+
+
+# ── Partition planning (spec §4.3) ───────────────────────────────────────────────
+
+def partition_state_path(dataset: str, index: int, of: int) -> Path:
+    return Path(f"coupa_import_state_{dataset}_p{index}of{of}.json")
+
+
+def find_partition_states(dataset: str) -> list[Path]:
+    return sorted(Path(".").glob(f"coupa_import_state_{dataset}_p*of*.json"))
+
+
+def validate_partition_set(dataset: str, paths: list[Path]) -> list[tuple[dict, Path]]:
+    """Recovered partition plan must be complete and consistent.
+
+    A supervisor killed between seeding SOME partition files and seeding the
+    rest must refuse on restart — resuming a partial plan would silently
+    never crawl the missing id ranges, and the Phase 4 count check could not
+    see it (both sides exclude the missing ranges).  Same for a mixed set
+    left over from runs with different worker counts (p1of2 + p1of4 both
+    match the glob).  Returns [(partition, path)] sorted by index.
+    """
+    recover = (f"Delete the coupa_import_state_{dataset}_p*of*.json files to "
+               "re-plan (already-loaded records dedupe).")
+    parts: list[tuple[dict, Path]] = []
+    for path in paths:
+        part = load_state(path).get(dataset, {}).get("partition") or {}
+        if not {"index", "of", "id_gt", "id_lte"} <= part.keys():
+            raise SystemExit(f"Dataset '{dataset}': partition state file {path} "
+                             f"carries no valid partition block. {recover}")
+        parts.append((part, path))
+    ofs = {p["of"] for p, _ in parts}
+    if len(ofs) != 1:
+        raise SystemExit(f"Dataset '{dataset}': partition state files mix "
+                         f"worker counts {sorted(ofs)}. {recover}")
+    of = ofs.pop()
+    parts.sort(key=lambda pp: pp[0]["index"])
+    if [p["index"] for p, _ in parts] != list(range(1, of + 1)):
+        raise SystemExit(f"Dataset '{dataset}': partition plan incomplete — "
+                         f"found {len(parts)} of {of} state files (supervisor "
+                         f"likely killed mid-planning). {recover}")
+    for (a, _), (b, _) in zip(parts, parts[1:]):
+        if a["id_lte"] != b["id_gt"]:
+            raise SystemExit(f"Dataset '{dataset}': partition ranges are not "
+                             f"contiguous ({a['id_lte']} != {b['id_gt']}). {recover}")
+    return parts
+
+
+def plan_partitions(key: str, cfg: dict, workers: int) -> tuple[str, list[dict]]:
+    """Count-balanced id-range partitions for one dataset, computed ONCE.
+
+    Balancing by rank, not by equal id spans: the record at ascending-id
+    rank k*C/W is one request (limit=1&offset=rank), so slices come out
+    count-balanced regardless of id gaps. Returns (anchor, []) when the
+    min-partition clamp lands on a single worker.
+    """
+    anchor = _utcnow_ts()
+    extra = cfg.get("extra_params")
+    session = make_coupa_session(cfg["scope"])
+    count = _bisect_count(
+        lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off,
+                                       extra_params=extra)))
+    w = min(workers, max(1, count // MIN_PARTITION))   # floor: no partition under MIN_PARTITION records
+    if w <= 1:
+        if workers > 1:
+            print(f"   {key}: workers clamped to 1 — {count} records is under "
+                  f"the {MIN_PARTITION}-per-worker floor; running unpartitioned")
+        return anchor, []
+    print(f"   {key}: planning {w} partition(s) over {count} records")
+    # Top edge via ONE keyset page (desc, limit=1) — exact and race-free.
+    # A rank probe at count-1 would crash whenever the anchored set shrinks
+    # during the minutes-long bisection (any record updated mid-planning
+    # leaves the set), which is the normal case on a live tenant.
+    top = fetch_page(session, cfg["endpoint"], ["id"], anchor, limit=1,
+                     extra_params=extra)
+    if not top:
+        raise SystemExit(f"Dataset '{key}': no records under the planning "
+                         "anchor — nothing to partition")
+    edges = [0]
+    for k in range(1, w):
+        rank = k * count // w
+        rec = fetch_at_rank(session, cfg["endpoint"], anchor, rank,
+                            extra_params=extra)
+        if not rec:
+            raise SystemExit(
+                f"Dataset '{key}': the dataset shrank while planning "
+                f"partitions (rank {rank} of {count} vanished) — re-run "
+                "to re-plan against a fresh anchor")
+        edges.append(rec[0]["id"])
+    edges.append(top[0]["id"])
+    if any(a >= b for a, b in zip(edges, edges[1:])):
+        raise SystemExit(
+            f"Dataset '{key}': partition boundaries collapsed (the dataset "
+            "changed during planning) — re-run to re-plan against a fresh anchor")
+    return anchor, [
+        {"index": k, "of": w, "id_gt": edges[k - 1], "id_lte": edges[k]}
+        for k in range(1, w + 1)
+    ]
+
+
+def seed_partition_state(dataset: str, part: dict, anchor_ts: str,
+                         path: Path) -> None:
+    """Pre-seed a partition's state file BEFORE spawning (plan stability:
+    children and supervisor restarts read the plan back from state files,
+    never re-probe — re-probing would re-slice and orphan progress)."""
+    save_state({dataset: {
+        "anchor_updated_at": anchor_ts,
+        "last_id":           part["id_lte"] + 1,   # everything below unfetched
+        "partition":         part,
+        "total_processed":   0,
+        "total_inserted":    0,
+    }}, path)
+
+
+# ── Supervision (--supervise) ────────────────────────────────────────────────────
+
+def decide(completed: bool, child_alive: bool, restarts: int, max_restarts: int) -> str:
+    """Per-dataset supervision decision: done | wait | relaunch | give_up.
+
+    The state file's completed flag — not the child's exit code — is the
+    source of truth for completion.
+    """
+    if completed:
+        return "done"
+    if child_alive:
+        return "wait"
+    if restarts < max_restarts:
+        return "relaunch"
+    return "give_up"
+
+
+def _terminate_children(children: dict) -> None:
+    """Best-effort SIGTERM to every still-alive child (interrupt/crash cleanup)."""
+    for child in children.values():
+        if child.poll() is None:
+            child.terminate()
+
+
+def state_is_completed(state_path: Path, key: str) -> bool:
+    """True iff the dataset's state file carries "completed": true."""
+    try:
+        return bool(json.loads(state_path.read_text()).get(key, {}).get("completed"))
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        return False
+
+
+def read_last_log_line(path: Path) -> str:
+    """Last line of a child's log — the 'why' recorded on death/give-up."""
+    try:
+        lines = path.read_text().strip().splitlines()
+    except OSError:
+        return "(no log)"
+    return lines[-1] if lines else "(empty log)"
+
+
+def build_child_cmd(dataset: str, config: str, *, resume: bool,
+                    username: str | None, password: str | None,
+                    no_unique_index_ok: bool = False,
+                    state_file=None, rate: float | None = None) -> list[str]:
+    """Command line for one supervised child (single dataset OR partition).
+
+    No --limit: --supervise + --limit is refused in main() (a limit-stopped
+    child never writes the completed flag).  Partition children get an
+    explicit --state-file (their pre-seeded plan) and are always launched
+    with --resume.
+
+    Always passes --workers 1.  A child is a SERIAL crawler by definition --
+    either a whole dataset, or one partition whose id range comes from its
+    pre-seeded --state-file; it never partitions further.  Saying so
+    explicitly is also what keeps the child clear of main()'s
+    "config workers > 1 requires --supervise" guard: that guard exists to stop
+    a *human* silently serialising a dataset meant to be partitioned, and it
+    cannot tell that case apart from a supervisor-spawned child unless the
+    child's own argv says which it is.  Without it, every partition child of a
+    dataset whose CONFIG sets workers > 1 exits 1 on startup and the supervisor
+    crash-loops it to give-up.  Scope note: the guard reads the *config* value
+    and is skipped whenever --workers is passed, so `--supervise --workers N`
+    over a config without workers keys was always fine -- what was broken is
+    partitioning driven by the config (which is how --probe tells you to set
+    it up, and therefore the normal path).
+    """
+    cmd = [sys.executable, "-u", str(Path(__file__).resolve()),
+           "--dataset", dataset, "--config", config, "--workers", "1"]
+    if resume:
+        cmd.append("--resume")
+    if username:
+        cmd += ["--username", username]
+    if password:
+        cmd += ["--password", password]
+    if no_unique_index_ok:
+        cmd.append("--no-unique-index-ok")
+    if state_file is not None:
+        cmd += ["--state-file", str(state_file)]
+    if rate is not None:
+        cmd += ["--rate", str(rate)]
+    return cmd
+
+
+def effective_workers(key: str, args_workers: int | None) -> int:
+    """CLI --workers overrides the per-dataset config value (default 1)."""
+    return args_workers if args_workers is not None else \
+        int(DATASETS.get(key, {}).get("workers", 1))
+
+
+def _make_ds_session(args) -> requests.Session:
+    """DS session for the supervisor's own pre-flight checks."""
+    token = ROSSUM_TOKEN
+    if not token and args.username and args.password:
+        token = refresh_rossum_token(args.username, args.password)
+    session = requests.Session()
+    session.headers.update({"Authorization": f"Bearer {token}",
+                            "Content-Type":  "application/json"})
+    return session
+
+
+def partitioned_preflight(key: str, cfg: dict, ds_session) -> None:
+    """Fresh-run guards for a partitioned dataset, run ONCE before planning.
+
+    Partition children always launch with --resume, so import_dataset's
+    fresh-run collection check never fires for them — and a per-child check
+    would false-positive on sibling partitions' concurrent writes.  Also
+    sanity-checks id_key on one real-field page before burning the planning
+    budget (belt on top of the child-side total==0 fail-fast).
+    """
+    id_key = cfg.get("id_key", "id")
+    session = make_coupa_session(cfg["scope"])
+    page = fetch_page(session, cfg["endpoint"], ensure_id_field(cfg["fields"]),
+                      _utcnow_ts(), limit=10, extra_params=cfg.get("extra_params"))
+    if page and all(not r.get(id_key) for r in page):
+        raise SystemExit(
+            f"Dataset '{key}': every sampled record is missing a usable "
+            f"'{id_key}' value — id_key is likely misconfigured for this "
+            "dataset (check the config; dedup would never engage)")
+    preexisting = _collection_count(ds_session, cfg["collection"])
+    if preexisting >= 100:
+        print(f"   [WARN] collection '{cfg['collection']}' already holds "
+              f"{preexisting} document(s). Existing records are SKIPPED, "
+              "never updated — if you are re-replicating (e.g. a changed "
+              "field list), clear or blue-green swap the collection first "
+              "(see SKILL.md).")
+    elif preexisting:
+        print(f"   [NOTE] collection '{cfg['collection']}' already holds "
+              f"{preexisting} document(s) — a few leftovers dedupe "
+              "automatically (every batch is existence-checked).")
+
+
+def build_units(keys: list[str], args) -> list[dict]:
+    """One unit per supervised child: {'label','dataset','state_path','resume'}.
+
+    Datasets with effective workers > 1 get partition units — reusing
+    existing partition state files when present (never re-planning), else
+    planning + pre-seeding now. Unpartitioned datasets keep the original
+    behavior (per-dataset default state file, resume per args.resume).
+    """
+    units: list[dict] = []
+    ds_session = None
+    for key in keys:
+        workers = effective_workers(key, getattr(args, "workers", None))
+        existing = find_partition_states(key)
+        if existing:
+            validated = validate_partition_set(key, existing)
+            recorded_of = validated[0][0]["of"]
+            # always say so — reusing a plan silently would look like a
+            # violated workers setting (including an explicit --workers 1)
+            print(f"   {key}: reusing the existing {recorded_of}-partition "
+                  "plan (workers settings are ignored for it — delete "
+                  f"coupa_import_state_{key}_p*of*.json to re-plan)")
+            for part, path in validated:
+                units.append({"label": f"{key}[p{part['index']}/{part['of']}]",
+                              "dataset": key, "state_path": path, "resume": True})
+            continue
+        if workers > 1:
+            unpart = default_state_path(key, [key], None)
+            if unpart.exists() and load_state(unpart).get(key, {}) \
+                    .get("total_processed"):
+                raise SystemExit(
+                    f"Dataset '{key}': unpartitioned state file {unpart} has "
+                    "progress. Finish it with a plain --resume run (workers 1), "
+                    "or delete it to re-plan a partitioned run (already-loaded "
+                    "records dedupe).")
+            if ds_session is None:
+                ds_session = _make_ds_session(args)
+            partitioned_preflight(key, DATASETS[key], ds_session)
+            anchor, parts = plan_partitions(key, DATASETS[key], workers)
+            if parts:
+                for part in parts:
+                    path = partition_state_path(key, part["index"], part["of"])
+                    seed_partition_state(key, part, anchor, path)
+                    units.append({"label": f"{key}[p{part['index']}/{part['of']}]",
+                                  "dataset": key, "state_path": path,
+                                  "resume": True})
+                continue
+        units.append({"label": key, "dataset": key,
+                      "state_path": default_state_path(key, [key], None),
+                      "resume": args.resume})
+    return units
+
+
+def _log_name(label: str) -> Path:
+    # "users" -> logs/users.log ; "users[p1/2]" -> logs/users_p1of2.log
+    return Path("logs") / (label.replace("[", "_").replace("]", "")
+                           .replace("/", "of") + ".log")
+
+
+# ── Run summary (logs/run_summary.jsonl) ─────────────────────────────────────────
+#
+# One JSON line per supervisor invocation — the raw material for post-run
+# debriefs and next-run calibration (SKILL.md Phase 0/6): measured rec/s and
+# 429 counts from a real run beat fresh probe samples.
+
+def _unit_progress(state_path: Path, dataset: str) -> tuple[int, int]:
+    """(total_processed, total_inserted) from a unit's state file; (0, 0)
+    when missing/unreadable — the summary must never fail a run."""
+    try:
+        st = json.loads(state_path.read_text()).get(dataset, {})
+        return int(st.get("total_processed", 0)), int(st.get("total_inserted", 0))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0, 0
+
+
+def _count_log_markers(path: Path, offset: int) -> tuple[int, int]:
+    """(coupa_429s, retries) in a child log AFTER byte offset — logs append
+    across invocations, so only this invocation's slice is counted."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return 0, 0
+    return text.count("Coupa 429"), text.count("[RETRY")
+
+
+def build_run_summary(units: list, stats: dict, status: dict, restarts: dict,
+                      started: str, aggregate: float, per_child: float,
+                      logs: dict) -> dict:
+    rows = []
+    for unit in units:
+        label = unit["label"]
+        row = {"label": label, "dataset": unit["dataset"],
+               "status": status.get(label, "skipped")}
+        s = stats.get(label)
+        if s:
+            secs = max(s.get("t_end", time.monotonic()) - s["t_launch"], 0.0)
+            done_p, done_i = _unit_progress(unit["state_path"], unit["dataset"])
+            processed = done_p - s["start_processed"]
+            n429, retries = _count_log_markers(logs[label], s["log_offset"])
+            row.update({
+                "seconds":           round(secs, 1),
+                "records_processed": processed,
+                "records_inserted":  done_i - s["start_inserted"],
+                "rec_per_s":         round(processed / secs, 1) if secs > 0 else None,
+                "restarts":          restarts.get(label, 0),
+                "coupa_429s":        n429,
+                "retries":           retries,
+            })
+        rows.append(row)
+    return {"started": started, "finished": _utcnow_ts(),
+            "aggregate_rate_cap": aggregate,
+            "per_child_rate": round(per_child, 2), "units": rows}
+
+
+def write_run_summary(summary: dict,
+                      path: Path = Path("logs/run_summary.jsonl")) -> None:
+    path.parent.mkdir(exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(summary) + "\n")
+    print(f"supervisor: run summary appended to {path}")
+    for u in summary["units"]:
+        if "seconds" in u:
+            print(f"   {u['label']:<28} {u['status']:<9} {u['seconds']:>8.1f}s "
+                  f"{u['records_processed']:>9} rec "
+                  f"({u['rec_per_s'] or 0} rec/s)  "
+                  f"restarts {u['restarts']}  429s {u['coupa_429s']}")
+        else:
+            print(f"   {u['label']:<28} {u['status']}")
+
+
+def supervise(keys: list[str], args) -> int:
+    """Spawn one child per unit (dataset or partition) and babysit until all
+    complete or give up.
+
+    Decision table per sweep (see decide()): completed -> done; alive -> wait;
+    dead without the flag -> relaunch with --resume up to args.max_restarts,
+    then give up on that unit.  Exit 0 iff every unit completed.
+    """
+    units = build_units(keys, args)
+    Path("logs").mkdir(exist_ok=True)
+    # --rate overrides the config cap as the AGGREGATE for the whole run
+    # (e.g. "--rate 15" when webhooks share the OAuth client).  Split across
+    # units that will actually LAUNCH — counting already-completed units
+    # would throttle a resume's lone survivor to a fraction of the budget.
+    launching = [u for u in units
+                 if not ((u["resume"] or args.resume)
+                         and state_is_completed(u["state_path"], u["dataset"]))]
+    aggregate = getattr(args, "rate", None) or COUPA_MAX_RPS
+    per_child = (aggregate / len(launching)) if launching else aggregate
+    print(f"supervisor: {len(launching)} child(ren), per-child cap "
+          f"{per_child:.2f} req/s (aggregate {aggregate})")
+    if per_child < 0.5:
+        print("   [WARN] per-child rate under 0.5 req/s — more workers than "
+              "the aggregate cap can feed; reduce workers or raise "
+              "coupa.max_requests_per_second")
+
+    logs = {u["label"]: _log_name(u["label"]) for u in units}
+    children: dict = {}
+    restarts = {u["label"]: 0 for u in units}
+    status   = {}   # 'running' | 'done' | 'given_up'
+    stats: dict = {}   # per label: launch time, log offset, starting progress
+    run_started = _utcnow_ts()
+
+    def slog(msg: str) -> None:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{ts} supervisor: {msg}", flush=True)
+
+    def launch(unit: dict, resume: bool) -> None:
+        label = unit["label"]
+        if label not in stats:
+            log_path = logs[label]
+            start_p, start_i = _unit_progress(unit["state_path"], unit["dataset"])
+            stats[label] = {
+                "t_launch":        time.monotonic(),
+                "log_offset":      log_path.stat().st_size if log_path.exists() else 0,
+                "start_processed": start_p,
+                "start_inserted":  start_i,
+            }
+        cmd = build_child_cmd(unit["dataset"], args.config, resume=resume,
+                              username=args.username, password=args.password,
+                              no_unique_index_ok=args.no_unique_index_ok,
+                              state_file=(unit["state_path"]
+                                          if unit["label"] != unit["dataset"]
+                                          else None),
+                              rate=per_child)
+        with open(logs[label], "ab") as log_f:   # Popen keeps its own fd
+            children[label] = subprocess.Popen(
+                cmd, stdout=log_f, stderr=subprocess.STDOUT)
+        status[label] = "running"
+
+    def _sigterm(*_):
+        raise KeyboardInterrupt
+
+    prev_sigterm = signal.signal(signal.SIGTERM, _sigterm)
+
+    try:
+        # Initial launches live inside the try: an interrupt at any point after
+        # handler registration must terminate already-spawned children (not
+        # orphan them) and exit 130.
+        for unit in units:
+            if (unit["resume"] or args.resume) and \
+                    state_is_completed(unit["state_path"], unit["dataset"]):
+                slog(f"{unit['label']}: already complete — skipping")
+                status[unit["label"]] = "done"
+            else:
+                slog(f"{unit['label']}: launching"
+                     f"{' (--resume)' if unit['resume'] else ''}")
+                launch(unit, resume=unit["resume"])
+
+        while any(s == "running" for s in status.values()):
+            time.sleep(args.poll_interval)
+            for unit in units:
+                label = unit["label"]
+                if status.get(label) != "running":
+                    continue
+                child     = children[label]
+                # poll() BEFORE the state read: a child seen dead has already
+                # done its final state write, so completion is never misread
+                # as a death (which would burn a restart slot).
+                alive     = child.poll() is None
+                completed = state_is_completed(unit["state_path"], unit["dataset"])
+                action    = decide(completed, alive, restarts[label],
+                                   args.max_restarts)
+                if action == "done":
+                    slog(f"{label}: completed ({restarts[label]} restart(s))")
+                    status[label] = "done"
+                    stats[label]["t_end"] = time.monotonic()
+                elif action == "relaunch":
+                    restarts[label] += 1
+                    slog(f"{label}: died (exit {child.returncode}) — resuming "
+                         f"(attempt {restarts[label]}/{args.max_restarts}); "
+                         f"last log line: {read_last_log_line(logs[label])}")
+                    launch(unit, resume=True)
+                elif action == "give_up":
+                    slog(f"{label}: exceeded {args.max_restarts} restarts — "
+                         f"giving up (manual --resume needed); "
+                         f"last log line: {read_last_log_line(logs[label])}")
+                    status[label] = "given_up"
+                    stats[label]["t_end"] = time.monotonic()
+    except KeyboardInterrupt:
+        slog("interrupted — terminating children")
+        _terminate_children(children)
+        return 130
+    except Exception:
+        slog("unexpected error — terminating children before propagating")
+        _terminate_children(children)
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+
+    write_run_summary(build_run_summary(units, stats, status, restarts,
+                                        run_started, aggregate, per_child, logs))
+
+    given_up = [k for k, s in status.items() if s == "given_up"]
+    if given_up:
+        slog(f"finished with given-up unit(s): {', '.join(given_up)} — exit 1")
+        return 1
+    slog("all datasets complete — exit 0")
+    return 0
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────────
+
+def _smoke_arg(value: str) -> int:
+    """--smoke N parser with a friendly hint for the '--smoke users' footgun
+    (nargs='?' would otherwise eat a dataset name as an invalid int)."""
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a record count, got {value!r} — to smoke-test a "
+            f"dataset use '--smoke --dataset {value}'") from None
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -338,7 +1787,7 @@ def main() -> None:
     parser.add_argument(
         "--dataset",
         default="all",
-        help="Dataset key from the config, or 'all' (default: all)",
+        help="Dataset key, comma-separated list of keys, or 'all' (default: all)",
     )
     parser.add_argument(
         "--limit",
@@ -353,11 +1802,22 @@ def main() -> None:
         help="Resume from state file",
     )
     parser.add_argument(
+        "--smoke",
+        nargs="?",
+        const=1,
+        type=_smoke_arg,
+        default=None,
+        metavar="N",
+        help="Self-cleaning smoke test: insert the newest N records per "
+             "dataset (default 1), verify them, then delete them again. "
+             "Writes no state file. N must fit in one DS batch",
+    )
+    parser.add_argument(
         "--state-file",
         default=None,
         metavar="PATH",
-        help="State file path (default: coupa_import_state_<dataset>.json when "
-             "--dataset is set, else coupa_import_state.json)",
+        help="State file path (default: coupa_import_state_<dataset>.json for a "
+             "single explicit --dataset, else coupa_import_state.json)",
     )
     parser.add_argument(
         "--username",
@@ -371,24 +1831,198 @@ def main() -> None:
         metavar="PASS",
         help="Rossum password for automatic token refresh",
     )
+    parser.add_argument(
+        "--supervise",
+        action="store_true",
+        help="Spawn one child per dataset and babysit: relaunch dead jobs with "
+             "--resume (up to --max-restarts each), exit when all are complete "
+             "or given up. Logs go to logs/<dataset>.log",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=60,
+        metavar="SEC",
+        help="Supervision sweep interval in seconds (default: 60)",
+    )
+    parser.add_argument(
+        "--max-restarts",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Relaunch attempts per dataset before giving up on it (default: 3)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override every selected dataset's config workers value "
+             "(datasets.<key>.workers, default 1). Effective workers > 1 "
+             "require --supervise",
+    )
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=None,
+        metavar="R",
+        help="Max Coupa requests/second for this process (default: "
+             "coupa.max_requests_per_second from the config, 20). The "
+             "supervisor sets this per child automatically",
+    )
+    parser.add_argument(
+        "--id-range",
+        default=None,
+        metavar="LO:HI",
+        help="Advanced: crawl only Coupa ids in [LO, HI] in the foreground "
+             "(debugging / manual splits). Single dataset only",
+    )
+    parser.add_argument(
+        "--no-unique-index-ok",
+        action="store_true",
+        help="Proceed with a full run even when the collection lacks the "
+             "qualifying unique partial index on id_key (per-batch existence "
+             "check only; concurrent-writer races unprotected)",
+    )
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="Sizing report per dataset (writes nothing): exact record count "
+             "via offset bisection, sampled throughput with the real field "
+             "list, estimated duration at 1/2/4/8 workers, and a config-ready "
+             "workers suggestion. Reuses a running job's anchor from its "
+             "state file",
+    )
     args = parser.parse_args()
+
+    if args.supervise and args.limit is not None:
+        raise SystemExit("--limit cannot be combined with --supervise "
+                         "(a limit-stopped child never writes the completed flag; "
+                         "run smoke tests unsupervised)")
+    if args.supervise and args.state_file:
+        raise SystemExit("--state-file cannot be combined with --supervise "
+                         "(children always use per-dataset state files)")
+    if args.probe and args.supervise:
+        raise SystemExit("--probe cannot be combined with --supervise")
+    if args.smoke is not None and args.supervise:
+        raise SystemExit("--smoke cannot be combined with --supervise "
+                         "(smoke runs are single-batch and self-cleaning; "
+                         "run them unsupervised)")
+    if args.smoke is not None and args.resume:
+        raise SystemExit("--smoke cannot be combined with --resume "
+                         "(smoke runs never read or write state files)")
+    if args.smoke is not None and args.probe:
+        raise SystemExit("--smoke cannot be combined with --probe "
+                         "(pick one mode)")
+    if args.smoke is not None and args.limit is not None:
+        raise SystemExit("--smoke cannot be combined with --limit "
+                         "(smoke carries its own record count: --smoke N)")
+
+    id_range = None
+    if args.id_range:
+        if args.supervise:
+            raise SystemExit("--id-range cannot be combined with --supervise "
+                             "(the supervisor plans partitions itself)")
+        if args.probe:
+            raise SystemExit("--id-range cannot be combined with --probe")
+        if args.smoke is not None:
+            raise SystemExit("--id-range cannot be combined with --smoke")
+        try:
+            lo, hi = (int(x) for x in args.id_range.split(":", 1))
+        except ValueError:
+            raise SystemExit(f"--id-range expects LO:HI integers, got "
+                             f"{args.id_range!r}") from None
+        if lo > hi:
+            raise SystemExit(f"--id-range LO must be <= HI (got {lo}:{hi})")
+        id_range = (lo, hi)
+
+    if args.workers is not None:
+        if args.probe:
+            raise SystemExit("--workers cannot be combined with --probe "
+                             "(the probe only suggests worker counts)")
+        if args.smoke is not None:
+            raise SystemExit("--workers cannot be combined with --smoke")
+        if args.workers > 1 and not args.supervise:
+            raise SystemExit("--workers > 1 requires --supervise "
+                             "(partition children need a babysitter — "
+                             "see SKILL.md Phase 3)")
+        if args.workers < 1:
+            raise SystemExit("--workers must be >= 1")
+
+    if args.rate is not None and args.rate <= 0:
+        raise SystemExit("--rate must be > 0")
+    if args.probe and args.limit is not None:
+        raise SystemExit("--limit cannot be combined with --probe")
 
     load_config(Path(args.config))
 
-    if args.dataset != "all" and args.dataset not in DATASETS:
+    if not args.probe and not ROSSUM_TOKEN and not (args.username and args.password):
         raise SystemExit(
-            f"Unknown dataset '{args.dataset}'. "
-            f"Available in {args.config}: {', '.join(sorted(DATASETS)) or '(none)'}"
-        )
+            "rossum.token is empty in the config and no --username/--password "
+            "given — DS writes need one of them (see SKILL.md Phase 0 token "
+            "strategy; --probe is Coupa-only and exempt)")
 
-    if args.state_file:
-        state_path = Path(args.state_file)
-    elif args.dataset != "all":
-        state_path = Path(f"coupa_import_state_{args.dataset}.json")
-    else:
-        state_path = STATE_FILE
+    if args.smoke is not None and args.smoke > DS_BATCH_SIZE:
+        raise SystemExit(
+            f"--smoke {args.smoke} exceeds ds_batch_size ({DS_BATCH_SIZE}) — "
+            "a smoke run inserts a single batch (leftovers of a hard-killed "
+            "smoke are harmless: every batch of any later run is "
+            "existence-checked, so they dedupe automatically)")
 
-    keys  = list(DATASETS) if args.dataset == "all" else [args.dataset]
+    keys = resolve_dataset_keys(args.dataset, DATASETS)
+
+    global LIMITER
+    LIMITER = RateLimiter(args.rate if args.rate else COUPA_MAX_RPS)
+
+    if not args.supervise and args.workers is None:
+        hot = [k for k in keys if int(DATASETS[k].get("workers", 1)) > 1]
+        if hot and args.smoke is None and not args.probe:
+            raise SystemExit(
+                f"Dataset(s) {', '.join(hot)} have config workers > 1 — "
+                "partitioned runs require --supervise (or pass --workers 1 "
+                "to force a serial run)")
+
+    if id_range is not None and len(keys) != 1:
+        raise SystemExit("--id-range requires a single explicit --dataset")
+
+    if args.supervise:
+        raise SystemExit(supervise(keys, args))
+
+    state_path = default_state_path(args.dataset, keys, args.state_file)
+    if id_range is not None and not args.state_file:
+        # NEVER the dataset's default state file: a range run recording its
+        # partition block (and eventually "completed") there would make a
+        # later plain --resume skip the rest of the dataset silently
+        state_path = Path(f"coupa_import_state_{keys[0]}"
+                          f"_range_{id_range[0]}_{id_range[1]}.json")
+
+    if args.probe:
+        state = load_state(state_path)
+        probe_datasets(keys, state)
+        return
+
+    if args.smoke is not None:
+        token = ROSSUM_TOKEN
+        if not token:
+            # credentials-only config: mint a token up front instead of
+            # sending "Bearer " and dying on the first DS call
+            token = refresh_rossum_token(args.username, args.password)
+        ds_session = requests.Session()
+        ds_session.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Content-Type":  "application/json",
+        })
+        results = {key: smoke_dataset(key, args.smoke, ds_session,
+                                      username=args.username,
+                                      password=args.password)
+                   for key in keys}
+        failed_keys = [k for k, ok in results.items() if not ok]
+        if failed_keys:
+            raise SystemExit(f"\nSmoke test FAILED for: {', '.join(failed_keys)} "
+                             "— see [WARN] lines above. Exit 1.")
+        print("\nSmoke test done.")
+        return
+
     state = load_state(state_path) if args.resume else {}
 
     ds_session = requests.Session()
@@ -399,7 +2033,9 @@ def main() -> None:
 
     for key in keys:
         import_dataset(key, args.limit, args.resume, state, ds_session, state_path,
-                       username=args.username, password=args.password)
+                       username=args.username, password=args.password,
+                       no_unique_index_ok=args.no_unique_index_ok,
+                       id_range=id_range)
 
     print("\nDone.")
 

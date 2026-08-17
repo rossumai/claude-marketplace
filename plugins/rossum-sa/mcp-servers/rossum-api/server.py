@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MCP server for Rossum APIs."""
 
+import difflib
 import json
 import re
 import ssl
@@ -208,7 +209,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.32.1"
+_SERVER_VERSION = "0.35.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -228,17 +229,29 @@ def _auth_headers(extra=None, token=None):
     return headers
 
 
+_NOT_CONNECTED_MSG = "Not connected to Rossum. Call rossum_set_token to establish a connection."
+
+
 def _ensure_connection(request_id):
     """Guard: return cached (base_url, token) or send an error directing to rossum_set_token."""
     if _token_validated and _cached_base_url and _cached_token:
         return (_cached_base_url, _cached_token)
 
-    tool_result(
-        request_id,
-        "Not connected to Rossum. Call rossum_set_token to establish a connection.",
-        is_error=True,
-    )
+    tool_result(request_id, _NOT_CONNECTED_MSG, is_error=True)
     return (None, None)
+
+
+def _read_http_error_body(e):
+    """Read an HTTPError body without letting the read itself raise.
+
+    An exception raised inside an `except HTTPError` clause is NOT caught by a
+    sibling `except Exception` — a non-UTF-8 error body (corporate proxy / SSO
+    gateway serving Latin-1 HTML) would escape to the dispatch loop as -32603,
+    skipping the 401 invalidation and rossum_set_token guidance entirely."""
+    try:
+        return e.read().decode("utf-8", errors="replace") if e.fp else str(e)
+    except Exception:
+        return str(e)
 
 
 # --- HTTP helpers ---
@@ -253,6 +266,7 @@ def _http_request(request_id, url, *, method="GET", body=None, parse_json=True):
     """
     token = _cached_token
     if not token:
+        tool_result(request_id, _NOT_CONNECTED_MSG, is_error=True)
         return None
 
     headers = _auth_headers()
@@ -270,17 +284,7 @@ def _http_request(request_id, url, *, method="GET", body=None, parse_json=True):
             data = resp.read()
             return json.loads(data.decode("utf-8")) if data else {}
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else str(e)
-        if e.code == 401:
-            _invalidate_connection()
-            tool_result(
-                request_id,
-                f"Authentication failed (HTTP 401). Token may be expired. "
-                f"Call rossum_set_token to re-authenticate.\n{error_body}",
-                is_error=True,
-            )
-            return None
-        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        _emit_http_error(request_id, e.code, _read_http_error_body(e))
         return None
     except Exception as e:
         tool_result(request_id, f"Error: {e}", is_error=True)
@@ -316,7 +320,7 @@ def _http_request_status(url, *, method="GET", body=None):
     """
     token = _cached_token
     if not token:
-        return None, "Not connected to Rossum."
+        return None, _NOT_CONNECTED_MSG
     headers = _auth_headers()
     data = None
     if body is not None:
@@ -329,12 +333,7 @@ def _http_request_status(url, *, method="GET", body=None):
             # 204 No Content (e.g. DELETE) has no body — that's a success, not a parse error.
             return resp.status, (json.loads(raw.decode("utf-8")) if raw else None)
     except urllib.error.HTTPError as e:
-        # Reading/decoding the error body can itself fail (dropped connection,
-        # non-UTF-8 proxy page) — that must not escape the never-raise contract.
-        try:
-            error_body = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
-        except Exception:
-            error_body = str(e)
+        error_body = _read_http_error_body(e)
         try:
             error_body = json.loads(error_body)
         except (json.JSONDecodeError, ValueError):
@@ -366,7 +365,7 @@ def _emit_http_error(request_id, status, body):
         _invalidate_connection()
         tool_result(
             request_id,
-            f"Authentication failed (HTTP 401). Token may be expired. "
+            f"Authentication failed (HTTP 401): the token is invalid, expired, or revoked. "
             f"Call rossum_set_token to re-authenticate.\n{detail}",
             is_error=True,
         )
@@ -390,6 +389,7 @@ def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_t
     """POST raw bytes (e.g. multipart upload). Returns parsed JSON or None (error sent)."""
     token = _cached_token
     if not token:
+        tool_result(request_id, _NOT_CONNECTED_MSG, is_error=True)
         return None
     headers = _auth_headers({"Content-Type": content_type} if content_type else None)
     req = urllib.request.Request(url, data=raw_body, headers=headers, method=method)
@@ -400,8 +400,7 @@ def _http_request_raw(request_id, url, *, method="POST", raw_body=b"", content_t
                 return {}
             return json.loads(data.decode("utf-8"))
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else str(e)
-        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        _emit_http_error(request_id, e.code, _read_http_error_body(e))
         return None
     except Exception as e:
         tool_result(request_id, f"Error: {e}", is_error=True)
@@ -412,14 +411,14 @@ def _http_get_bytes(request_id, url):
     """GET that returns raw bytes (for downloading PDFs etc). None on error (already sent)."""
     token = _cached_token
     if not token:
+        tool_result(request_id, _NOT_CONNECTED_MSG, is_error=True)
         return None
     req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
     try:
         with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
             return resp.read()
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else str(e)
-        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        _emit_http_error(request_id, e.code, _read_http_error_body(e))
         return None
     except Exception as e:
         tool_result(request_id, f"Error: {e}", is_error=True)
@@ -434,6 +433,7 @@ def _http_get_typed(request_id, url):
     and returns (None, None). urllib follows 3xx automatically, so a tasks/{id} 303
     resolves to its result object."""
     if not _cached_token:
+        tool_result(request_id, _NOT_CONNECTED_MSG, is_error=True)
         return (None, None)
     req = urllib.request.Request(url, headers=_auth_headers(), method="GET")
     try:
@@ -443,15 +443,7 @@ def _http_get_typed(request_id, url):
                 return (ctype, json.loads(resp.read().decode("utf-8")))
             return (ctype, None)
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else str(e)
-        if e.code == 401:
-            _invalidate_connection()
-            tool_result(request_id,
-                        f"Authentication failed (HTTP 401). Token may be expired. "
-                        f"Call rossum_set_token to re-authenticate.\n{error_body}",
-                        is_error=True)
-            return (None, None)
-        tool_result(request_id, f"HTTP {e.code}: {error_body}", is_error=True)
+        _emit_http_error(request_id, e.code, _read_http_error_body(e))
         return (None, None)
     except Exception as e:
         tool_result(request_id, f"Error: {e}", is_error=True)
@@ -990,6 +982,54 @@ def _tool(name, description, schema, annotations=None):
     return decorator
 
 
+def _closest_property(key, properties):
+    """Best-guess declared parameter for an unknown key: exact match after
+    case/underscore normalization (base_url -> baseUrl, collection_name ->
+    collectionName), else a difflib close match for typos (veiw -> view)."""
+    normalized = {p.replace("_", "").lower(): p for p in properties}
+    hit = normalized.get(key.replace("_", "").lower())
+    if hit:
+        return hit
+    close = difflib.get_close_matches(key, list(properties), n=1, cutoff=0.6)
+    return close[0] if close else None
+
+
+def _validate_tool_arguments(name, arguments):
+    """Return a human-readable error for invalid arguments, else None.
+
+    Guards the tools/call dispatch two ways: (a) a missing/misnamed REQUIRED
+    argument (e.g. 'id' instead of 'annotation_id') surfaces as a clear
+    validation message instead of a handler KeyError bubbling up as JSON-RPC
+    -32603 'Internal error'; (b) unknown keys are rejected unconditionally —
+    every tool schema declares additionalProperties:false, and without
+    enforcement a misnamed OPTIONAL argument is silently dropped and the tool
+    'succeeds' with different semantics than the caller asked for (e.g.
+    queue_id instead of queue on rossum_list_hooks returning org-wide hooks).
+    An explicit null counts as missing — no handler treats null as a usable
+    required value."""
+    schema = TOOLS.get(name, {}).get("inputSchema") or {}
+    properties = schema.get("properties") or {}
+    missing = [k for k in schema.get("required") or () if arguments.get(k) is None]
+    unknown = [k for k in arguments if k not in properties]
+    if not missing and not unknown:
+        return None
+    parts = []
+    if missing:
+        plural = "s" if len(missing) > 1 else ""
+        parts.append(f"Missing required parameter{plural} for {name}: "
+                     f"{', '.join(missing)}.")
+    if unknown:
+        plural = "s" if len(unknown) > 1 else ""
+        hints = []
+        for k in unknown:
+            suggestion = _closest_property(k, properties)
+            hints.append(repr(k) + (f" (did you mean {suggestion!r}?)"
+                                    if suggestion else ""))
+        parts.append(f"Unexpected parameter{plural} for {name}: {', '.join(hints)}. "
+                     f"Valid parameters: {', '.join(sorted(properties))}.")
+    return " ".join(parts)
+
+
 # --- Field filters for list endpoints ---
 
 
@@ -1087,11 +1127,29 @@ def _compact_datapoint(node, *, include_ocr=True, verbose=False):
     return projected
 
 
-def _walk_compact_content(content_tree, *, fields=None, include_ocr=True, verbose=False):
-    """Walk a Rossum content tree and return ({field schema_id -> value}, {table schema_id -> rows})."""
+def _walk_compact_content(content_tree, *, fields=None, include_ocr=True, verbose=False,
+                          include_ids=False):
+    """Walk a Rossum content tree and return ({field schema_id -> value}, {table schema_id -> rows}).
+
+    With a *fields* filter, a table is only emitted when it matched something:
+    either the multivalue's own schema_id is in the filter (whole table, all
+    cells) or at least one cell schema_id matched — otherwise a header-only
+    filter would still emit one empty {} per row (500-row tables re-bloat the
+    compact response they exist to shrink).
+
+    *include_ids* adds each datapoint's id (and each row's tuple id as
+    "_row_id") so callers can build follow-up content operations — off by
+    default to keep rossum_get_annotation's shape unchanged.
+    """
     fields_filter = set(fields) if fields else None
     flat_fields = {}
     tables = {}
+
+    def project(node):
+        projected = _compact_datapoint(node, include_ocr=include_ocr, verbose=verbose)
+        if include_ids:
+            projected["id"] = node.get("id")
+        return projected
 
     def visit(node):
         category = node.get("category")
@@ -1104,30 +1162,36 @@ def _walk_compact_content(content_tree, *, fields=None, include_ocr=True, verbos
                 return
             if fields_filter is not None and schema_id not in fields_filter:
                 return
-            flat_fields[schema_id] = _compact_datapoint(
-                node, include_ocr=include_ocr, verbose=verbose
-            )
+            flat_fields[schema_id] = project(node)
         elif category == "multivalue":
             schema_id = node.get("schema_id")
             if not schema_id:
                 return
+            # Whole table requested by its own schema_id -> no per-cell filter.
+            cell_filter = None if (
+                fields_filter is not None and schema_id in fields_filter
+            ) else fields_filter
             rows = []
+            matched_any = cell_filter is None
             for tuple_node in node.get("children") or ():
                 if tuple_node.get("category") != "tuple":
                     continue
                 row = {}
+                if include_ids:
+                    row["_row_id"] = tuple_node.get("id")
                 for cell in tuple_node.get("children") or ():
                     if cell.get("category") != "datapoint":
                         continue
                     cell_schema = cell.get("schema_id")
                     if not cell_schema:
                         continue
-                    if fields_filter is not None and cell_schema not in fields_filter:
+                    if cell_filter is not None and cell_schema not in cell_filter:
                         continue
-                    row[cell_schema] = _compact_datapoint(
-                        cell, include_ocr=include_ocr, verbose=verbose
-                    )
+                    row[cell_schema] = project(cell)
+                    matched_any = True
                 rows.append(row)
+            if fields_filter is not None and not matched_any:
+                return
             tables[schema_id] = {"count": len(rows), "rows": rows}
 
     for top in content_tree or ():
@@ -1266,8 +1330,13 @@ def _build_annotation_compact_response(
                 "type": "string",
                 "description": (
                     "Base URL of the Rossum environment "
-                    "(e.g. https://elis.rossum.ai). Omit to prompt interactively."
+                    "(e.g. https://elis.rossum.ai). Omit to prompt interactively. "
+                    "Also accepted as base_url."
                 ),
+            },
+            "base_url": {
+                "type": "string",
+                "description": "Alias for baseUrl (snake_case).",
             },
             "connectionString": {
                 "type": "string",
@@ -1288,7 +1357,7 @@ def handle_set_token(request_id, arguments):
     token = arguments.get("token", "")
     username = arguments.get("username", "")
     password = arguments.get("password", "")
-    raw_url = arguments.get("baseUrl", "")
+    raw_url = arguments.get("baseUrl") or arguments.get("base_url") or ""
     connection_string = arguments.get("connectionString", "")
 
     # Connection string overrides token/baseUrl when provided.
@@ -2365,7 +2434,13 @@ def handle_list_audit_logs(request_id, arguments):
     "rossum_list_hook_logs",
     "Lists recent hook execution logs. Essential for debugging hook failures — shows "
     "which hooks ran, their status (succeeded/failed/skipped), timing, and error messages. "
-    "Filter by hook ID, annotation, queue, status, or time range.",
+    "Filter by hook ID, annotation, queue, status, or time range.\n"
+    "STDOUT: a hook's print() output is NOT in 'message' — 'message' is empty for a run that "
+    "succeeded, and holds only the one-line exception summary for one that failed. The printed "
+    "lines (and, on a failure, the full traceback with line numbers) live in the row's 'output' "
+    "field, which is omitted by default because it is untruncated — a hook printing in a loop "
+    "produced ~296,000 characters on a single row. Pass include_output=true to fetch it, "
+    "narrowed to one hook/annotation.",
     {
         "type": "object",
         "properties": {
@@ -2401,6 +2476,15 @@ def handle_list_audit_logs(request_id, arguments):
                 "type": "integer",
                 "description": "Maximum entries to return (default: 20, max: 200).",
             },
+            "include_output": {
+                "type": "boolean",
+                "description": (
+                    "Include each row's 'output' field — the hook's print() lines, plus the full "
+                    "traceback on a failed run. Off by default: 'output' is untruncated and can "
+                    "run to hundreds of thousands of characters per row. Narrow with hook/"
+                    "annotation and a small max_results before turning this on."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -2413,9 +2497,12 @@ def handle_list_hook_logs(request_id, arguments):
                 "timestamp_after", "timestamp_before"):
         if key in arguments:
             params.append((key, arguments[key]))
+    pick_fields = _HOOK_LOG_FIELDS
+    if arguments.get("include_output"):
+        pick_fields = _HOOK_LOG_FIELDS + ("output",)
     _rossum_list(
         request_id, "/api/v1/hooks/logs", params,
-        max_results=max_results, pick_fields=_HOOK_LOG_FIELDS,
+        max_results=max_results, pick_fields=pick_fields,
     )
 
 
@@ -3445,7 +3532,14 @@ _SECRETS_SCHEMA_DOC = (
     "declared keys to prefill '{\"<key>\": \"__change_me__\"}' instead of an empty {} (API-side, "
     "GET /hooks/{id}/secrets_keys stays [] until a human saves values). Existing hooks may carry "
     "shapes that predate this validation (e.g. $schema/required) — normalize before re-submitting "
-    "one. Secret VALUES are entered by a human in the UI — never through this tool."
+    "one. Secret VALUES are entered by a human in the UI — never through this tool. "
+    "CANNOT BE CLEARED: the API rejects null ('This field may not be null.') and {} ('type' is a "
+    "required property), so the field can never be made absent again — and Rossum auto-populates "
+    "the open map {\"type\": \"object\", \"additionalProperties\": {\"type\": \"string\"}} on every "
+    "hook create, including creates that send no secrets_schema at all. To clean up a hook that "
+    "carries the open map but reads no secrets, PATCH the closed empty schema "
+    "{\"type\": \"object\", \"additionalProperties\": false} — that is the canonical "
+    "'this hook takes no secrets' value, and it is accepted."
 )
 
 
@@ -4056,6 +4150,136 @@ def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
     return ""
 
 
+# generate_payload embeds the hook's rossum_authorization_token and its secrets, so the
+# raw payload is a credential. What a caller debugging a gate needs is the payload's
+# *shape and values* ("is annotation.queue actually in here?"), which survives redaction
+# — so the inspection paths below redact and become safe to read in-conversation.
+# rossum_generate_export_payload deliberately keeps the raw token: the local render
+# script has to replay it.
+_PAYLOAD_CREDENTIAL_KEYS = {"rossum_authorization_token", "token", "secrets"}
+
+
+def _redact_payload_credentials(value):
+    """Recursively replace credential-bearing keys with a placeholder."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key in _PAYLOAD_CREDENTIAL_KEYS and item not in (None, "", {}, []):
+                out[key] = "<redacted>"
+            else:
+                out[key] = _redact_payload_credentials(item)
+        return out
+    if isinstance(value, list):
+        return [_redact_payload_credentials(item) for item in value]
+    return value
+
+
+def _build_generate_payload_body(request_id, base_url, hook_id, arguments):
+    """Assemble the POST /hooks/{id}/generate_payload body for an event/action.
+
+    Returns the body dict, or None when the annotation could not be resolved (the
+    error result has already been sent).
+    """
+    body = {"event": arguments["event"], "action": arguments["action"]}
+    if arguments["event"] not in _ANNOTATION_HOOK_EVENTS:
+        return body
+    annotation_id = arguments.get("annotation_id")
+    if annotation_id is not None:
+        annotation_url = _resource_url(base_url, "annotations", annotation_id)
+    else:
+        annotation_url = _resolve_annotation_url_for_hook(request_id, base_url, hook_id)
+        if annotation_url is None:
+            return None
+        if not annotation_url:
+            tool_result(
+                request_id,
+                f"Event '{arguments['event']}' needs an annotation, but none were found on hook "
+                f"{hook_id}'s queues. Pass annotation_id explicitly (find one via "
+                "rossum_list_annotations) or upload a document to one of its queues first.",
+                is_error=True,
+            )
+            return None
+    body["annotation"] = annotation_url
+    body["status"] = arguments.get("status", "to_review")
+    body["previous_status"] = arguments.get("previous_status", "importing")
+    return body
+
+
+_PAYLOAD_SHAPE_DOC = (
+    "Use this to answer payload-shape questions from the platform instead of guessing or "
+    "hand-building a payload: a hand-built payload can only show that a mechanism COULD "
+    "misfire, never that it did. Notably `annotation.queue` is always present and is a URL "
+    "string (`.../api/v1/queues/<id>`), never an int — so a queue gate must parse the id out "
+    "of it. Full queue objects (name, settings) appear under a top-level `queues[]` array only "
+    "when the hook's `sideload` list requests them."
+)
+
+
+@_tool(
+    "rossum_generate_hook_payload",
+    "Generates the payload the platform would send a hook for a given event/action against a "
+    "real annotation, via POST /hooks/{id}/generate_payload — WITHOUT executing the hook. " +
+    _PAYLOAD_SHAPE_DOC + " Credentials (rossum_authorization_token, token, secrets) are "
+    "redacted, so the result is safe to read directly. Non-mutating. For the export-render "
+    "flow that needs the unredacted token, use rossum_generate_export_payload; to also execute "
+    "the hook against this payload, use rossum_test_hook.",
+    {
+        "type": "object",
+        "required": ["hook_id", "event", "action"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "The hook whose payload shape you want (settings/secrets keys come from it).",
+            },
+            "event": {
+                "type": "string",
+                "description": "Event type: 'annotation_content', 'annotation_status', 'email', 'invocation', or 'upload'.",
+            },
+            "action": {
+                "type": "string",
+                "description": (
+                    "Action for the event. Valid event.action pairs: "
+                    "annotation_content.{initialize, started, updated, user_update, confirm, export}, "
+                    "annotation_status.changed, upload.created, email.received, "
+                    "invocation.{manual, scheduled, interface}."
+                ),
+            },
+            "annotation_id": {
+                "type": "integer",
+                "description": (
+                    "Annotation to build the payload from (for annotation_content / annotation_status "
+                    "events). If omitted for those events, one is auto-resolved from the hook's queues."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "description": "Annotation status in the generated payload (annotation events; default 'to_review').",
+            },
+            "previous_status": {
+                "type": "string",
+                "description": "Previous status in the generated payload (annotation events; default 'importing').",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_generate_hook_payload(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    hook_id = arguments["hook_id"]
+    body = _build_generate_payload_body(request_id, base_url, hook_id, arguments)
+    if body is None:
+        return
+    payload = _http_request(
+        request_id, f"{base_url}/api/v1/hooks/{hook_id}/generate_payload",
+        method="POST", body=body,
+    )
+    if payload is not None:
+        tool_result(request_id, json.dumps(_redact_payload_credentials(payload), indent=2))
+
+
 @_tool(
     "rossum_test_hook",
     "Tests a single hook in isolation: auto-generates a realistic payload for the given event/action "
@@ -4065,7 +4289,10 @@ def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
     "blockers, or the error/traceback if it raised. The rule analog is the validation pipeline; for an "
     "end-to-end re-fire against a real annotation use rossum_refire_annotation instead. This executes "
     "hook code, which can have side effects (webhook hooks POST externally, function hooks call APIs via "
-    "their token_owner), so it is a write operation.",
+    "their token_owner), so it is a write operation. Returns {generated_payload, hook_result} by default: "
+    "the payload (credentials redacted) shows what the hook actually received, and hook_result's `log` is "
+    "positive proof the code ran — the one signal that separates 'the hook ran and skipped' from 'the hook "
+    "never ran'. This is the harness of record when hook-log endpoints are unavailable in a deployment.",
     {
         "type": "object",
         "required": ["hook_id", "event", "action"],
@@ -4110,6 +4337,14 @@ def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
                     "{\"code\": \"def rossum_hook_request_handler(payload):\\n    ...\"} to dry-run unsaved code."
                 ),
             },
+            "include_payload": {
+                "type": "boolean",
+                "description": (
+                    "Include the generated payload (credentials redacted) alongside the hook's result "
+                    "as {generated_payload, hook_result}. Default true — keep it on when the question is "
+                    "'what did the hook actually receive?'. Set false for the bare hook result only."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -4120,26 +4355,9 @@ def handle_test_hook(request_id, arguments):
     if not base_url:
         return
     hook_id = arguments["hook_id"]
-    gen_body = {"event": arguments["event"], "action": arguments["action"]}
-    if arguments["event"] in _ANNOTATION_HOOK_EVENTS:
-        annotation_id = arguments.get("annotation_id")
-        if annotation_id is not None:
-            annotation_url = _resource_url(base_url, "annotations", annotation_id)
-        else:
-            annotation_url = _resolve_annotation_url_for_hook(request_id, base_url, hook_id)
-            if annotation_url is None:
-                return
-            if not annotation_url:
-                return tool_result(
-                    request_id,
-                    f"Event '{arguments['event']}' needs an annotation, but none were found on hook "
-                    f"{hook_id}'s queues. Pass annotation_id explicitly (find one via "
-                    "rossum_list_annotations) or upload a document to one of its queues first.",
-                    is_error=True,
-                )
-        gen_body["annotation"] = annotation_url
-        gen_body["status"] = arguments.get("status", "to_review")
-        gen_body["previous_status"] = arguments.get("previous_status", "importing")
+    gen_body = _build_generate_payload_body(request_id, base_url, hook_id, arguments)
+    if gen_body is None:
+        return
 
     payload = _http_request(
         request_id, f"{base_url}/api/v1/hooks/{hook_id}/generate_payload",
@@ -4155,8 +4373,14 @@ def handle_test_hook(request_id, arguments):
         request_id, f"{base_url}/api/v1/hooks/{hook_id}/test",
         method="POST", body=test_body,
     )
-    if result is not None:
-        tool_result(request_id, json.dumps(result, indent=2))
+    if result is None:
+        return
+    if arguments.get("include_payload", True):
+        result = {
+            "generated_payload": _redact_payload_credentials(payload),
+            "hook_result": result,
+        }
+    tool_result(request_id, json.dumps(result, indent=2))
 
 
 @_tool(
@@ -5071,8 +5295,11 @@ def handle_patch_annotation(request_id, arguments):
     "rossum_start_annotation",
     "Starts a review session on an annotation — transitions to 'reviewing' status and "
     "locks the annotation to the calling user. Fires 'annotation_content.started' hook events. "
-    "Use as part of an inner-loop iteration; remember to call rossum_cancel_annotation "
-    "afterwards to release the lock (otherwise no other user can edit the annotation). "
+    "Only needed for operations that require an active review session: content/validate "
+    "(rossum_validate_content) and confirm (rossum_confirm_annotation) return HTTP 409 without "
+    "it. NOT needed for content edits — rossum_update_annotation_content writes directly, no "
+    "lock involved. Remember to call rossum_cancel_annotation afterwards to release the lock "
+    "(it restores the annotation's pre-start status). "
     "For the typical 'start → validate → cancel' soft re-fire, prefer rossum_refire_annotation "
     "with mode='validate' — it handles cancel-in-finally automatically.",
     {
@@ -5111,9 +5338,10 @@ def handle_start_annotation(request_id, arguments):
 
 @_tool(
     "rossum_cancel_annotation",
-    "Cancels a review session on an annotation — releases the 'reviewing' lock and returns "
-    "the annotation to 'to_review' status. Mandatory after rossum_start_annotation, even on "
-    "the error path. Tolerates HTTP 409 (already not in reviewing) silently.",
+    "Cancels a review session on an annotation — releases the 'reviewing' lock and restores "
+    "the annotation to its pre-start status (a postponed annotation returns to postponed, "
+    "not to_review). Mandatory after rossum_start_annotation, even on the error path. "
+    "Tolerates HTTP 409 (already not in reviewing) silently.",
     {
         "type": "object",
         "required": ["annotation_id"],
@@ -5286,9 +5514,11 @@ def handle_confirm_annotation(request_id, arguments):
     "Fires the hook chain against an annotation by POSTing to /content/validate with the "
     "specified actions. Returns the freshly computed datapoints projected to the same compact "
     "shape as rossum_get_annotation (value, ocr, normalized, src, score). This does NOT take "
-    "or release a reviewing lock — the annotation must already be in a valid state for "
-    "validation. For the typical iterate-on-deliverable flow, prefer rossum_refire_annotation "
-    "with mode='validate' — it wraps start/validate/cancel correctly.",
+    "or release a reviewing lock — but the endpoint REQUIRES one: the annotation must already "
+    "be in 'reviewing' (started), otherwise it returns HTTP 409 'Document is not being "
+    "annotated' (both to_review and postponed 409). For the typical iterate-on-deliverable "
+    "flow, prefer rossum_refire_annotation with mode='validate' — it wraps "
+    "start/validate/cancel correctly.",
     {
         "type": "object",
         "required": ["annotation_id"],
@@ -5342,9 +5572,22 @@ def handle_validate_content(request_id, arguments):
 @_tool(
     "rossum_update_annotation_content",
     "Writes extracted field values onto an annotation via the bulk content-operations endpoint "
-    "(POST /annotations/{id}/content/operations). Self-managing: it starts the annotation (locking "
-    "it), applies the operations, then releases the lock in a finally block — the edits persist and "
-    "the status returns to to_review. Each operation targets a DATAPOINT ID from the content tree "
+    "(POST /annotations/{id}/content/operations). No review session is needed: the endpoint "
+    "applies edits directly to annotations in to_review or postponed status and leaves the "
+    "status untouched — do NOT wrap this in rossum_start_annotation/rossum_cancel_annotation. "
+    "A 'reviewing' annotation is allowed only when the review session is the caller's own; a "
+    "foreign session is refused (the write would land under that user's live review). The tool "
+    "refuses all other statuses (the API silently accepts edits even on confirmed/exported "
+    "annotations — a footgun, not a feature); if such an edit is truly intended, move the "
+    "annotation back to to_review first via rossum_patch_annotation. The status pre-check is "
+    "best-effort, not atomic with the write. "
+    "CAVEAT: the bulk endpoint returns HTTP 200 but silently no-ops on enum-typed and "
+    "ui_configuration.type=manual fields (e.g. document_type) — read back via fields=[...] to "
+    "confirm the edit landed; for such fields use the per-datapoint endpoint instead "
+    "(PATCH /annotations/{id}/content/{datapoint_id}). "
+    "To re-evaluate the hook chain (formulas, rules, MDH) after the edit, follow up with "
+    "rossum_refire_annotation mode='validate'. "
+    "Each operation targets a DATAPOINT ID from the content tree "
     "(find them via rossum_get_annotation_content or rossum_get_annotation), NOT a schema_id. "
     "Operation shapes: replace a value — "
     "{\"op\": \"replace\", \"id\": <datapoint_id>, \"value\": {\"content\": {\"value\": \"<new>\"}}}; "
@@ -5352,14 +5595,20 @@ def handle_validate_content(request_id, arguments):
     "\"value\": [{\"schema_id\": \"<col>\", \"content\": {\"value\": \"<v>\"}}]}; "
     "remove a table row — {\"op\": \"remove\", \"id\": <row_datapoint_id>}. "
     "Section, multivalue and tuple containers cannot be replaced; only multivalue children can be "
-    "removed. This writes real data to the annotation, so it is a write operation.",
+    "removed. Returns a compact summary by default (operations applied + touched datapoints + "
+    "status/blocker, same projection as rossum_get_annotation); use fields=[schema_ids] to read "
+    "back specific fields, or view=\"verbose\" for the endpoint's full content-tree echo. "
+    "This writes real data to the annotation, so it is a write operation.",
     {
         "type": "object",
         "required": ["annotation_id", "operations"],
         "properties": {
             "annotation_id": {
                 "type": "integer",
-                "description": "The annotation to edit. Must be in a startable state (e.g. to_review).",
+                "description": (
+                    "The annotation to edit. Must be in to_review, postponed, or reviewing "
+                    "(own session only) status — the tool checks and refuses others."
+                ),
             },
             "operations": {
                 "type": "array",
@@ -5369,6 +5618,29 @@ def handle_validate_content(request_id, arguments):
                     "{\"op\": \"replace|add|remove\", \"id\": <datapoint_id>, \"value\": {...}} — see the "
                     "tool description for the per-op shape. IDs are datapoint IDs from the content tree, "
                     "not schema_ids."
+                ),
+            },
+            "view": {
+                "type": "string",
+                "enum": ["compact", "verbose"],
+                "description": (
+                    "compact (default): operations summary + the touched datapoints "
+                    "(value, ocr, normalized, src, score — same projection as "
+                    "rossum_get_annotation) + the annotation's status/blocker summary. "
+                    "verbose: echo the endpoint's full response — the entire merged "
+                    "content tree, which can be hundreds of KB."
+                ),
+            },
+            "fields": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of schema_ids: additionally project the post-update "
+                    "content to just these fields/table columns (same fields/tables shape "
+                    "as rossum_get_annotation, plus each datapoint's id and each row's "
+                    "_row_id for follow-up operations). Pass a table's own schema_id to "
+                    "get all its columns — the way to read back rows created by 'add' ops "
+                    "without the full tree. Works with both views."
                 ),
             },
         },
@@ -5382,38 +5654,185 @@ def handle_update_annotation_content(request_id, arguments):
         return
     annotation_id = arguments["annotation_id"]
     operations = arguments["operations"]
-    # start — locks the annotation for editing (returns 204 No Content)
-    start_status = _http_request(
-        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/start",
-        method="POST", parse_json=False,
-    )
-    if start_status is None or not (200 <= start_status < 300):
-        if start_status is not None:
-            tool_result(
-                request_id,
-                f"Start returned HTTP {start_status} — the annotation may not be in a startable "
-                "state (e.g. already confirmed/exported, or locked by another user).",
-                is_error=True,
-            )
+    # Status guard (best-effort pre-check — the write is not atomic with it):
+    # content/operations needs no review lock and the API silently accepts edits
+    # even on confirmed/exported annotations, so this check is the only thing
+    # standing between the caller and a write to a document that already left
+    # review.
+    guard_code, guard_ann = _http_request_status(
+        f"{base_url}/api/v1/annotations/{annotation_id}?fields=status,modifier")
+    if guard_code != 200:
+        _emit_http_error(request_id, guard_code, guard_ann)
         return
-    result = None
-    try:
-        result = _http_request(
-            request_id, f"{base_url}/api/v1/annotations/{annotation_id}/content/operations",
-            method="POST", body={"operations": operations},
+    if not isinstance(guard_ann, dict):
+        tool_result(
+            request_id,
+            f"Annotation {annotation_id} pre-check returned an unexpected body — "
+            "refusing to write blind.",
+            is_error=True,
         )
-    finally:
-        # release the review lock; tolerate 409 if no longer in reviewing
-        _http_request_silent(
-            f"{base_url}/api/v1/annotations/{annotation_id}/cancel", method="POST",
+        return
+    ann_status = guard_ann.get("status")
+    if ann_status not in ("to_review", "postponed", "reviewing"):
+        tool_result(
+            request_id,
+            f"Annotation {annotation_id} is '{ann_status}' — refusing to edit content. "
+            "The API would accept the edit even in this status, but writing to an "
+            "annotation that already left review is almost always a mistake. If it is "
+            "intentional, move it back first (rossum_patch_annotation status='to_review').",
+            is_error=True,
         )
+        return
+    if ann_status == "reviewing":
+        # A reviewing annotation is locked to whoever started the session (its
+        # 'modifier'). The raw endpoint would still accept the write, but it
+        # would mutate values under that user's live session — allow only when
+        # the session belongs to the caller.
+        holder = guard_ann.get("modifier")
+        if holder:
+            me_code, me = _http_request_status(f"{base_url}/api/v1/auth/user")
+            if me_code != 200 or not isinstance(me, dict):
+                detail = f"HTTP {me_code}" if me_code else "transport error"
+                tool_result(
+                    request_id,
+                    f"Annotation {annotation_id} is 'reviewing' and the session owner "
+                    f"could not be verified (whoami failed: {detail}) — refusing to "
+                    "write into a possibly foreign review session.",
+                    is_error=True,
+                )
+                return
+            if me.get("url") != holder:
+                tool_result(
+                    request_id,
+                    f"Annotation {annotation_id} is 'reviewing', locked to another user "
+                    f"({holder}) — writing now would change values under their live "
+                    "session. Wait for them to finish, or ask them to close the "
+                    "annotation.",
+                    is_error=True,
+                )
+                return
+    result = _http_request(
+        request_id, f"{base_url}/api/v1/annotations/{annotation_id}/content/operations",
+        method="POST", body={"operations": operations},
+    )
     if result is None:
         return
-    tool_result(request_id, json.dumps({
+    fields = arguments.get("fields")
+    content_tree = (
+        result.get("results")
+        if isinstance(result, dict) and "results" in result
+        else result
+    )
+    if not isinstance(content_tree, list):
+        content_tree = []
+
+    def fields_projection():
+        # include_ids so the read-back carries the datapoint ids (and _row_id
+        # tuple ids) needed to build follow-up replace/remove operations —
+        # without them, rows created by 'add' ops would be unreachable except
+        # through the full verbose echo.
+        flat_fields, tables = _walk_compact_content(
+            content_tree, fields=fields, include_ids=True)
+        return {"fields": flat_fields, "tables": tables}
+
+    if arguments.get("view") == "verbose":
+        # Legacy shape: echo the endpoint's full response (entire content tree).
+        out = {
+            "annotation_id": annotation_id,
+            "operations_applied": len(operations),
+            "result": result,
+        }
+        if fields:
+            out.update(fields_projection())   # don't silently drop a passed param
+        tool_result(request_id, json.dumps(out, indent=2))
+        return
+
+    # Compact (default): the operations endpoint echoes the whole merged content
+    # tree (~hundreds of KB on real annotations) — project it down to what the
+    # caller acted on, reusing the rossum_get_annotation projection helpers.
+    op_summary, removed_ids = [], []
+    op_ids = set()
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        op_summary.append({"op": op.get("op"), "id": op.get("id")})
+        if op.get("op") == "remove":
+            removed_ids.append(op.get("id"))
+        elif op.get("id") is not None:
+            op_ids.add(op.get("id"))
+
+    touched = []
+
+    def visit(node):
+        if not isinstance(node, dict):
+            return
+        if node.get("category") == "datapoint" and node.get("id") in op_ids:
+            touched.append({
+                "id": node.get("id"),
+                "schema_id": node.get("schema_id"),
+                **_compact_datapoint(node),
+            })
+        for child in node.get("children") or ():
+            visit(child)
+
+    if op_ids:  # pure remove/add batches would traverse for a guaranteed-empty result
+        for top in content_tree:
+            visit(top)
+
+    out = {
         "annotation_id": annotation_id,
         "operations_applied": len(operations),
-        "result": result,
-    }, indent=2))
+        "operations": op_summary,
+        "touched": touched,
+        "removed_ids": removed_ids,
+    }
+    if fields:
+        out.update(fields_projection())
+
+    # Best-effort post-write read for the status/blocker summary. Uses the
+    # never-raising status helper: the write already succeeded, so a failed
+    # read-back must not turn this response into an error — but the failure
+    # must be marked: a silent "blocker": null would be indistinguishable from
+    # "no blocker" and could green-light confirming a still-blocked annotation.
+    read_back_note = None
+    ann_status, annotation = _http_request_status(
+        f"{base_url}/api/v1/annotations/{annotation_id}")
+    if ann_status == 200 and isinstance(annotation, dict):
+        out["status"] = annotation.get("status")
+        out["blocker"] = None
+        blocker_url = annotation.get("automation_blocker")
+        if blocker_url:
+            b_status, b_payload = _http_request_status(blocker_url)
+            if b_status == 200:
+                out["blocker"] = _compact_blocker(b_payload)
+            else:
+                detail = f"HTTP {b_status}" if b_status else "transport error"
+                out["blocker"] = (
+                    f"read-back failed ({detail}) — blocker state unknown; "
+                    "re-check with rossum_get_annotation"
+                )
+    else:
+        detail = f"HTTP {ann_status}" if ann_status else "transport error"
+        read_back_note = (
+            f"annotation read-back failed ({detail}) — the operations were "
+            "applied, but status/blocker are unknown; re-check with "
+            "rossum_get_annotation"
+        )
+
+    out["_meta"] = {
+        "view": "compact",
+        "hint": (
+            "Operations applied. 'touched' is the compact projection of the "
+            "datapoints the operations targeted; pass fields=[schema_ids] to read "
+            "back other fields — the projection includes datapoint ids and row "
+            "_row_id values for follow-up operations (e.g. on rows created by "
+            "'add') — or view=\"verbose\" for the full content tree the endpoint "
+            "returns."
+        ),
+    }
+    if read_back_note:
+        out["_meta"]["read_back"] = read_back_note
+    tool_result(request_id, json.dumps(out, indent=2))
 
 
 @_tool(
@@ -5698,13 +6117,19 @@ def handle_import_email(request_id, arguments):
 @_tool(
     "rossum_refire_annotation",
     "Re-fire an annotation through the hook chain — the main inner-loop iteration primitive. "
-    "Three modes:\n"
+    "Four modes:\n"
     "  - 'validate' (default, fastest): start → content/validate(actions) → cancel-in-finally. "
     "Fires hooks listening on 'user_update' and 'started' actions. Returns the resulting "
     "compact annotation view (same shape as rossum_get_annotation).\n"
     "  - 'toggle': PATCH status postponed → to_review → wait → read. Fires "
     "'annotation_content.started' plus any status-listening hooks. Slower; use when soft "
     "validate is not enough.\n"
+    "  - 'reextract' (preferred for initialize hooks): PATCH status→'importing' with "
+    "rir_poll_id=null and messages=[] — the API call behind the UI's Re-extract button — then "
+    "poll past 'importing'. Fires 'annotation_content.initialize' and re-runs OCR/extraction "
+    "IN PLACE: same annotation id, no new document blob. CAVEAT: re-extraction REPLACES existing "
+    "extracted content, so never point it at a document a human has been working on — use "
+    "'reupload' when the original must stay pristine.\n"
     "  - 'reupload': fetch source PDF → upload to same queue → poll past 'importing' → "
     "auto-restore if the new annotation lands in 'deleted' (defensive: handles customer-custom "
     "dedup hooks that PATCH status:deleted on initialize. The stock Rossum Duplicate Handling "
@@ -5724,7 +6149,7 @@ def handle_import_email(request_id, arguments):
             },
             "mode": {
                 "type": "string",
-                "enum": ["validate", "toggle", "reupload"],
+                "enum": ["validate", "toggle", "reextract", "reupload"],
                 "description": "Re-fire pattern (default: 'validate').",
             },
             "actions": {
@@ -5741,7 +6166,7 @@ def handle_import_email(request_id, arguments):
             },
             "poll_timeout": {
                 "type": "integer",
-                "description": "reupload mode only — max seconds to wait for the new annotation to leave 'importing' (default 180).",
+                "description": "reextract/reupload modes — max seconds to wait for the annotation to leave 'importing' (default 180).",
             },
             "view": {
                 "type": "string",
@@ -5818,6 +6243,33 @@ def handle_refire_annotation(request_id, arguments):
                 return
         refire_meta["wait_seconds"] = wait_seconds
         time.sleep(wait_seconds)
+
+    elif mode == "reextract":
+        # The API call behind the UI's Re-extract button — undocumented in the public
+        # OpenAPI spec. Clearing rir_poll_id is what makes the platform re-run extraction
+        # rather than re-serve the previous result; messages=[] drops stale hook messages.
+        # Unlike reupload this re-imports IN PLACE, so target_aid stays the source id.
+        poll_timeout = int(arguments.get("poll_timeout", 180))
+        patch_resp = _http_request(
+            request_id, _resource_url(base_url, "annotations", annotation_id),
+            method="PATCH",
+            body={"status": "importing", "rir_poll_id": None, "messages": []},
+        )
+        if patch_resp is None:
+            return
+        settled = _poll_until(
+            lambda: _http_request(
+                request_id, _resource_url(base_url, "annotations", annotation_id)
+            ),
+            lambda a: a.get("status") not in ("importing", "created"),
+            timeout=poll_timeout,
+        )
+        if settled is None:
+            return
+        refire_meta["poll_timeout"] = poll_timeout
+        refire_meta["final_status"] = settled.get("status")
+        if settled.get("status") in ("importing", "created"):
+            refire_meta["timed_out"] = True
 
     elif mode == "reupload":
         poll_timeout = int(arguments.get("poll_timeout", 180))
@@ -6318,12 +6770,17 @@ def main():
                 name = params.get("name")
                 handler = HANDLERS.get(name)
                 if handler:
-                    global _current_tool
-                    _current_tool = name
-                    try:
-                        handler(request_id, params.get("arguments") or {})
-                    finally:
-                        _current_tool = None
+                    arguments = params.get("arguments") or {}
+                    validation_error = _validate_tool_arguments(name, arguments)
+                    if validation_error:
+                        tool_result(request_id, validation_error, is_error=True)
+                    else:
+                        global _current_tool
+                        _current_tool = name
+                        try:
+                            handler(request_id, arguments)
+                        finally:
+                            _current_tool = None
                 else:
                     tool_result(request_id, f"Unknown tool: {name}", is_error=True)
             elif method == "ping":

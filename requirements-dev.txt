@@ -7,3 +7,7 @@ ruff>=0.6
 # Needed by plugins/rossum-sa/skills/render-export-template/tests when that skill
 # is present on the branch under test.
 jinja2>=3.1
+# Needed by plugins/rossum-sa/skills/coupa-bulk-replication/tests — the bulk
+# import script (a runtime deliverable copied into the customer's working
+# directory, not part of the MCP server) depends on requests.
+requests>=2.31

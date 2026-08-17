@@ -32,6 +32,7 @@ A Claude Code plugin marketplace for Rossum.ai workflows (https://code.claude.co
 - Run locally with `pip install -r requirements-dev.txt && pytest`.
 - Repo-level guard tests live in `tests/`: `test_manifests.py` (manifests parse, every SKILL.md has frontmatter), `test_doc_sync.py` (README headline + skills table match the filesystem; plugin/server versions match), `test_runtime_contract.py` (server stays stdlib-only). Per-skill suites live under `plugins/.../skills/<name>/tests/`.
 - The doc-sync and version guards mechanize the two sync rules below — if you add/rename a skill or tool, the guard fails until README is updated in the same change.
+- Per-skill script suites follow the testing bar in `docs/testing-skill-scripts.md` — scale to blast radius, pin behavior not implementation, prune in the same PR that grows a suite past the bar.
 
 ## Rules
 

@@ -4,16 +4,21 @@
   "coupa": {
     "base_url":      "https://<customer>.coupahost.com",
     "client_id":     "<from Coupa Webhook Import hook settings>",
-    "client_secret": "<from Coupa Webhook Import hook settings>"
+    "client_secret": "<from Coupa Webhook Import hook settings>",
+    "_comment_max_requests_per_second": "self-imposed aggregate cap, split across supervised children. Coupa allows 25/s per OAuth client; keep headroom (default 20). Drop to ~15 when import webhooks are live on the same client",
+    "max_requests_per_second": 20
   },
 
   "rossum": {
     "api_url": "https://<org>.rossum.app/api/v1",
     "ds_url":  "https://<org>.rossum.app/svc/data-storage/api/v1",
-    "token":   "<bearer token; used as initial value, refreshed at runtime if --username/--password is passed>"
+    "token":   "<bearer token — mint long-lived: POST /auth/login with max_token_lifetime_s 583200 (162h platform max). Re-read from this file on DS 401 and by every supervised relaunch, so a fresh token dropped here heals running jobs. SSO users: use a password-auth integration user to mint it>"
   },
 
   "ds_batch_size": 5000,
+
+  "_comment_min_partition": "optional (default 50000): no partition ever holds fewer than this many records, however many workers are requested — the floor plan_partitions and the --probe suggestion clamp to. Field runs have seen this floor, not the Coupa API, be the binding constraint on worker count for a mid-sized dataset",
+  "min_partition": 50000,
 
   "datasets": {
     "purchase_orders": {
@@ -21,10 +26,14 @@
       "collection": "purchase_orders",
       "id_key":     "id",
       "scope":      "core.purchase_order.read",
+      "_comment_workers": "optional (default 1): supervised children crawling disjoint id ranges in parallel. Size from the --probe report; requires --supervise",
+      "workers": 4,
       "fields": [
         "id", "created_at", "updated_at", "po_number", "status",
         {"supplier": ["id", "name", "display_name", "number"]}
-      ]
+      ],
+      "_comment_extra_params": "optional: extra Coupa query params merged into EVERY call for this dataset (fetch, --probe counting, partition planning) — use for filtered slices, e.g. {\"created-at[gt_or_eq]\": \"...\"} or {\"active\": \"true\"}. Reserved (rejected): fields, order_by, dir, offset, limit, updated-at[lt_or_eq], id[lt], id[gt]",
+      "extra_params": {}
     }
   }
 }

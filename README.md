@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-17 skills · 14 reference packs · 90 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+17 skills · 14 reference packs · 91 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -181,8 +181,9 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_extract_export_template` | Pull a Custom Format Templating export template out of a hook's `export_configs` into editable text |
 | `rossum_generate_export_settings` | Turn a local Jinja2 template into the `export_configs` settings block to push back |
 | `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |
-| `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status) |
-| `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override) |
+| `rossum_generate_hook_payload` | Show the payload the platform would send a hook for any event/action, without executing it (credentials redacted) — answers "is field X actually in the payload?" instead of guessing |
+| `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status); `include_output=true` adds the hook's `print()` output and failure tracebacks, which are absent from `message` |
+| `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override). Returns the payload alongside the result, whose `log` is the proof the code ran |
 | `rossum_invoke_hook` | ⚠️ Invoke a hook for REAL with a custom payload (live execution — irreversible external side effects; not a dry-run like test) |
 | `rossum_list_rules` | List business rules (filter by queue) |
 | `rossum_get_rule` | Get full rule details (trigger_condition, actions, queues) |
@@ -202,10 +203,10 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_confirm_annotation` | ⚠️ Confirm an annotation (`POST /confirm`) — transitions to exported/exporting/confirmed and FIRES THE EXPORT |
 | `rossum_validate_content` | ✏️ Fire the hook chain via `content/validate` with specified actions |
 | `rossum_upload_document` | ✏️ Upload a local document (PDF/image/etc.) into a queue via the modern async `/uploads` API; polls task→upload→annotation and returns the new annotation id |
-| `rossum_refire_annotation` | ✏️ Inner-loop re-fire primitive (`mode=validate\|toggle\|reupload`) with try/finally cancel, dedup auto-restore, and merged compact response |
+| `rossum_refire_annotation` | ✏️ Inner-loop re-fire primitive (`mode=validate\|toggle\|reextract\|reupload`) with try/finally cancel, dedup auto-restore, and merged compact response; `reextract` re-imports in place (same annotation id) and is the preferred way to re-fire `initialize` hooks |
 | `rossum_get_task` | 👁️ Retrieve an async task object (uses `?no_redirect=true` to read status instead of following the /tasks 303 to its result) |
 | `rossum_delete_annotation` | ⚠️ Delete annotations (reversible soft-delete; optional irreversible purge with poll-to-purged) — cleanup for test/iteration loops |
-| `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); self-managing start→ops→release |
+| `rossum_update_annotation_content` | ✏️ Write field values via bulk content-operations (replace/add/remove); direct write, no review lock (best-effort status guard: refuses annotations past review and foreign reviewing sessions); compact result by default (`fields`/`view` params like `rossum_get_annotation`) |
 | `rossum_apply_labels` | ✏️ Bulk add/remove labels across annotations in one call (label definitions must already exist — created in the UI or via raw `POST /labels`; list them via `rossum_get` path `/api/v1/labels`) |
 | `rossum_get_document` | Get document metadata (filename, MIME type) |
 | `rossum_list_connectors` | List export connectors (filter by queue) |

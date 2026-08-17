@@ -375,8 +375,7 @@
     "summary": "Cancel validation",
     "tools": [
       "rossum_cancel_annotation",
-      "rossum_refire_annotation",
-      "rossum_update_annotation_content"
+      "rossum_refire_annotation"
     ]
   },
   "POST /annotations/{annotationID}/confirm": {
@@ -498,8 +497,7 @@
     "summary": "Start validation",
     "tools": [
       "rossum_refire_annotation",
-      "rossum_start_annotation",
-      "rossum_update_annotation_content"
+      "rossum_start_annotation"
     ]
   },
   "POST /annotations/{annotationID}/start_embedded": {
@@ -616,6 +614,7 @@
     "summary": "Generate hook payload",
     "tools": [
       "rossum_generate_export_payload",
+      "rossum_generate_hook_payload",
       "rossum_test_hook"
     ]
   },

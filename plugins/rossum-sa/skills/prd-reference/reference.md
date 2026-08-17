@@ -95,6 +95,24 @@ Behavior:
 - On per-directory failure, the post-push pull and the auto-commit are skipped so the working tree is left dirty for inspection
 - Otherwise, automatically does a `pull` after successful push to sync timestamps
 
+##### Deadlock: an unchanged schema that 412s forever (and `-io` is the way out)
+
+On a prd2 tree that is **entirely untracked in git**, `git status`-based change detection marks every file dirty, so a plain `push` drags objects you never touched into the plan. A schema with extracted formulas is the dangerous case, because the formula merge means the schema is written **twice in one push**: once from `schema.json`, then again after merging `formulas/*.py`. The first PATCH succeeds and bumps `modified_at`; the second still carries the pre-push timestamp and the API rejects it:
+
+```
+UPDATE schema "… (2352335)": [PATCH] …/schemas/2352335 - HTTP 412
+```
+
+That failure then suppresses the post-push pull *and* the `-c` auto-commit — which are exactly what would have resynced the timestamp — so every retry re-enters the same state. The schema line appearing **twice** in the error output is the tell.
+
+- `-f` does **not** help: it relaxes prd2's own `modified_at` comparison, but the 412 comes from the API on the second write. Each retry is another no-op write that re-bumps the timestamp feeding the next race.
+- `-y` (not `-f`) is what skips the CREATE/DELETE confirmation prompt — don't reach for `-f` for that.
+- **Fix: `prd2 push <dest> -io -c`.** Scoping the push to git-indexed files keeps unchanged objects out of the plan entirely, the directory succeeds, and the commit lands. Field-confirmed on a 90-formula schema whose local content was byte-identical to remote.
+
+  **`-io` only pushes what is in the git index, so the files you intend to push must be staged first.** This is the trap on exactly the untracked tree this section is about: nothing is staged there, so an `-io` push has an empty plan, pushes **nothing**, and reports success — and `-c` then commits the tree anyway. The edits are now committed but never pushed, and because change detection reads `git status`, later pushes see a clean tree and report "No changes to push". The edits become invisible rather than lost. If you use `-io`, confirm afterwards that the objects you meant to change actually changed **remotely** (`GET` them), not merely that the command exited 0.
+
+Before assuming a schema really differs, diff it: compare local `schema.json` `content` against `GET /schemas/{id}` `content`, and compare each `formulas/*.py` against the matching field's `formula` property. If all three agree, nothing needs pushing and the 412 is pure bookkeeping.
+
 #### Creating new objects (`_[]` placeholder)
 
 To create a brand-new object via push, name the file or folder with the `_[]` placeholder instead of `_[<id>]`:

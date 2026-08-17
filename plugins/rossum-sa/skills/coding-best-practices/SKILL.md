@@ -73,6 +73,23 @@ api_url = payload["settings"]["api_url"]
 queue_id = payload["settings"]["queue_id"]
 ```
 
+**Queue gates: `annotation["queue"]` is a URL, not an int**
+The payload always carries `annotation.queue` — it is a required field on the annotation serializer — but as `.../api/v1/queues/<id>`. Comparing it to an integer silently never matches:
+```python
+# Bad — always false, so the hook appears to do nothing at all
+if payload["annotation"]["queue"] == queue_id:
+    ...
+
+# Good — the same helper Rossum's own generic extensions use
+def get_id_from_url(url: str) -> int:
+    _, id_ = url.rsplit("/", 1)
+    return int(id_)
+
+if get_id_from_url(payload["annotation"]["queue"]) in payload["settings"]["queue_ids"]:
+    ...
+```
+A gate that never matches is externally indistinguishable from a hook that never ran — which is why the verification rule in 2.3 matters. (For the queue's `name` rather than its id, add `queues` to the hook's `sideload` and read `payload["queues"][0]`.)
+
 ---
 
 ### 2.3 — Entry Point Structure
@@ -85,6 +102,13 @@ def rossum_hook_request_handler(payload: dict) -> dict:
         return {}
     ...
 ```
+
+**Verify a gate against a real payload, never a hand-built one**
+Every early-return gate reads a payload key, so a finding of the form *"this gate skips because key X isn't in the payload"* is only credible against a payload the platform actually produced. A hand-assembled dict with X removed proves the gate **could** skip, not that it does. Get the real thing:
+```
+rossum_generate_hook_payload(hook_id=<id>, event="annotation_content", action="user_update", annotation_id=<id>)
+```
+And establish that the hook executed at all before attributing any behaviour to a gate: `rossum_test_hook` returns the hook's `log` inline, which is the one signal separating "ran and skipped" from "never ran". See the `iterate` skill for the full procedure.
 
 **Entry point wraps business logic in try-except**
 The entry point should catch unhandled exceptions and return a user-visible error message rather than crashing silently:
@@ -119,6 +143,26 @@ field_value = t.field.document_id
 ```
 
 Always return `t.hook_response()` from hooks that use TxScript (not a bare `{}`).
+
+**`sideload: ["schemas"]` must be present on the hook object — flag its absence as a defect, not a nit.**
+
+Check the hook's **JSON**, not just its code: any hook whose `.py` calls `TxScript.from_payload()`
+must carry `"sideload": ["schemas"]`. Without it every invocation fails with
+`CallFunctionException, PayloadError: Schema sideloading must be enabled!`, `retry_count + 1`
+times per annotation, and the only symptom anyone notices is that the target fields are empty.
+
+It reads as unused configuration during a tidy-up, which is exactly how it gets deleted. Treat
+removing it as a breaking change. See `txscript-reference` → *Hook object prerequisites*.
+
+```bash
+# Every function hook whose code uses TxScript but whose JSON lacks the sideload
+for py in $(find . -name "*.py" -path "*/hooks/*"); do
+  json="${py%.py}.json"
+  if grep -q "from_payload" "$py" && ! grep -q '"schemas"' "$json" 2>/dev/null; then
+    echo "MISSING sideload: $json"
+  fi
+done
+```
 
 ---
 
@@ -167,6 +211,43 @@ result = next((...), None)
 if result is None: return None
 ```
 
+**Enrichment hooks must fail open.**
+
+Classify each hook first. A hook whose job is to **add optional data** — a lookup, an enrichment,
+a nice-to-have annotation — must never be able to block the document. It owns its own failures:
+catch them, log them, return an empty result, and let the document proceed.
+
+This is the deliberate exception to *"always re-raise after logging"* above. Re-raising in an
+enrichment hook converts "we couldn't add the extra field" into "this document cannot be
+processed", which is a far worse outcome than the missing value — and it fires
+`retry_count + 1` times before it settles.
+
+```python
+# Bad — a flaky third-party lookup now blocks the document
+def rossum_hook_request_handler(payload):
+    t = TxScript.from_payload(payload)
+    t.field.vendor_rating = fetch_rating(t.field.vendor_id)   # raises -> hook fails
+    return t.hook_response()
+
+# Good — best-effort, degrades to empty
+def rossum_hook_request_handler(payload):
+    t = TxScript.from_payload(payload)
+    try:
+        t.field.vendor_rating = fetch_rating(t.field.vendor_id)
+    except (requests.RequestException, ValueError, KeyError) as e:
+        print(f"vendor rating lookup failed for {t.field.vendor_id}: {e}")
+        t.field.vendor_rating = ""
+    return t.hook_response()
+```
+
+Keep the exception list specific — fail open on the failures you predicted, not on a bug in your
+own logic. The contrast is a **validating** hook, whose entire purpose is to stop bad documents;
+there, blocking is correct, and it should block explicitly via `t.automation_blocker(...)` rather
+than by raising.
+
+Flag any enrichment hook that can propagate an exception, and any hook where you cannot tell from
+the code which of the two kinds it is.
+
 ---
 
 ### 2.6 — Code Quality
@@ -199,6 +280,21 @@ def _auth_headers(payload: dict) -> dict:
 ### 2.7 — Logging
 
 **Log at key entry points with context** — include annotation ID, status, or the value being processed.
+
+**Do not build verification or monitoring on `print()`.**
+
+Stdout *is* retrievable — it lands in the `output` field of a `GET /hooks/logs` row (note
+`message` is empty for successful runs, which is what makes prints look lost). That makes it a
+fine **debugging** tool for one known run. It is not a control:
+
+- no structured querying, no filtering by what was printed, no alerting, no retention guarantee;
+- `output` is **untruncated** — a hook printing in a loop produced ~296,000 characters on a single
+  row, which is a cost paid on every run and by everything that reads those logs;
+- nothing fails when a print stops appearing, so a monitoring scheme built on it degrades silently.
+
+Flag any hook that treats printed output as the record of whether it worked. Real outcomes belong
+somewhere queryable and assertable: a schema field, a label, `t.show_info` / `t.automation_blocker`,
+or an external system. Reserve `print()` for diagnosing a run you are actively looking at.
 
 **Never log credentials or PII.**
 
