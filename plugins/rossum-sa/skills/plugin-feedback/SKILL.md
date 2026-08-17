@@ -46,9 +46,14 @@ clipboard fallback only. Otherwise, after the SA confirms the draft, ask ONE
 question:
 
 > How do you want to send this?
-> (a) GitHub issue — public and trackable
-> (b) anonymous — a private queue the maintainers review manually
-> (c) anonymous + contact email — same queue, but we can follow up
+> (a) Public GitHub issue — anyone can see it, and you can follow progress.
+>     Needs a GitHub account.
+> (b) Private anonymous message to the plugin team — nothing public, no
+>     account needed.
+> (c) Same as (b), plus your email so the team can reply to you.
+
+Present the options in exactly these plain words — no transport mechanics
+(curl, forms, entry IDs) unless the SA asks.
 
 - **(a) GitHub** — if `gh auth status` and `gh repo view <target_repo>` succeed:
   ensure the three labels exist idempotently (skip on a permission error —

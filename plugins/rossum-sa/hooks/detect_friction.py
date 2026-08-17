@@ -183,10 +183,12 @@ def save_state(state: dict) -> None:
 def build_nudge(signal_desc: str) -> str:
     return (
         f"[rossum-sa] Friction detected this session ({signal_desc}). "
-        "Consider OFFERING once, in your next reply: \"I've hit repeated trouble "
-        "this session — want me to send anonymized feedback to the plugin authors "
-        "via /rossum-sa:plugin-feedback?\" Do NOT run the skill without an explicit "
-        "yes. If the user declines, do not offer again this session."
+        "In your next reply, OFFER once, in one plain sentence with no detector "
+        "jargon (no signal names, thresholds, or tool streaks), e.g.: \"I keep "
+        "hitting errors here — want me to send a short anonymous report to the "
+        "plugin team so they can fix it? (/rossum-sa:plugin-feedback)\" Do NOT "
+        "run the skill without an explicit yes. If the user declines, do not "
+        "offer again this session."
     )
 
 
