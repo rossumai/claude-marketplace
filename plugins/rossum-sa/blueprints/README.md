@@ -6,6 +6,11 @@ works (the grammar); a blueprint is a *drop-in* you adapt (a known-good assembly
 
 ## Layout
 
+Installed, this directory is `${CLAUDE_PLUGIN_ROOT}/blueprints/`. Read fragments through
+that variable — a repo-relative `plugins/rossum-sa/blueprints/…` path only resolves inside
+this marketplace repo, and resolves to nothing from the customer project you are normally
+`cd`'d into.
+
 ```
 blueprints/<axis>/<blueprint-name>/
   blueprint.json    # metadata contract (see below)
@@ -23,7 +28,7 @@ Axes: `capture`, `matching`, `validation`, `export`, `formula`.
 | `axis` | yes | one of the five axes |
 | `summary` | yes | one line, shown in the index |
 | `maturity` | yes | `candidate` \| `reviewed` \| `standard` (only `standard` is safe to auto-compose) |
-| `params` | yes | object: `{ "<name>": { "required": true } \| { "default": <v> }, "description": "..." }` |
+| `params` | yes | object: `{ "<name>": { "type": "string" \| "number", "required": true \| "default": <v>, "description": "..." } }`. `type` is mandatory and drives the seam: a `number` param must appear **bare** in a JSON fragment (`"$gte": «threshold»`), a `string` param **quoted** (`"«dataset»"`). Quote a number and the filled config compares a string against a numeric value — zero rows, no error. CI rejects both mismatches. |
 | `produces` | yes | array of **post-fill schema field ids** the fragment *writes* (result actions, datapoint updates, table rows it creates). Each entry is either a literal id that appears in the fragment text, or a `«param»` seam that is a declared param of this blueprint (so filling the seam resolves it to a real id). Empty is legitimate only when the fragment genuinely writes no schema field (e.g. an OAuth token cache) — non-schema outputs (files, tokens, HTTP calls) never belong here. No duplicates. |
 | `consumes` | yes | array of **post-fill schema field ids** the fragment *reads* (an input, a gate/condition, a query input, a mapping source) — same literal-or-declared-seam grounding rule as `produces`. Empty is legitimate only when the fragment genuinely reads no schema field. No duplicates. |
 | `provenance` | yes | where it was lifted from |

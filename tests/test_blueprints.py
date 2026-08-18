@@ -294,3 +294,48 @@ def test_fragment_parse_accepts_correctly_typed_seams(tmp_path):
     )
     errs = validate_blueprint(d)
     assert not errs, errs
+
+
+def _index_rows(text: str) -> set[str]:
+    """Blueprint names in the FIRST column of the index's table rows.
+
+    First column only: candidate descriptions cross-reference other blueprints by
+    name ("Composes with `export-iterate-line-items`"), and a plain substring
+    search would read those mentions as rows.
+    """
+    return set(re.findall(r"^\|\s*`([a-z0-9-]+)`\s*\|", text, re.MULTILINE))
+
+
+def _index_text() -> str:
+    """The autoloaded index — the only blueprint artifact Claude reads without
+    being asked, so drift here is drift in everything Claude believes exists."""
+    return (SKILLS / "blueprint-index" / "SKILL.md").read_text("utf-8")
+
+
+def test_index_lists_every_blueprint_and_nothing_else():
+    on_disk = {d.name for d in blueprint_dirs()}
+    listed = _index_rows(_index_text())
+    missing = sorted(on_disk - listed)
+    stale = sorted(listed - on_disk)
+    assert not missing and not stale, (
+        f"blueprint-index/SKILL.md is out of sync with the filesystem — "
+        f"missing from the index: {missing}; listed but absent on disk: {stale}"
+    )
+
+
+def test_index_candidate_section_matches_maturity():
+    """A `candidate` must be under the candidates heading (never auto-composed),
+    and a `standard` must not be — the index's section IS the safety signal."""
+    _, _, candidates = _index_text().partition("## Candidates")
+    assert candidates, "blueprint-index/SKILL.md has no '## Candidates' section"
+    candidate_rows = _index_rows(candidates)
+    errs = []
+    for d in blueprint_dirs():
+        meta = json.loads((d / "blueprint.json").read_text("utf-8"))
+        in_candidates = d.name in candidate_rows
+        if meta.get("maturity") == "candidate" and not in_candidates:
+            errs.append(f"{d.name}: maturity candidate but not under '## Candidates'")
+        if meta.get("maturity") != "candidate" and in_candidates:
+            errs.append(f"{d.name}: maturity {meta.get('maturity')!r} but listed "
+                        f"under '## Candidates'")
+    assert not errs, "\n".join(errs)

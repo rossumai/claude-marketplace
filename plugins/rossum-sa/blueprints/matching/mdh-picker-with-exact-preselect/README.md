@@ -11,7 +11,7 @@ Use this blueprint when you need to show a full dropdown pick-list to the user b
 
 ## Produces / Consumes
 
-- Produces: `selected_key`, `selected_label` — the chosen record's key and its formatted label, written to `mapping.target_schema_id` and displayed via `mapping.label_template`.
+- Produces: `selected_key` — the chosen record's key, written to `mapping.target_schema_id`. `selected_label` is deliberately *not* listed: `mapping.label_template` only formats what the picker displays, so it is no second schema write.
 - Consumes: the field value extracted from the document, injected as an MDH placeholder into the `$match` and `$unionWith` exclusion filter.
 
 ## Adapt

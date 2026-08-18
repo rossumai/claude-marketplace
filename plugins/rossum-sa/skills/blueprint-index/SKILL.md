@@ -6,14 +6,21 @@ user-invocable: false
 
 # Blueprint Index
 
-The blueprint library lives at `plugins/rossum-sa/blueprints/<axis>/<name>/` — each blueprint
-is a `blueprint.json` contract + a `fragment.*` config body (with `«param»` seams) + a
-`README.md`. Blueprints are *drop-ins* built on top of the reference packs. Only
+The blueprint library lives at `${CLAUDE_PLUGIN_ROOT}/blueprints/<axis>/<name>/` — each
+blueprint is a `blueprint.json` contract + a `fragment.*` config body (with `«param»` seams)
++ a `README.md`. Blueprints are *drop-ins* built on top of the reference packs. Only
 `standard`-maturity blueprints are safe to compose automatically.
+
+**Always read fragments through `${CLAUDE_PLUGIN_ROOT}`, never a repo-relative path.** You
+are normally `cd`'d into a customer's prd2 project, not this marketplace repo, so
+`plugins/rossum-sa/blueprints/…` resolves to nothing there: you would see the index below,
+fail to read any fragment, and improvise from a one-line summary. `${CLAUDE_PLUGIN_ROOT}`
+points at the installed plugin wherever it lives.
 
 To use a blueprint: read its `blueprint.json` for `params`/`produces`/`consumes`, copy the
 fragment, fill the `«param»` seams, and confirm its `consumes` fields exist in the
-schema. See `blueprints/README.md` for the full contract.
+schema. See `${CLAUDE_PLUGIN_ROOT}/blueprints/README.md` for the full contract — including
+what `produces`/`consumes` mean (post-fill schema field ids) and the `type` a param declares.
 
 ## Capture (`blueprints/capture/`)
 
