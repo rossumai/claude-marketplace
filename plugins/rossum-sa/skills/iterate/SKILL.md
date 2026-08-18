@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, in-place re-extract, re-upload, and export re-fire (status → exporting) — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", "re-test the export", "export this document again", or when the user invokes a goal-style prompt.
+description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, in-place re-extract, re-upload, and export re-fire (status → exporting) — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", "re-test the export", "export this document again", or when the user invokes a goal-style prompt. Also use when a formula, schema or rule change must be re-evaluated on a document that already exists — "trigger the recalc", "recompute the formulas", "refresh this document", "the field still shows the old value after my push", "re-run matching on this annotation".
 argument-hint: [annotation-id-or-url] [--goal=<short description>] [--env=<name>] [--max-iterations=<N>]
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 ---
@@ -132,7 +132,11 @@ What it does, atomically:
 > **All three calls return 200/204 and bump `modified_at` whether or not any hook ran.** A clean status transition is not evidence of execution — see [Prove the hook ran](#prove-the-hook-ran--before-you-interpret-the-result) before you read anything into the result.
 
 **Action selection.**
-- `["user_update"]` — fastest. Use when iterating on a rule or formula that recomputes on field edits.
+- `["user_update"]` — fastest, but ONLY when you are also editing a datapoint. `user_update`
+  fires off the back of *changed* datapoints, so on a pure recalc (no edit) it emits nothing
+  and you get zero hook runs — a silent no-op that reads as "my fix didn't work".
+- Recalc with no edit → you MUST include `"started"`. Measured: all 9 content events fired
+  as `annotation_content.started`.
 - `["started"]` — use when the hook listens on `annotation_content.started` (lazy lookups, one-time info messages).
 - `["user_update", "started"]` — default; use both when uncertain or when iterating on a chain mixing patterns.
 
@@ -143,6 +147,34 @@ What it does, atomically:
 - `recent_hooks` — last N hook log entries with `took_ms`.
 - `_refire` — `{mode, source_annotation_id, target_annotation_id?, actions, ...}`.
 - `_meta.full_payload_cache` — path to the raw JSON if you need positions, OCR coords, raw RIR text, etc.
+
+### Forcing a formula recalc after a schema push ⭐ common
+
+A formula/schema `prd2 push` does **not** touch documents that already exist — they keep their
+old computed values until something re-runs the content pipeline. To re-evaluate one:
+
+    rossum_refire_annotation(annotation_id=<id>, mode="validate",
+                             actions=["user_update", "started"])
+
+**`actions` must include `started`.** A pure recalc changes no datapoint, so `user_update`
+emits nothing on its own.
+
+**`POST /content/validate` is what does the work.** Measured on annotation 22429840
+(2026-08-18), across the four calls a soft re-fire makes:
+
+| call | events fired | recomputes? |
+|---|---|---|
+| `PATCH {"status":"to_review"}` | `annotation_status.changed` ×6, all self-skipped | **no** |
+| `POST /start` | `annotation_status.changed` ×6, all self-skipped | **no** |
+| `POST /content/validate` | **`annotation_content.started` ×9** — full extension chain | **yes** — 263 datapoints |
+| `POST /cancel` | `annotation_status.changed` ×6, all self-skipped | **no** |
+
+A status toggle alone is therefore the wrong lever — `annotation_status.changed` is not a
+recompute trigger. Do not reach for `mode="toggle"` for formulas.
+
+**Proof to demand before believing it worked:** `_refire.updated_datapoints_count > 0`, plus a
+fresh `annotation_content.*` hook-log entry timestamped after the call. Then read the target
+field back and assert the new value. A 200 is not a result.
 
 ### Status toggle
 
@@ -265,6 +297,23 @@ Look for:
 - **Engine re-extraction is not triggered by status toggle.** Only the hook chain re-runs. If your change touches OCR or extraction itself, use `mode="reupload"` — toggle will not produce different captured values.
 - **Hook outputs are unstable on re-open.** If you open the annotation in the Rossum UI between re-fires, that itself fires `annotation_content.started` again and may overwrite your last-seen state. Capture immediately after each re-fire.
 - **`.rossum-cache/` should be gitignored.** The MCP server writes the raw merged payload there on every `rossum_get_annotation` / `rossum_refire_annotation` call. Add `.rossum-cache/` to the project's `.gitignore` when you start using `iterate`.
+- **`failed_export` (and `exported`/`deleted`) cannot be re-fired — `/start` 409s.**
+  `POST /start` returns `HTTP 409 conflict_status: "Assignment is allowed only for documents in
+  states: to_review, reviewing, postponed, confirmed"`. A failed-export document therefore needs
+  `PATCH {"status":"to_review"}` first. **Flag the consequence before doing it:** `cancel`
+  restores the *pre-start* status, which is now `to_review` — the document leaves the
+  failed-export bucket **permanently** and does not return to it. AP teams may track rejected
+  exports by that bucket, so this needs its own consent, separate from consent for the re-fire.
+- **`annotation_status.changed` is not a recompute trigger.** Hooks on that event typically gate
+  themselves to confirmed/exported statuses and log a skip. A status PATCH bumps `modified_at`
+  and changes nothing computed.
+- **Correction — content hooks CAN be re-fired via the API.** Older notes claim `/start`,
+  `/cancel` and `/validate` "all succeed and bump `modified_at` but emit no
+  `annotation_content.*` event". Disproved on annotation 22429840: `POST
+  /annotations/{id}/content/validate` with an explicit `actions` list emitted 9 of them and
+  re-ran the whole chain. The reconciliation is almost certainly that the endpoint emitting
+  nothing is the *different* `POST /annotations/{id}/validate`. Do not skip a recalc on the
+  strength of the old claim.
 
 ## When to stop and hand off
 
