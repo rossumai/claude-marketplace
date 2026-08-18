@@ -111,3 +111,49 @@ Base URL: https://elis.rossum.ai
 `/rossum-sa:init-claude-md` writes a project-specific `CLAUDE.md` from a local inspection of a pulled prd2 project. The auto-generated portion is bracketed by `<!-- BEGIN/END rossum-sa:init-claude-md auto-generated -->` markers — re-running the skill refreshes only that block.
 
 If you add fields to `inspect.py`, also update the placeholder list and the rendering step in `SKILL.md` and the `template.md` file. Inspector schema must stay in sync with what the skill expects.
+
+## Re-pin the feedback form
+
+The anonymous rung of `plugin-feedback` POSTs to a team-owned Google Form whose
+public identifiers are pinned in
+`plugins/rossum-sa/skills/plugin-feedback/feedback-config.json`
+(`form_url`, `form_view_url`, `form_fields`). Editing the form can change its
+`entry.<digits>` IDs, silently dropping fields from submissions.
+
+After ANY edit to the form:
+
+1. Open the form's `viewform` URL in a browser, view page source, and search for
+   each question's entry ID (they appear as bare integers inside
+   `FB_PUBLIC_LOAD_DATA_`), or submit a test response and read the prefilled-link
+   IDs via the form editor's "Get pre-filled link". Strip any `?usp=…` query
+   suffix from the copied viewform link — the guards require the bare
+   `…/viewform` URL.
+2. Update `form_fields` in `feedback-config.json` — keys are `route`, `payload`,
+   and `contact_email`, values are `entry.<digits>`.
+3. Run `python3 scripts/check_form_fields.py` — exit 0 with no `MISSING` lines.
+4. Run `python3 -m pytest tests/test_plugin_feedback_skill.py tests/test_issue_templates.py -q`
+   (shape + contact-link guards).
+5. Send one live test submission via the skill's option (b) and confirm the row
+   lands in the response Sheet, then delete the test row.
+
+## Live-test the friction detector
+
+Run a session with the worktree/branch plugin sideloaded (the local copy takes
+precedence over the marketplace-installed one):
+
+    claude --plugin-dir ./plugins/rossum-sa
+
+Arm the detector with three failing calls of the SAME tool — e.g. "read
+/tmp/nope-1, then /tmp/nope-2, then /tmp/nope-3" (the streak is per-tool, not
+per-file). Two traps, both by design:
+
+1. **Any successful call of the armed tool resets its streak** — after arming,
+   verify state with a DIFFERENT tool (e.g. Bash `cat` of the state file), or
+   the check itself disarms the trigger.
+2. **The offer fires once per session** (`offered: true` latch). To re-test,
+   start a fresh session — new session id, fresh state.
+
+State lives at `~/.cache/rossum-sa/friction/<session_id>.json` (honors
+`$XDG_CACHE_HOME`). The nudge arrives on the next `UserPromptSubmit` or at
+`Stop`. Watch hooks fire with `claude --debug`; reload edits with
+`/reload-plugins`.

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Anonymous feedback (no GitHub account)
+    url: https://docs.google.com/forms/d/e/1FAIpQLSd_axYB3UhCoaO7XSIIC1auTQGQ8_Fxn2RqSbXRhiTCJ75Pog/viewform
+    about: Send sanitized plugin feedback to the maintainers without a GitHub account.

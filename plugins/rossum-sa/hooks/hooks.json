@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      { "hooks": [ { "type": "command",
+        "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
+        "timeout": 5 } ] }
+    ],
+    "PostToolUseFailure": [
+      { "hooks": [ { "type": "command",
+        "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
+        "timeout": 5 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command",
+        "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
+        "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command",
+        "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
+        "timeout": 5 } ] }
+    ]
+  }
+}

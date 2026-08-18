@@ -1,0 +1,41 @@
+name: Knowledge gap
+description: A Rossum fact or behavior the plugin got wrong or didn't know
+labels: ["knowledge-gap"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Metadata only — no raw payloads, field values, document content,
+        annotation/org IDs, emails, or file contents.
+  - type: input
+    id: reference_pack
+    attributes:
+      label: Reference pack
+      placeholder: mdh-reference
+    validations:
+      required: true
+  - type: input
+    id: section
+    attributes:
+      label: Section
+  - type: input
+    id: expected
+    attributes:
+      label: What is actually true (one line, no raw values)
+    validations:
+      required: true
+  - type: input
+    id: got
+    attributes:
+      label: What the plugin said (one line, no raw values)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Anything else?
+      description: Free text — scrub anything resembling customer data.
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version

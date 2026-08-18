@@ -1,0 +1,39 @@
+name: Tool request
+description: A Rossum capability the plugin's tools could not do cleanly
+labels: ["tool-request"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Metadata only — no raw payloads, field values, document content,
+        annotation/org IDs, emails, or file contents.
+  - type: input
+    id: method
+    attributes:
+      label: HTTP method
+      placeholder: GET
+    validations:
+      required: true
+  - type: input
+    id: endpoint
+    attributes:
+      label: Endpoint (path template only)
+      placeholder: /annotations/{id}
+    validations:
+      required: true
+  - type: input
+    id: tool_name
+    attributes:
+      label: Closest existing tool, if any
+      placeholder: rossum_get
+  - type: textarea
+    id: description
+    attributes:
+      label: What were you trying to do?
+      description: Free text — scrub anything resembling customer data.
+    validations:
+      required: true
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
