@@ -1,6 +1,6 @@
 # mdh-lookup-join-then-match
 
-Use this blueprint when the record you need to match lives in a sub-collection that must be joined to a parent entity before the child match can be evaluated. A typical use case is delivery address resolution: first locate the supplier by exact ID in the parent collection, then `$lookup`-join to the delivery addresses sub-collection and match the specific address code within that supplier's locations. This two-level hierarchy cannot be collapsed into a single `$match` because the child records exist in a separate collection linked by a foreign key.
+Use this part when the record you need to match lives in a sub-collection that must be joined to a parent entity before the child match can be evaluated. A typical use case is delivery address resolution: first locate the supplier by exact ID in the parent collection, then `$lookup`-join to the delivery addresses sub-collection and match the specific address code within that supplier's locations. This two-level hierarchy cannot be collapsed into a single `$match` because the child records exist in a separate collection linked by a foreign key.
 
 ## Params
 

@@ -1,6 +1,6 @@
 # export-oauth-token-cache
 
-Use this blueprint when an external API requires an OAuth 2.0 client_credentials bearer token and you want the token automatically cached across hook executions and refreshed whenever the API returns a 401. Rather than re-fetching a token on every invocation, the Request Processor stores the token in hook secrets and reuses it until it expires or is rejected.
+Use this part when an external API requires an OAuth 2.0 client_credentials bearer token and you want the token automatically cached across hook executions and refreshed whenever the API returns a 401. Rather than re-fetching a token on every invocation, the Request Processor stores the token in hook secrets and reuses it until it expires or is rejected.
 
 ## Params
 

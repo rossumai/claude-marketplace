@@ -1,6 +1,6 @@
 # export-evaluate-guard
 
-Use this blueprint to add a pre-call guard at the front of any Request Processor stage. The guard checks two things: that a named schema field is non-empty (preventing API calls with incomplete data) and that a prior stage returned a success status code (preventing cascading failures when an upstream call failed). Any failed condition causes the entire stage to be skipped.
+Use this part to add a pre-call guard at the front of any Request Processor stage. The guard checks two things: that a named schema field is non-empty (preventing API calls with incomplete data) and that a prior stage returned a success status code (preventing cascading failures when an upstream call failed). Any failed condition causes the entire stage to be skipped.
 
 ## Params
 

@@ -1,6 +1,6 @@
 # mdh-exact-to-fuzzy-cascade
 
-Use this blueprint when you need to match an entity (typically a vendor or supplier) by a strong exact identifier first and fall back to fuzzy name search only when the exact key is absent or yields no result. The cascade runs two queries in order: an exact `$match` on the ID field (e.g. VAT number, tax ID) and, if that returns nothing, an Atlas Search phrase query on the name field gated by a raw score threshold. This pattern maximises precision on the first query while still recovering partial data via the fuzzy fallback.
+Use this part when you need to match an entity (typically a vendor or supplier) by a strong exact identifier first and fall back to fuzzy name search only when the exact key is absent or yields no result. The cascade runs two queries in order: an exact `$match` on the ID field (e.g. VAT number, tax ID) and, if that returns nothing, an Atlas Search phrase query on the name field gated by a raw score threshold. This pattern maximises precision on the first query while still recovering partial data via the fuzzy fallback.
 
 ## Params
 

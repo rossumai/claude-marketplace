@@ -1,6 +1,6 @@
 # export-create-upload-submit
 
-Use this blueprint when an external API requires a three-step sequence: first create a resource (returning an id), then upload the source document against that id, and finally submit the resource for approval or processing. Each step is gated on the prior step succeeding, so a failed create stops the pipeline before any upload is attempted.
+Use this part when an external API requires a three-step sequence: first create a resource (returning an id), then upload the source document against that id, and finally submit the resource for approval or processing. Each step is gated on the prior step succeeding, so a failed create stops the pipeline before any upload is attempted.
 
 ## Params
 

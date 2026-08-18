@@ -293,7 +293,7 @@ When fuzzy matching by name or address, raw `searchScore` can vary widely. Use l
 - The `__normalized_score` applies a sigmoid-like normalization to bound values between 0 and 1.
 - Threshold `0.8` is typical for name-only matching; use `0.9` when combining name + address.
 
-→ Drop-in blueprint: `mdh-fuzzy-score-normalization` (${CLAUDE_PLUGIN_ROOT}/blueprints/matching/).
+→ Drop-in part: `mdh-fuzzy-score-normalization` (${CLAUDE_PLUGIN_ROOT}/parts/matching/).
 
 ---
 
@@ -401,7 +401,7 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 - VAT exact match gives highest precision with lowest false positives.
 - Name fallback is fuzzy and score-filtered, reducing weak matches.
 
-→ Drop-in blueprint: `mdh-exact-to-fuzzy-cascade` (${CLAUDE_PLUGIN_ROOT}/blueprints/matching/).
+→ Drop-in part: `mdh-exact-to-fuzzy-cascade` (${CLAUDE_PLUGIN_ROOT}/parts/matching/).
 
 ### Example 2: PO Match — Exact Reference + Fuzzy Fallback
 
@@ -476,7 +476,7 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 }
 ```
 
-→ Drop-in blueprint: `mdh-compound-must-should-search` (${CLAUDE_PLUGIN_ROOT}/blueprints/matching/).
+→ Drop-in part: `mdh-compound-must-should-search` (${CLAUDE_PLUGIN_ROOT}/parts/matching/).
 
 ### Example 3: Lookup-Based Delivery Address Resolution
 
@@ -524,7 +524,7 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 }
 ```
 
-→ Drop-in blueprint: `mdh-lookup-join-then-match` (${CLAUDE_PLUGIN_ROOT}/blueprints/matching/).
+→ Drop-in part: `mdh-lookup-join-then-match` (${CLAUDE_PLUGIN_ROOT}/parts/matching/).
 
 ### Example 4: Advanced Supplier Matching — Multi-Stage with Score Normalization
 
@@ -920,7 +920,7 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 
 **Key technique:** The double `$setWindowFields` + `$cond` logic removes the "Please select" placeholder only when an exact match exists. Combined with `multiple_matches_found: best_match`, the exact match auto-selects when found; otherwise the empty placeholder is selected, forcing user choice.
 
-→ Drop-in blueprint: `mdh-picker-with-exact-preselect` (${CLAUDE_PLUGIN_ROOT}/blueprints/matching/).
+→ Drop-in part: `mdh-picker-with-exact-preselect` (${CLAUDE_PLUGIN_ROOT}/parts/matching/).
 
 ---
 

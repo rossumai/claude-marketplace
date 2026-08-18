@@ -14,9 +14,9 @@ addopts = "-q"
 [tool.ruff]
 target-version = "py312"
 # Fixtures contain intentionally-incomplete hook snippets; don't lint them.
-# Blueprint fragments are «param»-templated drop-ins, not runnable source — the
+# Part fragments are «param»-templated drop-ins, not runnable source — the
 # guillemet seams are deliberately invalid Python, so exclude them from ruff too.
-extend-exclude = ["**/tests/fixtures/**", "**/blueprints/**"]
+extend-exclude = ["**/tests/fixtures/**", "**/parts/**"]
 
 [tool.ruff.lint]
 # Conservative gate: real errors only — syntax (E9), invalid comparisons (F63),

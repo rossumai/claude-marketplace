@@ -1,4 +1,4 @@
-"""Guard: every blueprint under plugins/rossum-sa/blueprints/ is well-formed.
+"""Guard: every part under plugins/rossum-sa/parts/ is well-formed.
 
 Stdlib-only (json + pathlib + re), consistent with the other repo guards.
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-BLUEPRINTS = ROOT / "plugins" / "rossum-sa" / "blueprints"
+PARTS = ROOT / "plugins" / "rossum-sa" / "parts"
 SKILLS = ROOT / "plugins" / "rossum-sa" / "skills"
 AXES = {"capture", "matching", "validation", "export", "formula"}
 MATURITIES = {"candidate", "reviewed", "standard"}
@@ -24,7 +24,7 @@ _PLACEHOLDER = re.compile(r"«([^»]+)»")
 
 def _fragment_parse_errors(name: str, f: Path, params: dict) -> list[str]:
     """A fragment must parse once its «param» seams are filled. The seams are
-    deliberately invalid source (which is why blueprints/ is excluded from ruff),
+    deliberately invalid source (which is why parts/ is excluded from ruff),
     so this is where a fragment's actual syntax gets checked — not the linter.
 
     Fill is type-aware for JSON fragments, keyed off each param's declared
@@ -78,7 +78,7 @@ def _fragment_parse_errors(name: str, f: Path, params: dict) -> list[str]:
                     return m.group(0)
                 return "x"
             # Not a declared param, or missing/bogus type — reported separately
-            # by validate_blueprint's own checks. Best-effort fill so this
+            # by validate_part's own checks. Best-effort fill so this
             # function never crashes on an already-broken contract.
             return "x" if quoted else "null"
 
@@ -96,10 +96,10 @@ def _io_grounding_errors(
     name: str, meta: dict, fragment_text: str, declared_params: set[str]
 ) -> list[str]:
     """`produces`/`consumes` must be post-fill schema field ids, grounded in the
-    fragment — the contract stated in blueprints/README.md.
+    fragment — the contract stated in parts/README.md.
 
     Without this the field is decoration: it drifts from the config it claims to
-    describe, and nothing can compute "A feeds B" because one blueprint's
+    describe, and nothing can compute "A feeds B" because one part's
     `produces` never string-matches another's `consumes`. Each entry is either a
     literal id the fragment actually mentions, or a `«seam»` that is a declared
     param (so filling resolves it to a real id). Duplicates and blanks are bugs.
@@ -123,7 +123,7 @@ def _io_grounding_errors(
                     if seam not in declared_params:
                         errs.append(
                             f"{name}: {fld} entry «{seam}» is not a declared param, "
-                            f"so filling the blueprint never resolves it to a real id"
+                            f"so filling the part never resolves it to a real id"
                         )
             elif entry not in fragment_text:
                 errs.append(
@@ -134,13 +134,13 @@ def _io_grounding_errors(
     return errs
 
 
-def blueprint_dirs() -> list[Path]:
-    return sorted(p.parent for p in BLUEPRINTS.glob("*/*/blueprint.json"))
+def part_dirs() -> list[Path]:
+    return sorted(p.parent for p in PARTS.glob("*/*/part.json"))
 
 
-def validate_blueprint(d: Path) -> list[str]:
+def validate_part(d: Path) -> list[str]:
     errs: list[str] = []
-    meta_path = d / "blueprint.json"
+    meta_path = d / "part.json"
     try:
         meta = json.loads(meta_path.read_text("utf-8"))
     except json.JSONDecodeError as e:
@@ -201,37 +201,57 @@ def validate_blueprint(d: Path) -> list[str]:
     return errs
 
 
-@pytest.mark.parametrize("d", blueprint_dirs(), ids=lambda p: p.name)
-def test_blueprint_is_wellformed(d):
-    errs = validate_blueprint(d)
+@pytest.mark.parametrize("d", part_dirs(), ids=lambda p: p.name)
+def test_part_is_wellformed(d):
+    errs = validate_part(d)
     assert not errs, "\n".join(errs)
 
 
-def test_blueprint_names_unique():
-    names = [p.name for p in blueprint_dirs()]
+def test_part_names_unique():
+    names = [p.name for p in part_dirs()]
     dupes = {n for n in names if names.count(n) > 1}
-    assert not dupes, f"duplicate blueprint names: {dupes}"
+    assert not dupes, f"duplicate part names: {dupes}"
+
+
+def test_category_qualified_reference_resolves_and_is_unique():
+    """The recipe layer will reference a part category-qualified — `<axis>/<name>`
+    — never by bare name, so resolving a reference is a direct path join with no
+    glob and no ambiguity. This guard proves that form actually holds: every
+    part's `f"{axis}/{name}"` must resolve straight to `parts/<axis>/<name>/part.json`,
+    and no two parts may collide on the same qualified reference."""
+    errs: list[str] = []
+    seen: dict[str, Path] = {}
+    for d in part_dirs():
+        axis, name = d.parent.name, d.name
+        ref = f"{axis}/{name}"
+        if not (PARTS / axis / name / "part.json").is_file():
+            errs.append(f"{ref}: does not resolve to {PARTS / axis / name / 'part.json'}")
+        if ref in seen:
+            errs.append(f"{ref}: category-qualified reference collides with {seen[ref]}")
+        else:
+            seen[ref] = d
+    assert not errs, "\n".join(errs)
 
 
 def test_fragment_parse_catches_broken_python(tmp_path):
     """Regression: the fill-then-parse check must reject a syntactically broken
-    .py fragment (the safety ruff used to give us before blueprints/ was excluded)."""
+    .py fragment (the safety ruff used to give us before parts/ was excluded)."""
     d = tmp_path / "matching" / "broken-bp"
     d.mkdir(parents=True)
-    (d / "blueprint.json").write_text(json.dumps({
+    (d / "part.json").write_text(json.dumps({
         "name": "broken-bp", "axis": "matching", "summary": "x",
         "maturity": "candidate", "params": {}, "produces": [], "consumes": [],
         "provenance": "x", "reference": "mdh-reference",
     }), "utf-8")
     (d / "README.md").write_text("x", "utf-8")
     (d / "fragment.py").write_text("def f(:\n    pass\n", "utf-8")  # deliberate syntax error
-    errs = validate_blueprint(d)
+    errs = validate_part(d)
     assert any("not valid Python" in e for e in errs), errs
 
 
 def _write_bp(d: Path, params: dict, fragment_json: str) -> None:
     d.mkdir(parents=True)
-    (d / "blueprint.json").write_text(json.dumps({
+    (d / "part.json").write_text(json.dumps({
         "name": d.name, "axis": "matching", "summary": "x",
         "maturity": "candidate", "params": params, "produces": [], "consumes": [],
         "provenance": "x", "reference": "mdh-reference",
@@ -250,7 +270,7 @@ def test_fragment_parse_catches_quoted_numeric_seam(tmp_path):
         params={"threshold": {"default": 0.8, "type": "number", "description": "x"}},
         fragment_json='{"$match": {"__score": {"$gte": "«threshold»"}}}',
     )
-    errs = validate_blueprint(d)
+    errs = validate_part(d)
     assert any("declared number" in e and "quotes the seam" in e for e in errs), errs
 
 
@@ -263,7 +283,7 @@ def test_fragment_parse_catches_missing_type(tmp_path):
         params={"dataset": {"required": True, "description": "x"}},
         fragment_json='{"source": {"dataset": "«dataset»"}}',
     )
-    errs = validate_blueprint(d)
+    errs = validate_part(d)
     assert any("missing required key 'type'" in e for e in errs), errs
 
 
@@ -275,7 +295,7 @@ def test_fragment_parse_catches_bogus_type(tmp_path):
         params={"dataset": {"required": True, "type": "collection", "description": "x"}},
         fragment_json='{"source": {"dataset": "«dataset»"}}',
     )
-    errs = validate_blueprint(d)
+    errs = validate_part(d)
     assert any("invalid type" in e for e in errs), errs
 
 
@@ -292,14 +312,14 @@ def test_fragment_parse_accepts_correctly_typed_seams(tmp_path):
         fragment_json='{"source": {"dataset": "«dataset»"}, '
                       '"filter": {"$gte": «threshold»}}',
     )
-    errs = validate_blueprint(d)
+    errs = validate_part(d)
     assert not errs, errs
 
 
 def _index_rows(text: str) -> set[str]:
-    """Blueprint names in the FIRST column of the index's table rows.
+    """Part names in the FIRST column of the index's table rows.
 
-    First column only: candidate descriptions cross-reference other blueprints by
+    First column only: candidate descriptions cross-reference other parts by
     name ("Composes with `export-iterate-line-items`"), and a plain substring
     search would read those mentions as rows.
     """
@@ -307,18 +327,18 @@ def _index_rows(text: str) -> set[str]:
 
 
 def _index_text() -> str:
-    """The autoloaded index — the only blueprint artifact Claude reads without
+    """The autoloaded index — the only part artifact Claude reads without
     being asked, so drift here is drift in everything Claude believes exists."""
-    return (SKILLS / "blueprint-index" / "SKILL.md").read_text("utf-8")
+    return (SKILLS / "parts-index" / "SKILL.md").read_text("utf-8")
 
 
-def test_index_lists_every_blueprint_and_nothing_else():
-    on_disk = {d.name for d in blueprint_dirs()}
+def test_index_lists_every_part_and_nothing_else():
+    on_disk = {d.name for d in part_dirs()}
     listed = _index_rows(_index_text())
     missing = sorted(on_disk - listed)
     stale = sorted(listed - on_disk)
     assert not missing and not stale, (
-        f"blueprint-index/SKILL.md is out of sync with the filesystem — "
+        f"parts-index/SKILL.md is out of sync with the filesystem — "
         f"missing from the index: {missing}; listed but absent on disk: {stale}"
     )
 
@@ -327,11 +347,11 @@ def test_index_candidate_section_matches_maturity():
     """A `candidate` must be under the candidates heading (never auto-composed),
     and a `standard` must not be — the index's section IS the safety signal."""
     _, _, candidates = _index_text().partition("## Candidates")
-    assert candidates, "blueprint-index/SKILL.md has no '## Candidates' section"
+    assert candidates, "parts-index/SKILL.md has no '## Candidates' section"
     candidate_rows = _index_rows(candidates)
     errs = []
-    for d in blueprint_dirs():
-        meta = json.loads((d / "blueprint.json").read_text("utf-8"))
+    for d in part_dirs():
+        meta = json.loads((d / "part.json").read_text("utf-8"))
         in_candidates = d.name in candidate_rows
         if meta.get("maturity") == "candidate" and not in_candidates:
             errs.append(f"{d.name}: maturity candidate but not under '## Candidates'")

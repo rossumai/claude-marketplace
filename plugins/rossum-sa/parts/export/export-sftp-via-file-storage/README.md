@@ -1,6 +1,6 @@
 # export-sftp-via-file-storage
 
-Use this blueprint when you need to push an exported file to an SFTP server but want to avoid embedding SFTP credentials in the hook code or managing SSH keys directly. The Request Processor delegates to Rossum's `file-storage-export` service, which handles the SFTP connection, credential rotation, and file transfer — the hook only passes configuration and the base64-encoded payload.
+Use this part when you need to push an exported file to an SFTP server but want to avoid embedding SFTP credentials in the hook code or managing SSH keys directly. The Request Processor delegates to Rossum's `file-storage-export` service, which handles the SFTP connection, credential rotation, and file transfer — the hook only passes configuration and the base64-encoded payload.
 
 ## Params
 
