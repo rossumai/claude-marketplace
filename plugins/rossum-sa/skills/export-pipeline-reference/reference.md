@@ -386,6 +386,8 @@ unresolved placeholder — only the whole-string form produces `None`.
 ]
 ```
 
+→ Drop-in part: `export-evaluate-guard` (${CLAUDE_PLUGIN_ROOT}/parts/export/).
+
 ---
 
 ## Get Content Phase
@@ -888,6 +890,8 @@ on the first refresh):
 }
 ```
 
+→ Drop-in part: `export-oauth-token-cache` (${CLAUDE_PLUGIN_ROOT}/parts/export/).
+
 ---
 
 ## Response Handlers
@@ -1255,6 +1259,8 @@ the first one bites hardest:
   that field downstream must tolerate both shapes. Use `target_key: "..._{sequence}"` instead when you
   need a stable shape.
 
+→ Drop-in part: `export-iterate-line-items` (${CLAUDE_PLUGIN_ROOT}/parts/export/).
+
 ### Iteration Over Document Relations
 
 Upload each related document:
@@ -1448,6 +1454,8 @@ un-attempted, so keep `get_content` queries simple and validate them before rely
 }
 ```
 
+→ Drop-in part: `export-create-upload-submit` (${CLAUDE_PLUGIN_ROOT}/parts/export/).
+
 ### Pattern: Fetch Related Data and Validate
 
 ```json
@@ -1636,6 +1644,8 @@ Export files to SFTP using Rossum's `file-storage-export` service:
 - **Credentials**: `host`, `port`, `username`, `type` ("sftp"), and `sftp_version` in the `credentials` object
 - **Export rule**: `path_to_directory` sets the target path, `filename_collision.replace` controls overwrite behavior
 - **Filename**: custom filename template (without extension — extension comes from the document)
+
+→ Drop-in part: `export-sftp-via-file-storage` (${CLAUDE_PLUGIN_ROOT}/parts/export/).
 
 ---
 

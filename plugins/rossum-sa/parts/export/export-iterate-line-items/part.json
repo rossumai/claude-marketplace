@@ -1,0 +1,16 @@
+{
+  "name": "export-iterate-line-items",
+  "axis": "export",
+  "summary": "For each line item, POST the item's fields to an API with a sequence index.",
+  "maturity": "standard",
+  "params": {
+    "line_field":  {"required": true, "type": "string", "description": "multivalue (table) field to iterate"},
+    "item_fields": {"required": true, "type": "string", "description": "comma-separated per-line fields to send"},
+    "target_url":  {"required": true, "type": "string", "description": "endpoint (may include the engine token {sequence})"}
+  },
+  "produces": [],
+  "consumes": ["«line_field»", "«item_fields»"],
+  "provenance": "export-pipeline-reference / reference.md (Iteration Over Lists)",
+  "reference": "export-pipeline-reference#iteration",
+  "notes": "The {sequence} token is supplied per-iteration by the engine; it is NOT a declared param — do not add it to params."
+}

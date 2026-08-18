@@ -1,0 +1,16 @@
+{
+  "evaluate": [
+    {
+      "name": "required_fields_present",
+      "condition": {
+        "field.«required_fields».value": {"$exists": true, "$ne": ""}
+      }
+    },
+    {
+      "name": "prior_stage_succeeded",
+      "condition": {
+        "field.«prior_stage»_status_code": {"$in": ["200", "201"]}
+      }
+    }
+  ]
+}

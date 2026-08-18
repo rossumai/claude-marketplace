@@ -1,0 +1,18 @@
+{
+  "name": "export-oauth-token-cache",
+  "axis": "export",
+  "summary": "Fetch an OAuth client_credentials bearer token, cache it in secrets, auto-refresh on 401.",
+  "maturity": "standard",
+  "params": {
+    "oauth_url":     {"required": true, "type": "string", "description": "token endpoint"},
+    "client_id":     {"required": true, "type": "string", "description": "OAuth client id"},
+    "client_secret": {"required": true, "type": "string", "description": "secret name in hook secrets (not the value)"},
+    "scope":         {"default": "", "type": "string", "description": "grant scope, if required"},
+    "token_path":    {"default": "access_token", "type": "string", "description": "JMESPath to the token in the response"}
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "export-pipeline-reference / reference.md (Authentication)",
+  "reference": "export-pipeline-reference#authentication",
+  "notes": "Store the secret in hook secrets, never inline. Refresh triggered on 401 from a downstream stage. Hook secrets_schema: OPEN string-map shape (declared client_secret key + additionalProperties {\"type\": \"string\"}) — the engine writes the cached token into hook secrets at runtime; a closed additionalProperties: false schema would reject the first refresh (export-pipeline-reference#authentication)."
+}

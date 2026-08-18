@@ -1,0 +1,49 @@
+{
+  "source": {
+    "dataset": "«dataset»",
+    "queries": [
+      {
+        "aggregate": [
+          {
+            "$search": {
+              "index": "po_search_idx",
+              "compound": {
+                "must": [
+                  {
+                    "text": {
+                      "path": "«must_field»",
+                      "query": "{supplier_name}",
+                      "fuzzy": { "maxEdits": 1, "prefixLength": 2 },
+                      "score": { "boost": { "value": 2 } }
+                    }
+                  }
+                ],
+                "should": [
+                  {
+                    "phrase": {
+                      "path": "«should_field»",
+                      "query": "{order_reference}",
+                      "slop": 1
+                    }
+                  }
+                ],
+                "filter": [
+                  { "equals": { "path": "«filter_field»", "value": "open" } }
+                ]
+              }
+            }
+          },
+          { "$addFields": { "__score": { "$meta": "searchScore" } } },
+          { "$match": { "__score": { "$gte": «threshold» } } },
+          { "$limit": 20 },
+          {
+            "$project": {
+              "_id": 0, "po_internal_id": 1, "order_id_normalized": 1,
+              "supplier_id": 1, "«should_field»": 1, "__score": 1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "source": {
+    "dataset": "«dataset»",
+    "queries": [
+      {
+        "aggregate": [
+          {
+            "$search": {
+              "index": "default",
+              "text": {
+                "path": "«search_field»",
+                "query": "{search_value}",
+                "fuzzy": { "maxEdits": 1 }
+              }
+            }
+          },
+          {
+            "$addFields": {
+              "__score": { "$meta": "searchScore" }
+            }
+          },
+          {
+            "$addFields": {
+              "__new_score": {
+                "$divide": [
+                  "$__score",
+                  {
+                    "$add": [
+                      1,
+                      {
+                        "$abs": {
+                          "$subtract": [
+                            1,
+                            { "$divide": [
+                              { "$strLenCP": "$«search_field»" },
+                              { "$strLenCP": "{search_value}" }
+                            ]}
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "$addFields": {
+              "__normalized_score": {
+                "$divide": [
+                  "$__new_score",
+                  { "$add": [1, "$__new_score"] }
+                ]
+              }
+            }
+          },
+          { "$sort": { "__normalized_score": -1 } },
+          { "$match": { "__normalized_score": { "$gt": «threshold» } } }
+        ]
+      }
+    ]
+  }
+}

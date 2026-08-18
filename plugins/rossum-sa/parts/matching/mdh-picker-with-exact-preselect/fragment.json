@@ -1,0 +1,90 @@
+{
+  "name": "Cost center matching",
+  "source": {
+    "dataset": "«dataset»",
+    "queries": [
+      {
+        "aggregate": [
+          {
+            "$match": {
+              "«exact_field»": "{item_cc_distributed}"
+            }
+          },
+          {
+            "$setWindowFields": {
+              "output": { "__mainMatch": { "$count": {} } }
+            }
+          },
+          {
+            "$unionWith": {
+              "pipeline": [
+                {
+                  "$documents": [
+                    {
+                      "«exact_field»": "«placeholder»"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "$setWindowFields": {
+              "output": { "__mainMatchWithDefault": { "$count": {} } }
+            }
+          },
+          {
+            "$match": {
+              "$expr": {
+                "$cond": {
+                  "if": {
+                    "$and": [
+                      { "$gt": ["$__mainMatchWithDefault", "$__mainMatch"] },
+                      { "$gt": ["$__mainMatchWithDefault", 1] }
+                    ]
+                  },
+                  "then": { "$gt": ["$__mainMatch", 0] },
+                  "else": { "$eq": [1, 1] }
+                }
+              }
+            }
+          },
+          {
+            "$unionWith": {
+              "coll": "«dataset»",
+              "pipeline": [
+                {
+                  "$match": {
+                    "«exact_field»": {
+                      "$ne": "{item_cc_distributed}"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "$project": {
+              "Organization_Data.ID": 1,
+              "«exact_field»": 1,
+              "Organization_Data.Organization_Name": 1
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "mapping": {
+    "dataset_key": "Organization_Data.ID",
+    "label_template": "«label_template»",
+    "target_schema_id": "selected_key"
+  },
+  "result_actions": {
+    "no_match_found": {
+      "select": "default",
+      "message": { "type": "error", "content": "Match not found." }
+    },
+    "one_match_found": { "select": "best_match" },
+    "multiple_matches_found": { "select": "best_match" }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "mdh-exact-to-fuzzy-cascade",
+  "axis": "matching",
+  "summary": "Match an entity exact-ID → fuzzy-name fallback, score-gated.",
+  "maturity": "standard",
+  "params": {
+    "dataset":    {"required": true, "type": "string", "description": "MDH collection to match against"},
+    "id_field":   {"required": true, "type": "string", "description": "exact-match key on the document (e.g. tax id)"},
+    "name_field": {"required": true, "type": "string", "description": "fuzzy-match key on the document"},
+    "threshold":  {"default": 0.8, "type": "number", "description": "fuzzy score floor"}
+  },
+  "produces": [],
+  "consumes": ["sender_vat", "sender_name"],
+  "provenance": "mdh-reference / mdh-matching-queries.md ex.1 (Supplier Match)",
+  "reference": "mdh-reference#matching-queries",
+  "notes": "Cascade order matters: exact before fuzzy. This fragment is the query half of a MatchConfig only — it writes nothing until you add the mapping/result_actions block that lands the matched row on your schema fields, which is why produces is empty."
+}

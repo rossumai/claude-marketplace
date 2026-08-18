@@ -1,0 +1,19 @@
+{
+  "name": "mdh-lookup-join-then-match",
+  "axis": "matching",
+  "summary": "Match a parent entity, $lookup-join to a sub-collection, then match the child record by code.",
+  "maturity": "standard",
+  "params": {
+    "parent_dataset":  {"required": true, "type": "string", "description": "parent collection"},
+    "parent_field":    {"required": true, "type": "string", "description": "parent exact-match key"},
+    "join_collection": {"required": true, "type": "string", "description": "sub-collection to $lookup"},
+    "local_key":       {"required": true, "type": "string", "description": "join key on parent"},
+    "foreign_key":     {"required": true, "type": "string", "description": "join key on child"},
+    "child_field":     {"required": true, "type": "string", "description": "child match key (e.g. address code)"}
+  },
+  "produces": [],
+  "consumes": ["supplier_id", "delivery_address_code"],
+  "provenance": "mdh-reference / mdh-matching-queries.md ex.3 (Delivery Address)",
+  "reference": "mdh-reference#matching-queries",
+  "notes": "Two-level hierarchical lookup; the $lookup runs after the parent match narrows the set. This fragment is the query half of a MatchConfig only — it writes nothing until you add the mapping/result_actions block that lands the matched row on your schema fields, which is why produces is empty."
+}
