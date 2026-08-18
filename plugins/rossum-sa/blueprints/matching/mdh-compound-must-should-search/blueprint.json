@@ -4,15 +4,15 @@
   "summary": "Multi-field Atlas Search: boosted must clauses, optional should clauses, filter constraint.",
   "maturity": "standard",
   "params": {
-    "dataset":      {"required": true, "description": "MDH collection"},
-    "must_field":   {"required": true, "description": "primary boosted match field"},
-    "should_field": {"required": true, "description": "secondary optional match field"},
-    "filter_field": {"required": true, "description": "hard filter constraint field"},
-    "threshold":    {"default": 0.8, "description": "score floor"}
+    "dataset":      {"required": true, "type": "string", "description": "MDH collection"},
+    "must_field":   {"required": true, "type": "string", "description": "primary boosted match field"},
+    "should_field": {"required": true, "type": "string", "description": "secondary optional match field"},
+    "filter_field": {"required": true, "type": "string", "description": "hard filter constraint field"},
+    "threshold":    {"default": 0.8, "type": "number", "description": "score floor"}
   },
-  "produces": ["matched_id"],
-  "consumes": [],
+  "produces": [],
+  "consumes": ["supplier_name", "order_reference"],
   "provenance": "mdh-reference / mdh-matching-queries.md ex.2 (PO Match)",
   "reference": "mdh-reference#matching-queries",
-  "notes": "must = required boosted; should = optional ranking lift; filter = non-scoring constraint."
+  "notes": "must = required boosted; should = optional ranking lift; filter = non-scoring constraint. This fragment is the query half of a MatchConfig only — it writes nothing until you add the mapping/result_actions block that lands the matched row on your schema fields, which is why produces is empty."
 }

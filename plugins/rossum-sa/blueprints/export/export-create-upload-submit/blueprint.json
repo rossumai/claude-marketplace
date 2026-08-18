@@ -4,13 +4,13 @@
   "summary": "Three-stage create → upload document → submit cascade, each gated on the prior stage.",
   "maturity": "standard",
   "params": {
-    "create_url":      {"required": true, "description": "resource-creation endpoint"},
-    "upload_url":      {"required": true, "description": "document-upload endpoint (templated with the new id)"},
-    "submit_url":      {"required": true, "description": "submit-for-approval endpoint"},
-    "auth_ref":        {"required": true, "description": "auth/credential reference used by all three calls"},
-    "id_response_key": {"required": true, "description": "JMESPath to the created id in the create response"}
+    "create_url":      {"required": true, "type": "string", "description": "resource-creation endpoint"},
+    "upload_url":      {"required": true, "type": "string", "description": "document-upload endpoint (templated with the new id)"},
+    "submit_url":      {"required": true, "type": "string", "description": "submit-for-approval endpoint"},
+    "auth_ref":        {"required": true, "type": "string", "description": "auth/credential reference used by all three calls"},
+    "id_response_key": {"required": true, "type": "string", "description": "JMESPath to the created id in the create response"}
   },
-  "produces": [],
+  "produces": ["api_status_code", "created_id"],
   "consumes": [],
   "provenance": "export-pipeline-reference / reference.md (Create, Upload Scan, Submit)",
   "reference": "export-pipeline-reference#common-patterns",

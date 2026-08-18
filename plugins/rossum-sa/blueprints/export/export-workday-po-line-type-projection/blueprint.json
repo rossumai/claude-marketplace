@@ -4,8 +4,8 @@
   "summary": "PO-invoice line block projecting goods lines as Quantity × Unit_Cost and service lines as Extended_Amount, switched per line on the matched PO line's order type.",
   "maturity": "candidate",
   "params": {
-    "goods_order_type_id":   {"required": true, "description": "tenant order-type reference id tagging goods PO lines (quantity-consumed)"},
-    "service_order_type_id": {"required": true, "description": "tenant order-type reference id tagging service PO lines (amount-consumed)"}
+    "goods_order_type_id":   {"required": true, "type": "string", "description": "tenant order-type reference id tagging goods PO lines (quantity-consumed)"},
+    "service_order_type_id": {"required": true, "type": "string", "description": "tenant order-type reference id tagging service PO lines (amount-consumed)"}
   },
   "produces": [],
   "consumes": ["line_items", "item_order_type_wd", "item_quantity", "item_amount_base", "item_total_base", "item_order_line_nr_wd", "item_document_number_po_wd", "item_description"],

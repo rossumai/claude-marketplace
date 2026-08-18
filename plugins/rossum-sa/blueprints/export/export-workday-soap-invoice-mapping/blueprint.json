@@ -4,9 +4,9 @@
   "summary": "Workday Submit_Supplier_Invoice declarative SOAP mapping skeleton — reference-ID header projections, $IF_SCHEMA_ID$-guarded optional refs, amount-coded lines with worktags.",
   "maturity": "candidate",
   "params": {
-    "tenant_domain": {"required": true, "description": "Workday services host, e.g. wd3-services1.myworkday.com"},
-    "tenant":        {"required": true, "description": "Workday tenant id"},
-    "api_version":   {"required": true, "description": "Workday SOAP API version, e.g. v42.2"}
+    "tenant_domain": {"required": true, "type": "string", "description": "Workday services host, e.g. wd3-services1.myworkday.com"},
+    "tenant":        {"required": true, "type": "string", "description": "Workday tenant id"},
+    "api_version":   {"required": true, "type": "string", "description": "Workday SOAP API version, e.g. v42.2"}
   },
   "produces": [],
   "consumes": ["company_wd", "supplier_wd", "currency", "document_id", "date_issue", "date_received", "memo", "file_name", "line_items", "item_description", "item_total_base", "item_tax_applicability_wd", "item_cost_center_wd", "item_project_wd"],

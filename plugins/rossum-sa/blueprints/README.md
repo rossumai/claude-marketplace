@@ -24,8 +24,8 @@ Axes: `capture`, `matching`, `validation`, `export`, `formula`.
 | `summary` | yes | one line, shown in the index |
 | `maturity` | yes | `candidate` \| `reviewed` \| `standard` (only `standard` is safe to auto-compose) |
 | `params` | yes | object: `{ "<name>": { "required": true } \| { "default": <v> }, "description": "..." }` |
-| `produces` | yes | array of schema field ids this blueprint adds (may be empty) |
-| `consumes` | yes | array of schema field ids it expects to already exist (may be empty) |
+| `produces` | yes | array of **post-fill schema field ids** the fragment *writes* (result actions, datapoint updates, table rows it creates). Each entry is either a literal id that appears in the fragment text, or a `«param»` seam that is a declared param of this blueprint (so filling the seam resolves it to a real id). Empty is legitimate only when the fragment genuinely writes no schema field (e.g. an OAuth token cache) — non-schema outputs (files, tokens, HTTP calls) never belong here. No duplicates. |
+| `consumes` | yes | array of **post-fill schema field ids** the fragment *reads* (an input, a gate/condition, a query input, a mapping source) — same literal-or-declared-seam grounding rule as `produces`. Empty is legitimate only when the fragment genuinely reads no schema field. No duplicates. |
 | `provenance` | yes | where it was lifted from |
 | `reference` | yes | `"<pack-name>#<anchor>"` — links down to the grammar |
 | `notes` | no | soft gotchas not mechanically checkable |

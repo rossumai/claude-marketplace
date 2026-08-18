@@ -4,13 +4,13 @@
   "summary": "Auto-select an exact match; otherwise show a 'please select' placeholder + full pick-list.",
   "maturity": "standard",
   "params": {
-    "dataset":        {"required": true, "description": "MDH collection backing the dropdown"},
-    "exact_field":    {"required": true, "description": "field used to auto-preselect"},
-    "label_template": {"required": true, "description": "display label for each option"},
-    "placeholder":    {"default": "Please select", "description": "shown when no exact match"}
+    "dataset":        {"required": true, "type": "string", "description": "MDH collection backing the dropdown"},
+    "exact_field":    {"required": true, "type": "string", "description": "field used to auto-preselect"},
+    "label_template": {"required": true, "type": "string", "description": "display label for each option"},
+    "placeholder":    {"default": "Please select", "type": "string", "description": "shown when no exact match"}
   },
-  "produces": ["selected_key", "selected_label"],
-  "consumes": [],
+  "produces": ["selected_key"],
+  "consumes": ["item_cc_distributed"],
   "provenance": "mdh-reference / mdh-matching-queries.md ex.6 (GL Coding)",
   "reference": "mdh-reference#matching-queries",
   "notes": "Dropdown populator. If combined with another config on the same target, this runs LAST, gated on target==''."

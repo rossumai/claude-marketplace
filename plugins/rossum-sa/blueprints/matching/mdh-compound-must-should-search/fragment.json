@@ -34,7 +34,7 @@
             }
           },
           { "$addFields": { "__score": { "$meta": "searchScore" } } },
-          { "$match": { "__score": { "$gte": "«threshold»" } } },
+          { "$match": { "__score": { "$gte": «threshold» } } },
           { "$limit": 20 },
           {
             "$project": {

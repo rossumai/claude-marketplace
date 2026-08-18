@@ -4,11 +4,11 @@
   "summary": "Request Processor stage that fetches every regex-matched document relation and uploads each related document to an external API via multipart.",
   "maturity": "candidate",
   "params": {
-    "relation_pattern": {"required": true, "description": "regex over document-relation keys selecting what to upload, e.g. ^attachment_email_attachments_\\d{8,10}(?:_\\d+)?$"},
-    "auth_ref":         {"required": true, "description": "OAuth token endpoint URL (client_credentials), shared with the export's other stages for token-cache reuse"},
-    "upload_url":       {"required": true, "description": "attachment-upload endpoint, typically templated with the created resource id"},
-    "file_field":       {"required": true, "description": "multipart form-field name the target API expects for the file part, e.g. attachment[file]"},
-    "status_field":     {"required": true, "description": "schema field (ui type data, must pre-exist) receiving the upload HTTP status per iteration"}
+    "relation_pattern": {"required": true, "type": "string", "description": "regex over document-relation keys selecting what to upload, e.g. ^attachment_email_attachments_\\d{8,10}(?:_\\d+)?$"},
+    "auth_ref":         {"required": true, "type": "string", "description": "OAuth token endpoint URL (client_credentials), shared with the export's other stages for token-cache reuse"},
+    "upload_url":       {"required": true, "type": "string", "description": "attachment-upload endpoint, typically templated with the created resource id"},
+    "file_field":       {"required": true, "type": "string", "description": "multipart form-field name the target API expects for the file part, e.g. attachment[file]"},
+    "status_field":     {"required": true, "type": "string", "description": "schema field (ui type data, must pre-exist) receiving the upload HTTP status per iteration"}
   },
   "produces": ["«status_field»"],
   "consumes": [],

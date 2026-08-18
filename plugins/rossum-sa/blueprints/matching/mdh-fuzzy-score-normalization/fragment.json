@@ -55,7 +55,7 @@
             }
           },
           { "$sort": { "__normalized_score": -1 } },
-          { "$match": { "__normalized_score": { "$gt": "«threshold»" } } }
+          { "$match": { "__normalized_score": { "$gt": «threshold» } } }
         ]
       }
     ]

@@ -21,7 +21,7 @@
                 "settings": {
                   "credentials": {
                     "host": "«host»",
-                    "port": "«port»",
+                    "port": «port»,
                     "username": "«username»",
                     "type": "sftp",
                     "sftp_version": 3

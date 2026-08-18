@@ -4,13 +4,13 @@
   "summary": "Fuzzy name search with length-ratio score normalization to penalize length mismatch.",
   "maturity": "standard",
   "params": {
-    "dataset":      {"required": true, "description": "MDH collection"},
-    "search_field": {"required": true, "description": "fuzzy text field"},
-    "threshold":    {"default": 0.4, "description": "normalized score floor (0-1); bounded ~0.5 at raw~1, so default is permissive — calibrate, see README"}
+    "dataset":      {"required": true, "type": "string", "description": "MDH collection"},
+    "search_field": {"required": true, "type": "string", "description": "fuzzy text field"},
+    "threshold":    {"default": 0.4, "type": "number", "description": "normalized score floor (0-1); bounded ~0.5 at raw~1, so default is permissive — calibrate, see README"}
   },
-  "produces": ["matched_id", "match_score"],
-  "consumes": [],
+  "produces": [],
+  "consumes": ["search_value"],
   "provenance": "mdh-reference / mdh-matching-queries.md (Score Normalization Pattern)",
   "reference": "mdh-reference#matching-queries",
-  "notes": "Normalized score is bounded by x/(1+x) (~0.5 at raw~1); the default floor is permissive — calibrate per collection."
+  "notes": "Normalized score is bounded by x/(1+x) (~0.5 at raw~1); the default floor is permissive — calibrate per collection. This fragment is the query half of a MatchConfig only — it writes nothing until you add the mapping/result_actions block that lands the matched row on your schema fields, which is why produces is empty."
 }

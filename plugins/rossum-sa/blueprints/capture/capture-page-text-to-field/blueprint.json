@@ -6,14 +6,17 @@
   "params": {
     "first_page_field": {
       "required": true,
+      "type": "string",
       "description": "schema id receiving the FIRST page's text; plain string field, ui_configuration.type 'data'"
     },
     "last_page_field": {
       "required": true,
+      "type": "string",
       "description": "schema id receiving the LAST page's text; on a 1-page document it receives the same text as first_page_field"
     },
     "max_chars": {
       "default": 20000,
+      "type": "number",
       "description": "per-field truncation cap; keeps a long page from bloating the annotation and the downstream prompt"
     }
   },

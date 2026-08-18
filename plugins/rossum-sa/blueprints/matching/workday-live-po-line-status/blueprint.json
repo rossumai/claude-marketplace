@@ -4,10 +4,10 @@
   "summary": "On-open TxScript hook refreshing each matched PO line's live received/invoiced consumption from the Workday procurement REST API — quantities for goods lines, amounts for service lines.",
   "maturity": "candidate",
   "params": {
-    "token_url":             {"required": true, "description": "OAuth2 token endpoint — https://<host>/ccx/oauth2/<tenant>/token"},
-    "po_endpoint_url":       {"required": true, "description": "procurement purchaseOrders endpoint — https://<host>/ccx/api/procurement/v5/<tenant>/purchaseOrders"},
-    "goods_order_type_id":   {"required": true, "description": "order-type id marking goods lines (quantity consumption)"},
-    "service_order_type_id": {"required": true, "description": "order-type id marking service lines (amount consumption)"}
+    "token_url":             {"required": true, "type": "string", "description": "OAuth2 token endpoint — https://<host>/ccx/oauth2/<tenant>/token"},
+    "po_endpoint_url":       {"required": true, "type": "string", "description": "procurement purchaseOrders endpoint — https://<host>/ccx/api/procurement/v5/<tenant>/purchaseOrders"},
+    "goods_order_type_id":   {"required": true, "type": "string", "description": "order-type id marking goods lines (quantity consumption)"},
+    "service_order_type_id": {"required": true, "type": "string", "description": "order-type id marking service lines (amount consumption)"}
   },
   "produces": ["item_order_line_quantity_received", "item_order_line_quantity_invoiced", "item_order_line_amount_received", "item_order_line_amount_invoiced"],
   "consumes": ["line_items", "item_order_line_nr_wd", "item_order_internal_id_wd", "item_order_type_wd"],
