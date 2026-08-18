@@ -38,8 +38,23 @@ This applies to:
 
 Read-only operations are fine without confirmation: `rossum_get_annotation` (compact merged view), `rossum_get_annotation_meta`, `rossum_get_annotation_content`, `rossum_list_hook_logs`, `rossum_get_document`.
 
-**Never iterate against a production queue.** If the annotation ID belongs to a `prod` queue, stop and ask the user to provide a sandbox/UAT annotation instead. If unsure which environment the ID belongs to, ask before any write.
+**Never iterate against a production queue.** If the annotation ID belongs to a `prod` queue, stop and ask the user to provide a sandbox/UAT annotation instead. If unsure which environment the ID belongs to, ask before any write. (Sole exception: the production-remediation carve-out below — which is remediation, not iteration, and carries its own stricter gate.)
 </HARD-GATE>
+
+### Production remediation — the one carve-out
+
+Distinct from iteration: the goal is not "does my code work" but "this live document is stuck
+and the deployed fix would free it". Permitted only with ALL of:
+
+1. The fix is **already deployed and verified by other means** — never use a production
+   document to discover whether code works.
+2. **Per-document consent**, naming the annotation and the resulting end state, including any
+   status change that will not be reverted.
+3. **`mode="validate"` only.** Never `reextract` (destroys human corrections), never `confirm`
+   (fires a real export / approval routing).
+4. **Read the field back** and report observed vs. expected.
+
+Anything broader than one named document is a batch re-automation request, not this skill.
 
 ## UX entry prompt
 
@@ -324,7 +339,7 @@ Look for:
 
 ## Important
 
-- Never iterate against a production queue. Sandbox or UAT only.
+- Never iterate against a production queue. Sandbox or UAT only. (Sole exception: the production-remediation carve-out under Safety.)
 - Every write op passes through the hard-gate, every time.
 - `mode="validate"` is the default — start there; reach for toggle/reupload only when you need them.
 - Edit local `.py` files only; let `prd2 push` sync into JSON.
