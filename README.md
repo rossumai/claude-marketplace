@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-16 skills · 15 reference packs · 90 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+17 skills · 15 reference packs · 91 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -83,6 +83,7 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 | `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
 | `/rossum-sa:automation-report [queue-id-or-url]` | Diagnose what blocks queue automation and produce an actionable report with threshold, schema, and rule recommendations |
+| `/rossum-sa:plugin-feedback [description]` | Report friction with this plugin as a sanitized, human-confirmed report — a GitHub issue, or an anonymous submission to the maintainers' private review queue (optionally with a contact email) |
 
 ## 📚 Autoloaded references
 
@@ -181,8 +182,9 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_extract_export_template` | Pull a Custom Format Templating export template out of a hook's `export_configs` into editable text |
 | `rossum_generate_export_settings` | Turn a local Jinja2 template into the `export_configs` settings block to push back |
 | `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |
+| `rossum_generate_hook_payload` | Show the payload the platform would send a hook for any event/action, without executing it (credentials redacted) — answers "is field X actually in the payload?" instead of guessing |
 | `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status); `include_output=true` adds the hook's `print()` output and failure tracebacks, which are absent from `message` |
-| `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override) |
+| `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override). Returns the payload alongside the result, whose `log` is the proof the code ran |
 | `rossum_invoke_hook` | ⚠️ Invoke a hook for REAL with a custom payload (live execution — irreversible external side effects; not a dry-run like test) |
 | `rossum_list_rules` | List business rules (filter by queue) |
 | `rossum_get_rule` | Get full rule details (trigger_condition, actions, queues) |

@@ -28,6 +28,7 @@ With the full picture from Phase 1, check for these issues:
 - **Missing extension ordering** — extensions without `run_after` when execution order matters (e.g., data enrichment must run before validation)
 - **Deprecated extensions** — Copy & Paste or Find & Replace extensions that no longer work correctly
 - **Formula field mismatches** — formula files that reference schema fields not present in the queue's schema
+- **Formulas at the length limit** — any `formulas/*.py` file whose character count (not byte count) exceeds or nearly reaches **2000** (comments and blank lines count). Over the limit means the next `prd2 push` fails with an HTTP 400 that names the schema but not the field; within ~200 characters of it means the next inline comment will break it. Report the count per offending file (see `txscript-reference` → Formula constraints)
 - **Broken rule references** — rules referencing field IDs that don't exist in the schema
 - **Contradictory rules** — rules where one requires what another forbids
 - **Environment drift** — configuration differences between dev/test/prod environments that look unintentional (not just ID differences)

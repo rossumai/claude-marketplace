@@ -22,7 +22,8 @@ def _setup(monkeypatch, tmp_path, pages, **cfg_kw):
     monkeypatch.setattr(cbi, "get_coupa_token", lambda scope: "coupa-token")
     pages_iter = iter(pages)
 
-    def fake_fetch(session, endpoint, fields, offset, anchor_ts, limit=None):
+    def fake_fetch(session, endpoint, fields, anchor_ts, *,
+                   before_id=None, id_gt=None, limit=None, extra_params=None):
         return next(pages_iter)
 
     monkeypatch.setattr(cbi, "fetch_page", fake_fetch)

@@ -230,7 +230,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 | `PATCH /hooks/{hookID}` | ✅ covered | rossum_patch_hook |
 | `PUT /hooks/{hookID}` | 🚫 not_planned |  |
 | `POST /hooks/{hookID}/duplicate` | ✅ covered | rossum_duplicate_hook |
-| `POST /hooks/{hookID}/generate_payload` | ✅ covered | rossum_generate_export_payload, rossum_test_hook |
+| `POST /hooks/{hookID}/generate_payload` | ✅ covered | rossum_generate_export_payload, rossum_generate_hook_payload, rossum_test_hook |
 | `POST /hooks/{hookID}/invoke` | ✅ covered | rossum_invoke_hook |
 | `GET /hooks/{hookID}/secrets_keys` | ✅ via rossum_get | rossum_get |
 | `POST /hooks/{hookID}/test` | ✅ covered | rossum_test_hook |

@@ -97,6 +97,8 @@ Write that payload to a temp file (e.g. `/tmp/eth-payload-<aid>.json`), then run
 
 **The payload is sensitive.** A `generate_payload` response contains `rossum_authorization_token` and the hook's `secrets`. Write it to a temp file, never echo it into the conversation, and delete it when done. The rendered *output* is safe (it only contains what the template emits), but the payload file is not.
 
+Use `rossum_generate_export_payload` here specifically: it returns the payload **unredacted**, which the render script needs. `rossum_generate_hook_payload` covers any event/action but redacts credentials, making it the right tool for inspecting payload *shape* in-conversation and the wrong one for rendering.
+
 ```
 python3 "<this-skill-dir>/scripts/render_export_template.py" \
     --template <your-template>.j2 \

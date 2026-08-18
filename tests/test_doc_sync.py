@@ -43,3 +43,20 @@ def test_plugin_version_matches_server_version():
         f"plugin.json version {plugin_version!r} != "
         f"server.py serverInfo version {R.server_version()!r}"
     )
+
+
+def test_readme_feedback_row_mentions_anonymous_channel():
+    readme = R.README.read_text(encoding="utf-8")
+    row = next(
+        (ln for ln in readme.splitlines() if "rossum-sa:plugin-feedback" in ln), "")
+    assert row, "plugin-feedback row missing from README"
+    assert "anonymous" in row.lower(), (
+        "README's plugin-feedback row must mention the anonymous channel"
+    )
+
+
+def test_readme_internal_has_form_repin_runbook():
+    internal = (R.ROOT / "README-internal.md").read_text(encoding="utf-8")
+    assert "## Re-pin the feedback form" in internal, (
+        "README-internal.md must document the form re-pin procedure"
+    )

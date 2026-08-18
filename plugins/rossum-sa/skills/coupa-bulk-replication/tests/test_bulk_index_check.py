@@ -93,7 +93,8 @@ def test_main_threads_no_unique_index_ok_to_import(monkeypatch, tmp_path):
     seen = {}
 
     def fake_import(key, limit, resume, state, ds_session, state_path,
-                    username=None, password=None, no_unique_index_ok=False):
+                    username=None, password=None, no_unique_index_ok=False,
+                    id_range=None):
         seen[key] = no_unique_index_ok
 
     monkeypatch.setattr(cbi, "import_dataset", fake_import)

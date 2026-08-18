@@ -209,7 +209,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.34.0"
+_SERVER_VERSION = "0.36.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -4150,6 +4150,136 @@ def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
     return ""
 
 
+# generate_payload embeds the hook's rossum_authorization_token and its secrets, so the
+# raw payload is a credential. What a caller debugging a gate needs is the payload's
+# *shape and values* ("is annotation.queue actually in here?"), which survives redaction
+# — so the inspection paths below redact and become safe to read in-conversation.
+# rossum_generate_export_payload deliberately keeps the raw token: the local render
+# script has to replay it.
+_PAYLOAD_CREDENTIAL_KEYS = {"rossum_authorization_token", "token", "secrets"}
+
+
+def _redact_payload_credentials(value):
+    """Recursively replace credential-bearing keys with a placeholder."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key in _PAYLOAD_CREDENTIAL_KEYS and item not in (None, "", {}, []):
+                out[key] = "<redacted>"
+            else:
+                out[key] = _redact_payload_credentials(item)
+        return out
+    if isinstance(value, list):
+        return [_redact_payload_credentials(item) for item in value]
+    return value
+
+
+def _build_generate_payload_body(request_id, base_url, hook_id, arguments):
+    """Assemble the POST /hooks/{id}/generate_payload body for an event/action.
+
+    Returns the body dict, or None when the annotation could not be resolved (the
+    error result has already been sent).
+    """
+    body = {"event": arguments["event"], "action": arguments["action"]}
+    if arguments["event"] not in _ANNOTATION_HOOK_EVENTS:
+        return body
+    annotation_id = arguments.get("annotation_id")
+    if annotation_id is not None:
+        annotation_url = _resource_url(base_url, "annotations", annotation_id)
+    else:
+        annotation_url = _resolve_annotation_url_for_hook(request_id, base_url, hook_id)
+        if annotation_url is None:
+            return None
+        if not annotation_url:
+            tool_result(
+                request_id,
+                f"Event '{arguments['event']}' needs an annotation, but none were found on hook "
+                f"{hook_id}'s queues. Pass annotation_id explicitly (find one via "
+                "rossum_list_annotations) or upload a document to one of its queues first.",
+                is_error=True,
+            )
+            return None
+    body["annotation"] = annotation_url
+    body["status"] = arguments.get("status", "to_review")
+    body["previous_status"] = arguments.get("previous_status", "importing")
+    return body
+
+
+_PAYLOAD_SHAPE_DOC = (
+    "Use this to answer payload-shape questions from the platform instead of guessing or "
+    "hand-building a payload: a hand-built payload can only show that a mechanism COULD "
+    "misfire, never that it did. Notably `annotation.queue` is always present and is a URL "
+    "string (`.../api/v1/queues/<id>`), never an int — so a queue gate must parse the id out "
+    "of it. Full queue objects (name, settings) appear under a top-level `queues[]` array only "
+    "when the hook's `sideload` list requests them."
+)
+
+
+@_tool(
+    "rossum_generate_hook_payload",
+    "Generates the payload the platform would send a hook for a given event/action against a "
+    "real annotation, via POST /hooks/{id}/generate_payload — WITHOUT executing the hook. " +
+    _PAYLOAD_SHAPE_DOC + " Credentials (rossum_authorization_token, token, secrets) are "
+    "redacted, so the result is safe to read directly. Non-mutating. For the export-render "
+    "flow that needs the unredacted token, use rossum_generate_export_payload; to also execute "
+    "the hook against this payload, use rossum_test_hook.",
+    {
+        "type": "object",
+        "required": ["hook_id", "event", "action"],
+        "properties": {
+            "hook_id": {
+                "type": "integer",
+                "description": "The hook whose payload shape you want (settings/secrets keys come from it).",
+            },
+            "event": {
+                "type": "string",
+                "description": "Event type: 'annotation_content', 'annotation_status', 'email', 'invocation', or 'upload'.",
+            },
+            "action": {
+                "type": "string",
+                "description": (
+                    "Action for the event. Valid event.action pairs: "
+                    "annotation_content.{initialize, started, updated, user_update, confirm, export}, "
+                    "annotation_status.changed, upload.created, email.received, "
+                    "invocation.{manual, scheduled, interface}."
+                ),
+            },
+            "annotation_id": {
+                "type": "integer",
+                "description": (
+                    "Annotation to build the payload from (for annotation_content / annotation_status "
+                    "events). If omitted for those events, one is auto-resolved from the hook's queues."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "description": "Annotation status in the generated payload (annotation events; default 'to_review').",
+            },
+            "previous_status": {
+                "type": "string",
+                "description": "Previous status in the generated payload (annotation events; default 'importing').",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_generate_hook_payload(request_id, arguments):
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    hook_id = arguments["hook_id"]
+    body = _build_generate_payload_body(request_id, base_url, hook_id, arguments)
+    if body is None:
+        return
+    payload = _http_request(
+        request_id, f"{base_url}/api/v1/hooks/{hook_id}/generate_payload",
+        method="POST", body=body,
+    )
+    if payload is not None:
+        tool_result(request_id, json.dumps(_redact_payload_credentials(payload), indent=2))
+
+
 @_tool(
     "rossum_test_hook",
     "Tests a single hook in isolation: auto-generates a realistic payload for the given event/action "
@@ -4159,7 +4289,10 @@ def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
     "blockers, or the error/traceback if it raised. The rule analog is the validation pipeline; for an "
     "end-to-end re-fire against a real annotation use rossum_refire_annotation instead. This executes "
     "hook code, which can have side effects (webhook hooks POST externally, function hooks call APIs via "
-    "their token_owner), so it is a write operation.",
+    "their token_owner), so it is a write operation. Returns {generated_payload, hook_result} by default: "
+    "the payload (credentials redacted) shows what the hook actually received, and hook_result's `log` is "
+    "positive proof the code ran — the one signal that separates 'the hook ran and skipped' from 'the hook "
+    "never ran'. This is the harness of record when hook-log endpoints are unavailable in a deployment.",
     {
         "type": "object",
         "required": ["hook_id", "event", "action"],
@@ -4204,6 +4337,14 @@ def _resolve_annotation_url_for_hook(request_id, base_url, hook_id):
                     "{\"code\": \"def rossum_hook_request_handler(payload):\\n    ...\"} to dry-run unsaved code."
                 ),
             },
+            "include_payload": {
+                "type": "boolean",
+                "description": (
+                    "Include the generated payload (credentials redacted) alongside the hook's result "
+                    "as {generated_payload, hook_result}. Default true — keep it on when the question is "
+                    "'what did the hook actually receive?'. Set false for the bare hook result only."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -4214,26 +4355,9 @@ def handle_test_hook(request_id, arguments):
     if not base_url:
         return
     hook_id = arguments["hook_id"]
-    gen_body = {"event": arguments["event"], "action": arguments["action"]}
-    if arguments["event"] in _ANNOTATION_HOOK_EVENTS:
-        annotation_id = arguments.get("annotation_id")
-        if annotation_id is not None:
-            annotation_url = _resource_url(base_url, "annotations", annotation_id)
-        else:
-            annotation_url = _resolve_annotation_url_for_hook(request_id, base_url, hook_id)
-            if annotation_url is None:
-                return
-            if not annotation_url:
-                return tool_result(
-                    request_id,
-                    f"Event '{arguments['event']}' needs an annotation, but none were found on hook "
-                    f"{hook_id}'s queues. Pass annotation_id explicitly (find one via "
-                    "rossum_list_annotations) or upload a document to one of its queues first.",
-                    is_error=True,
-                )
-        gen_body["annotation"] = annotation_url
-        gen_body["status"] = arguments.get("status", "to_review")
-        gen_body["previous_status"] = arguments.get("previous_status", "importing")
+    gen_body = _build_generate_payload_body(request_id, base_url, hook_id, arguments)
+    if gen_body is None:
+        return
 
     payload = _http_request(
         request_id, f"{base_url}/api/v1/hooks/{hook_id}/generate_payload",
@@ -4249,8 +4373,14 @@ def handle_test_hook(request_id, arguments):
         request_id, f"{base_url}/api/v1/hooks/{hook_id}/test",
         method="POST", body=test_body,
     )
-    if result is not None:
-        tool_result(request_id, json.dumps(result, indent=2))
+    if result is None:
+        return
+    if arguments.get("include_payload", True):
+        result = {
+            "generated_payload": _redact_payload_credentials(payload),
+            "hook_result": result,
+        }
+    tool_result(request_id, json.dumps(result, indent=2))
 
 
 @_tool(

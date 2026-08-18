@@ -33,16 +33,17 @@ If in doubt, confirm. The cost of asking is low; the cost of unwanted changes to
 
 ## How to Use This Skill
 
-This skill has 6 phases. Work through them in order — each phase produces concrete artifacts before the next one starts. Use tasks to track progress across phases so work can resume if interrupted.
+This skill has 7 phases. Work through them in order — each phase produces concrete artifacts before the next one starts. Use tasks to track progress across phases so work can resume if interrupted.
 
 | Phase | What it covers |
 |-------|----------------|
-| 0 — Discovery | Credentials, token strategy, org URL, Coupa hook settings, dataset selection |
+| 0 — Discovery | Credentials, token strategy, org URL, Coupa hook settings, dataset selection, `--probe` sizing + worker calibration (from previous run summaries when they exist) |
 | 1 — Pre-flight | Disable hooks, create/clear collections, create indexes |
 | 2 — Script Setup | Place `coupa_bulk_import.py`, create `coupa_bulk_import.config.json`, smoke-test |
-| 3 — Replication | Supervised launch (`--supervise`), keep-awake, monitoring, resume |
+| 3 — Replication | Supervised launch (`--supervise`, partitioned workers), keep-awake, monitoring, migration journal, resume |
 | 4 — Completion | Verify counts, register with MDH |
 | 5 — Handoff to continuous sync | Create or re-enable import hooks, delta seeding, canary |
+| 6 — Debrief | Read `run_summary.jsonl` + journal, route learnings to their durable homes |
 
 ---
 
@@ -89,11 +90,29 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    |-------------|----------------|---------------|---------|---------|
    | `...`       | `api/...`      | `..._test`    | `...`   | yes/no  |
 
-6. **Get exact counts.** Coupa has no count endpoint, but the script computes exact per-dataset counts by offset bisection (~45 cheap API calls per dataset): `python3 coupa_bulk_import.py --count` (needs the Phase 2 config; add `--dataset a,b` for a subset). Always do this before planning the run — never plan against collection counts copied from another org (a presale/sibling org, when one even exists): field runs saw those off by 2.7×–27×. Re-run `--count` mid-replication for exact %-complete — it reuses the run's anchor from the state file.
+6. **Calibrate from previous runs first.** Before probing, look for `logs/run_summary.jsonl` — in this environment's migration directory AND in sibling environments' (a test-org run calibrates the dev run; dev calibrates prod). Each line is one supervised run with per-unit measured `rec_per_s`, durations, restarts, and `coupa_429s`. Measured rates from a real full run beat fresh 3-page probe samples: derive worker suggestions from them (same ceiling math as below), flag any dataset whose past run logged 429s (lower the cap or workers), and only lean on the probe's sampled rate for datasets with no history. Still run `--probe` for the **counts** — sibling-org record counts drift.
+
+7. **Size the run with `--probe`.** Coupa has no count endpoint, but the script's probe computes exact per-dataset counts by offset bisection (~45 cheap API calls per dataset) AND samples real throughput: `python3 coupa_bulk_import.py --probe` (needs the Phase 2 config; add `--dataset a,b` for a subset). Per dataset it prints the exact count, measured records/sec (3 sample pages with the dataset's real field list), estimated duration at 1/2/4/8 workers, and a config-ready `workers` suggestion. Always do this before planning the run — never plan against collection counts copied from another org (a presale/sibling org, when one even exists): field runs saw those off by 2.7×–27×. Re-run `--probe` mid-replication for exact %-complete — it reuses the run's anchor from the state file (summing partition state files for partitioned datasets). The probe also doubles as the keyset-query preflight: its sample pages use the exact query shape the workers will run. **If a dataset is meant to be a filtered slice of its endpoint, set its `extra_params` (Phase 2) BEFORE probing** — otherwise the count and the plan describe the wrong (unfiltered) population.
+
+   **Calibrate workers from measured rates, not record counts.** Per-record cost scales with record width — field count, and especially nested association fields that force server-side joins. A field run saw ~10× between narrow `lookup_values` (4.77M records, fast) and wide PO lines (fewer records, much slower) — counts alone mislead. The probe's suggestion targets ~1 h per dataset (suggestion caps at 8 workers; floor is configurable via `min_partition`, default 50k records per worker); adjust it against context the script cannot see: the rate budget shared with live webhooks (see Phase 2 rate cap), how urgent the wall clock is, tenant load. Then set the chosen values in the config — each dataset block takes an optional `"workers": N` (default 1) — and run Phase 3 with `--supervise`. Claude applies the config edit on request.
+
+   **Overriding the suggestion upward (the giant-dataset lever).** The 8-worker cap lives only in the *suggestion*; the config accepts any count the 50k-per-partition floor allows, and workers are latency-bound, not budget-bound, so scaling is near-linear under keyset. The ceiling: **max useful workers ≈ aggregate rate cap ÷ per-worker natural rate**, where natural rate = the probe's measured rec/s ÷ 50 (records per page — a hard Coupa cap: `limit` values above 50 are ignored, verified with `limit=100` and `limit=200`, so page size is not a tuning lever; concurrency is the only one). Example: 40.9 rec/s → ~0.82 req/s per worker → ~24 workers before a 20 req/s cap binds; 16 workers turn a 26.5 h dataset into ~1.7 h at ~13 req/s aggregate. The soft limit beyond that is Coupa's own (undocumented) concurrency tolerance — push upward gradually and watch for `[WARN] Coupa 429` lines, which are the tenant telling you where that limit is (backoff absorbs them; sustained 429s mean back off on workers). Small datasets finish in the first minutes regardless, so the whole run's wall clock is set by the biggest dataset's worker count — spend the budget there.
 
    Until the config exists, a run-ordering prior that holds across Coupa customers: transactional datasets dominate — purchase_order_lines > purchase_orders and lookup_values are typically the giants (hundreds of thousands to millions), suppliers/users mid-sized, and reference tables (uoms, payment_terms, tax_codes, account_types) finish in minutes regardless of order.
 
-**Artifact:** Confirmed list of dataset keys, Coupa credentials, hook IDs to disable, and Rossum org URL.
+   **Treat the probe's rate as an order-of-magnitude hint, not a forecast — it is biased in both directions.** It samples 3 pages from the *newest* end of the id range, which misses two real effects (all figures from one field run):
+
+   | Bias | Cause | Field example |
+   |---|---|---|
+   | **Under-reads narrow datasets** | 3 pages is a small sample and start-up costs dominate it | predicted 63.3 rec/s → actual **115–131** |
+   | **Over-reads deep/wide datasets** | older ids serve much more slowly than the newest page, and nested associations force server-side joins at depth | predicted 24.8 rec/s/worker → actual **6.9** at depth (3.6× optimistic) |
+   | **Ignores the rate cap** | the estimate is pure rec/s ÷ workers; it never models the per-child cap the supervisor will impose | predicted 270.7 rec/s → actual **114**, capped at 3.33 req/s ≈ 167 rec/s ceiling |
+
+   So: plan from the probe's **counts** (they are exact), then **re-measure the real rate a few minutes into the run** and re-plan if the projection has moved materially. The re-plan lever is cheap *early* and only early — see Phase 3.
+
+   **Equal-count partitions do not take equal wall-clock.** Count-balanced slices of the same dataset finished 1500 s vs 1740 s in one run, and mid-run one partition was 3× ahead of another, because older ids serve more slowly. The run ends with the *slowest* partition, so where rate budget is spare, over-provision workers rather than dividing count by rate and trusting the quotient.
+
+**Artifact:** Confirmed list of dataset keys, Coupa credentials, hook IDs to disable, Rossum org URL, and per-dataset `workers` values calibrated from the probe report.
 
 ---
 
@@ -165,7 +184,8 @@ This skill has 6 phases. Work through them in order — each phase produces conc
      "coupa": {
        "base_url":      "<from hook settings, e.g. https://customer.coupahost.com>",
        "client_id":     "<from hook settings>",
-       "client_secret": "<from hook settings>"
+       "client_secret": "<from hook settings>",
+       "max_requests_per_second": 20
      },
      "rossum": {
        "api_url": "<org_url>/api/v1",
@@ -173,19 +193,30 @@ This skill has 6 phases. Work through them in order — each phase produces conc
        "token":   "<bearer token; refreshed automatically if --username/--password is passed at runtime>"
      },
      "ds_batch_size": 5000,
+     "min_partition": 50000,
      "datasets": {
        "<key>": {
-         "endpoint":   "api/<coupa_endpoint>",
-         "collection": "<dataset_name_from_hook>",
-         "id_key":     "id",
-         "scope":      "<oauth_scope_from_hook>",
-         "fields":     [<field_list_from_hook_exactly_as_configured>]
+         "endpoint":     "api/<coupa_endpoint>",
+         "collection":   "<dataset_name_from_hook>",
+         "id_key":       "id",
+         "scope":        "<oauth_scope_from_hook>",
+         "fields":       [<field_list_from_hook_exactly_as_configured>],
+         "workers":      1,
+         "extra_params": {}
        }
      }
    }
    ```
 
-   Each dataset's `fields` list must exactly mirror the corresponding hook's field configuration — it is the projection sent to the Coupa API.
+   Each dataset's `fields` list must exactly mirror the corresponding hook's field configuration — it is the projection sent to the Coupa API. (The script always adds `id` to the projection itself — the pagination cursor needs it even when `id_key` differs.)
+
+   **`extra_params`** (optional, default `{}`): a dataset can be a **filtered slice** of its Coupa endpoint rather than the whole thing — e.g. a lookup slice needs `lookup[name][in]` + `active`, an invoice load needs a `created-at[gt_or_eq]` floor. Whatever key/value pairs go here are merged into **every** Coupa call the script makes for that dataset: fetching, `--probe` counts/throughput, and partition planning alike — so the count, the plan, and the load all describe the same slice instead of drifting apart. Keys the script itself manages (the cursor/anchor/projection set: `fields`, `order_by`, `dir`, `offset`, `limit`, `updated-at[lt_or_eq]`, `id[lt]`, `id[gt]`) are rejected at startup if present here — overriding one would corrupt keyset pagination or re-slice partitions mid-run.
+
+   **Rate cap:** `max_requests_per_second` (default 20) is a self-imposed aggregate ceiling — Coupa allows 25 req/s per OAuth client with no rate headers and no Retry-After, so headroom beats brushing the limit (a 429 costs a blind multi-second backoff, and the budget is shared with everything else on that client: token mints, probes, retries, and any live import webhooks). The supervisor splits the cap evenly across its children. **Drop to ~15 when import webhooks are already active on the same OAuth client** (re-replication of a live org, or the Phase 5 early-handoff variant).
+
+   **`min_partition`** (optional, default 50000): the floor below which `plan_partitions` and the `--probe` workers suggestion refuse to split a dataset further — no partition ever holds fewer than this many records, however many workers are requested. Field runs have seen this floor, not the Coupa API, be the binding constraint on worker count for a mid-sized dataset (e.g. ~200k records capped at 3–4 workers regardless of a faster measured rate); lower it if a dataset is mid-sized and CPU/latency-bound rather than API-bound, or raise it if per-worker overhead (token mints, planning probes) isn't paying for itself at the current floor.
+
+   **Workers:** optional per dataset (`"workers": N`, default 1) — N supervised children crawling disjoint, count-balanced id ranges in parallel. Size from the Phase 0 probe report; requires `--supervise`. CLI `--workers N` overrides the config for every selected dataset (e.g. `--workers 1` forces a serial run without editing the config).
 
 3. **Gitignore the runtime files.** Add the following to the project's `.gitignore` so credentials and run state never leak into version control:
 
@@ -205,7 +236,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
    If the config path is non-standard, pass `--config <path>`.
 
-   `--smoke [N]` (default N=1) is self-cleaning: it inserts the newest N records, verifies them, then deletes **exactly the records its own insert landed** (never a concurrent writer's copy, never pre-existing data) and prints the collection's remaining doc count — no manual cleanup step, and no state file is written or overwritten. It exits non-zero on any failed insert, verification shortfall, or cleanup shortfall, so `--smoke <key> && <full run>` is a real gate. Every DS call shares the import path's 401 token heal, and a credentials-only config (empty `rossum.token` + `--username`/`--password`) mints a token up front. N must fit in one DS batch (`ds_batch_size`); leftovers of a hard-killed smoke are harmless — every batch of any later run is existence-checked, so they dedupe automatically. `--smoke` cannot be combined with `--supervise`, `--resume`, `--count`, or `--limit` (the script refuses each), and `--limit` similarly refuses `--supervise` (a limit-stopped child never writes the completed flag).
+   `--smoke [N]` (default N=1) is self-cleaning: it inserts the newest N records, verifies them, then deletes **exactly the records its own insert landed** (never a concurrent writer's copy, never pre-existing data) and prints the collection's remaining doc count — no manual cleanup step, and no state file is written or overwritten. It exits non-zero on any failed insert, verification shortfall, or cleanup shortfall, so `--smoke <key> && <full run>` is a real gate. It fetches via the same keyset query the full run uses, so a passing smoke also validates the query shape per dataset. Every DS call shares the import path's 401 token heal, and a credentials-only config (empty `rossum.token` + `--username`/`--password`) mints a token up front. N must fit in one DS batch (`ds_batch_size`); leftovers of a hard-killed smoke are harmless — every batch of any later run is existence-checked, so they dedupe automatically. `--smoke` cannot be combined with `--supervise`, `--resume`, `--probe`, or `--limit` (the script refuses each), and `--limit` similarly refuses `--supervise` (a limit-stopped child never writes the completed flag).
 
 **Artifact:** `coupa_bulk_import.py` + `coupa_bulk_import.config.json` present, gitignored, and smoke-tested.
 
@@ -227,18 +258,26 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
    (Linux: `systemd-inhibit --what=sleep --why="coupa bulk replication" python3 -u coupa_bulk_import.py --supervise ...`.)
 
-   The supervisor spawns one child process per dataset (own log `logs/<ds>.log`, own state file), sweeps every 60 s, and applies the decision table: state file has `"completed": true` → done; child alive → fine; child died without the flag → relaunch with `--resume` — max 3 attempts per dataset, then give up on that dataset so a permanently broken one cannot crash-loop or hold the run hostage. Exit code 0 only when every dataset completed. Subset via `--dataset a,b,c`; tune with `--poll-interval` / `--max-restarts`; add `--username`/`--password` (password-auth users) for in-process token refresh in every child.
+   The supervisor spawns one child process per **unit** — a whole dataset, or one partition of a dataset whose config sets `workers > 1` (own log `logs/<ds>.log` or `logs/<ds>_p<k>of<W>.log`, own state file). For partitioned datasets it first runs a one-time **preflight** (id_key sanity on a sampled real-field page; populated-collection warning — partition children always run `--resume`, so the fresh-run guards live here, and a per-child collection check would false-positive on sibling partitions' writes), then plans count-balanced id ranges (one count bisection + W−1 boundary-rank probes, anchored to the run) and **pre-seeds each partition's state file before spawning** — restarts of a child or of the whole supervisor read the plan back from the state files and never re-slice. Workers are clamped so no partition holds fewer than 50k records (floor). It prints `N child(ren), per-child cap X req/s` (the config rate cap split evenly; a warning fires below 0.5 req/s per child — more workers than the budget can feed) and then sweeps every 60 s with the decision table: state file has `"completed": true` → done; child alive → fine; child died without the flag → relaunch with `--resume` — max 3 attempts per unit, then give up on that unit so a permanently broken one cannot crash-loop or hold the run hostage. Exit code 0 only when every unit completed. Subset via `--dataset a,b,c`; tune with `--poll-interval` / `--max-restarts`; add `--username`/`--password` (password-auth users) for in-process token refresh in every child.
+
+   A partitioned run refuses to start over an **unpartitioned** state file with progress (finish it with plain `--resume --workers 1`, or delete it — already-loaded records dedupe). Existing partition state files are always reused, never re-planned — this also means a fresh (non-`--resume`) supervised run skips a completed partitioned dataset; **delete its partition state files to re-crawl or to re-plan with a different worker count**. A partial or inconsistent partition-file set (supervisor killed mid-planning, or files left over from a different worker count) is refused with the same delete-to-re-plan recovery.
+
+   **Re-planning worker count mid-run: decide EARLY, it only gets more expensive.** The supervisor splits the rate cap once at startup and **never rebalances as units finish**, so a badly-sized dataset stays badly-sized for the whole run. Re-planning is the fix and it is not exotic: stop the supervisor (SIGTERM — it terminates children cleanly), delete only that dataset's `coupa_import_state_<ds>_p*of*.json`, raise its `workers`, relaunch with `--supervise --resume`. Other datasets' state files are preserved and resume untouched. The cost is re-fetching whatever that dataset already loaded (records dedupe, so it is time and not duplicates) — which is why the decision is cheap in the first minutes and dear later. One field run took a dataset from a measured 4.6 h projection to ~1.4 h by going 12 → 24 workers, at the price of ~13 min of re-fetch.
+
+   Because the cap is split across *all* live children, mixing a few huge datasets with many tiny ones in one invocation throttles the huge ones for the entire run to feed datasets that finish in the first three minutes. Prefer **staging**: run the small/mid datasets in one supervised invocation, then the giants in a second with the full budget to themselves. Chain them so it is still unattended: `<stage1 cmd>; <stage2 cmd>`.
 
    **Keep-awake traps (laptop runs):**
    - Wrap the **supervisor**, not the workers: per-pid assertions (`caffeinate -w <pid>`) drop the moment that pid dies — and resumed jobs are new pids nothing covers.
    - Releasing an assertion on a machine idle for hours → sleep follows near-instantly (the idle timer counts from last input). There is no usable grace period.
    - Lid-close sleeps regardless of caffeinate: keep the lid open on AC power, or `pmset -a disablesleep 1` (remember to undo it).
 
-2. **Monitor progress.** Supervisor decisions (launches, deaths with the dead job's last log line, give-ups) go to `logs/supervisor.log`; per-dataset flush lines to `logs/<ds>.log`:
+2. **Monitor progress.** Supervisor decisions (launches, deaths with the dead job's last log line, give-ups) go to `logs/supervisor.log`; per-unit flush lines to `logs/<ds>.log` / `logs/<ds>_p<k>of<W>.log`:
 
    ```
-   flushed → total      5000  offset      5000  last updated_at: 2024-03-15T10:23:45Z
+   flushed → total      5000  last_id 4821337  last updated_at: 2024-03-15T10:23:45Z
    ```
+
+   `last_id` is the keyset cursor — the lowest Coupa id fetched and flushed so far; it counts DOWN toward the partition floor (or 0).
 
 3. **Resume after interruption.** The supervisor already resumes crashed children. If the supervisor itself stopped, relaunch it with `--resume` — completed datasets are skipped, incomplete ones continue from their state files:
 
@@ -247,7 +286,9 @@ This skill has 6 phases. Work through them in order — each phase produces conc
      >> logs/supervisor.log 2>&1 &
    ```
 
-   A dataset the supervisor **gave up on** needs its failure investigated first (its last log line is in `logs/supervisor.log`) — typically an expired token (fix the config; see Phase 0 token strategy) or a Coupa-side error — then rerun the command above. Always resume a supervised run with `--supervise` again: supervised state is per-dataset, and an unsupervised comma-list resume reads the shared state file and will not see it.
+   A unit the supervisor **gave up on** needs its failure investigated first (its last log line is in `logs/supervisor.log`) — typically an expired token (fix the config; see Phase 0 token strategy) or a Coupa-side error — then rerun the command above. Always resume a supervised run with `--supervise` again: supervised state is per-unit, and an unsupervised comma-list resume reads the shared state file and will not see it.
+
+   **Version note:** state files written by pre-keyset script versions (they carry `offset`, no `last_id`) are refused on `--resume` with a clear message. Recovery: delete the state file and restart the dataset fresh — already-loaded records are skipped by the per-batch existence check, so the cost is re-fetch time, not duplicates.
 
 4. **Understand log messages:**
 
@@ -256,7 +297,10 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `[Rossum token expired — refreshing]` | Auto-refreshed via `--username`/`--password`; no action needed |
    | `[Rossum 401 — re-reading token from config]` | No credentials passed; retried once with the (possibly refreshed) config token |
    | `[Coupa token expired — refreshing]` | Auto-refreshed via client credentials; no action needed |
-   | `[RETRY N/5] SSLError` | Transient connection error; retrying with exponential backoff |
+   | `[RETRY N/5] SSLError` | Transient DS connection error; retrying with exponential backoff |
+   | `[RETRY N/8] Coupa HTTP 429/503 — backing off Ns` | Coupa rate/availability blip; blind exponential backoff (no Retry-After exists), then the supervisor is the backstop |
+   | `[WARN] Coupa 429 under the self-imposed cap…` | Another consumer is draining the OAuth client's 25 req/s budget (live webhooks? another run?) — consider lowering `max_requests_per_second` |
+   | `[WARN] per-child rate under 0.5 req/s` | More workers than the aggregate cap can feed — reduce workers or raise the cap |
    | `N duplicate(s) skipped (expected after resume or smoke test)` | The per-batch existence check at work; healthy |
    | `[NOTICE] >=90% of the first batch already exists…` | Fresh run over an already-loaded collection — records are skipped, never updated; see "Re-replicating a dataset" |
    | `[WARN] N document(s) failed` | Real write failures; check payload size or field types |
@@ -270,7 +314,13 @@ This skill has 6 phases. Work through them in order — each phase produces conc
    | `[NOTE] collection '…' already holds N document(s)` (N < 100) | A few leftovers (e.g. hard-killed smoke) — they dedupe automatically; no action |
    | `[WARN] collection '…' already holds N document(s)` (N ≥ 100) | Fresh run over a loaded collection — existing records are skipped, never updated; see 'Re-replicating a dataset' |
 
-5. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from `coupa_import_state_<dataset>.json` with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
+5. **Keep a migration journal.** Append to `MIGRATION-NOTES.md` (next to the config) *at the moment* anything surprises: a probe estimate that misses, a 429 burst, an endpoint quirk, a manual intervention, anything you had to figure out. Timestamp each entry. Field experience: learnings reconstructed from logs days later lose the "why"; notes written live are what makes the Phase 6 debrief cheap and honest. The supervisor's exit summary (`logs/run_summary.jsonl`, one JSON line per invocation with per-unit durations, effective rec/s, restarts, and 429 counts) captures the *numbers* automatically — the journal captures the *judgment*.
+
+6. **Verify no silent data loss.** After each dataset completes, compare **`total_inserted`** from its state file with the actual DB count (`data_storage_aggregate [{"$count": "total"}]`). For a partitioned dataset, sum `total_inserted` across all `coupa_import_state_<ds>_p*of*.json` files. `total_processed` counts everything handled *including* duplicate-skips — on resumed runs it legitimately exceeds the DB count; `total_inserted` is the number that must match.
+
+   **Measuring throughput mid-run: use `total_processed`, never `total_inserted`.** During any resume or re-plan the run re-crawls records it already loaded, and those dedupe to *skips that never increment `total_inserted`* — so the insert rate reads as a collapse while the crawler is in fact working at full speed. A field run sampled `total_inserted` right after a re-plan, computed an apparent 3× slowdown and a 6.9 h ETA, and nearly reverted a change that had actually delivered a **3.3× speed-up** (the `total_processed` rate showed 277.7 rec/s against 83.3 before). Use `total_processed` deltas over a known interval for rate and ETA; `total_inserted` is for the integrity check only. The two diverging is itself the signal that a re-crawl is still in progress.
+
+   **After a re-plan, `total_inserted` no longer equals the DB count** — deleting a dataset's partition state files discards their insert accounting along with their cursors, so the new files only count what *they* inserted. The gap equals exactly what the discarded run had inserted (one field run: a 190,000 shortfall against a correct DB count). For a re-planned dataset the authoritative checks are **DB count == the probe's exact count**, plus a clean duplicate audit — not `total_inserted == DB count`.
 
 **Artifact:** All target collections populated. State files show `"completed": true` for each dataset. DB counts match `total_inserted`.
 
@@ -280,11 +330,11 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
 **Goal:** Datasets verified and, where needed, registered with MDH.
 
-**Counts vs completion truth:** plan and report against `--count`'s exact anchored counts (Phase 0), never against collection counts from another org — %/ETA are then facts, not guesses. Completion is still decided only by Coupa returning an empty page. The integrity check that matters afterwards: `total_inserted` (state file) == actual DB count.
+**Counts vs completion truth:** plan and report against `--probe`'s exact anchored counts (Phase 0), never against collection counts from another org — %/ETA are then facts, not guesses. Completion is still decided only by Coupa returning an empty page (per partition, when partitioned). The integrity check that matters afterwards: `total_inserted` (summed across a dataset's partition state files) == actual DB count.
 
 **Steps:**
 
-1. **Final count check.** For each dataset, confirm `total_inserted` in the state file equals the actual document count in Data Storage. If they differ by more than one batch (5,000 records), investigate `[WARN]` lines in the logs before proceeding.
+1. **Final count check.** For each dataset, confirm `total_inserted` (summed across partition state files for partitioned datasets) equals the actual document count in Data Storage. If they differ by more than one batch (5,000 records), investigate `[WARN]` lines in the logs before proceeding.
 
    Known benign skew: after a mid-batch token heal (a 401 struck while a batch was being written), `total_inserted` may **undercount by up to one batch** — records persisted just before the 401 are re-counted as duplicates by the healed retry. The DB count and the duplicate audit are authoritative; an up-to-one-batch shortfall next to a `[Rossum token expired / 401]` log line is expected, not data loss.
 
@@ -309,7 +359,7 @@ This skill has 6 phases. Work through them in order — each phase produces conc
 
    See `mdh-reference` for full MDH dataset management details.
 
-4. **Record the anchors, then clean up.** Phase 5's delta seeding needs each dataset's `anchor_updated_at` from its state file — copy them out BEFORE deleting state files. Then state files can be deleted and logs archived.
+4. **Record the anchors, then clean up.** Phase 5's delta seeding needs each dataset's `anchor_updated_at` from its state file (a partitioned dataset's partitions all share one anchor — read any of its partition files) — copy them out BEFORE deleting state files. Then state files can be deleted and logs archived.
 
 **Artifact:** Collections live in Data Storage with `total_inserted` == DB count and a clean duplicate audit, MDH registered (if applicable), anchors recorded for Phase 5.
 
@@ -346,11 +396,88 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 
 3. **Canary the first hook.** Fire it manually: `POST /hooks/{id}/invoke` (`invocation.manual`; returns 202 — an async long-running job). Detection subtlety: in `method: update` mode the service UPSERTS — the record count does not change and updates carry no `__digest_md5` stamp. The reliable check: query Coupa directly for records updated since the anchor, then confirm those exact ids carry the new `updated-at` in Data Storage.
 
+   **ESTABLISH THE EXPECTED DELTA BEFORE CALLING ANYTHING BROKEN.** "0 records imported" is the normal, correct outcome far more often than it is a fault, for two compounding reasons:
+
+   - **After the first run, `${last_modified_date}` is no longer epoch.** It resolves to the start of the *last successful operation* for that (org, `dataset_name`) — so the second and later runs legitimately import nothing unless something changed in Coupa in the interim. In a quiet dev tenant that is almost always zero.
+   - **Every manual `invoke` you fire while debugging advances that history**, shrinking the next run's window. A few impatient invokes are enough to make a genuinely-working hook look permanently dead.
+
+   So before drawing any conclusion, ask Coupa what the answer should be:
+
+   ```bash
+   # what SHOULD this run import? (same filter the hook uses)
+   GET <coupa_base>/api/<endpoint>?updated-at[gt_or_eq]=<the hook's current value>&fields=["id","updated_at"]&limit=50
+   ```
+
+   Zero rows there means zero rows in Data Storage is *correct*. Only a non-empty Coupa result that fails to appear in the collection is evidence of a fault. A field run lost hours to this: repeated invokes drove several datasets' history forward, every subsequent run correctly imported nothing, and the zeros were misread as a systemic failure.
+
+   **The hook logs cannot tell you whether an import succeeded.** `GET /hooks/logs` records the *dispatch*, not the job: a run that imported thousands of records and a run that imported nothing both produce a single `INFO` row with `message: ""` and `request`/`response` null, ~0.15 s long (the webhook returning 202). Setting `config.payload_logging_enabled: true` adds the outbound request but `response` stays null. No scheduled-imports operations/job-status endpoint is exposed on the public API (probed: `/svc/scheduled-imports/api/{v1,coupa/v1}/{operations,imports,jobs,status}` → all 404/405). **Record counts in Data Storage are the only observable outcome** — plan verification around them, not around logs.
+
 4. **Secrets.** Hook `secrets` are write-only (GET returns null) — set via `PATCH {"secrets": {"client_secret": "..."}}`. ALWAYS set `secrets_schema` too (typed properties, `additionalProperties: false`); without it the UI shows no secret field at all. A hook with secrets but no `secrets_schema` is a defect.
 
 5. **Coupa OAuth gotchas.** Probe every dataset's scope before activating anything — a scope not granted to the OAuth client fails the token endpoint with 400 `invalid_scope` (field case: the contracts scope was missing). Whitespace in a pasted `client_secret` → 401 `'client_secret' missing` (the bulk script strips config credentials; the hook PATCH is on you).
 
-**Artifact:** Hooks active for every dataset, first delta canary verified, `${last_modified_date}` placeholders restored.
+6. **Do NOT "fix" `queues: []` on an import hook.** Scheduled imports are org-level jobs that write to a Data Storage dataset; queue attachment is irrelevant to them. Every Coupa Webhook Import hook in a verified working reference org carries `queues: []`. A hook that ends up queue-less (e.g. its only queue was deleted) needs no re-attachment — and hooks that *do* carry a queue are the harmless anomaly, not the healthy case.
+
+7. **MDH dataset registration is NOT required for the hooks to work.** The scheduled-imports service creates and populates the Data Storage collection itself with no MDH dataset registered — field-verified in an org where `GET /svc/master-data-hub/api/v1/dataset` returned an empty list while hooks imported correctly into brand-new collections. Register with MDH only for fuzzy search or UI visibility (Phase 4 step 3), and never conclude "matching is broken because the dataset isn't registered" without testing matching itself.
+
+### Unresolved: a hook that imports nothing despite a verified non-zero delta
+
+Recorded because it cost a field run hours and a full re-load, and because the cause was **not** established — do not assume any of the eliminated candidates below.
+
+Symptom: for two datasets (the two largest, both with deeply nested `fields` projections), Coupa demonstrably held qualifying records (verified by direct query against the hook's own filter, ids above the bulk crawl's ceiling), the hook was active with a literal anchor covering them, dispatches logged clean `INFO`, and **zero records were ever imported** across many cron firings and manual invokes. Other datasets in the same org, same OAuth client, same run, imported correctly.
+
+Eliminated with evidence, so don't re-spend time on them: the unique partial index (dropped it — no change); the projection/`fields` list (the bulk script fetched millions of records with those exact lists); `dir: desc` and `order_by` (removed/varied — no change); collection size; `__digest_md5` absence on bulk-inserted rows (the service updates digest-less rows fine and does not re-stamp the digest on updates); MDH registration; malformed source data. A clone of the failing hook, identical except for `dataset_name`, imported its delta correctly on the first try — so the hook's own configuration is not at fault.
+
+If you hit this: confirm the expected delta from Coupa (step 3), confirm it is genuinely absent from the collection by id, then treat it as service-side and escalate with those two observations. Meanwhile the data itself is recoverable without the hook — a bulk re-run picks the records up, since its fresh probe re-counts from Coupa.
+
+### Variant — early handoff: activate hooks while the bulk run still crawls
+
+When freshness matters more than a clean verification window, the hooks can go live **before** the bulk run finishes. This is sound because the two jobs' target sets are disjoint by construction: the bulk run only fetches `updated-at ≤ anchor`, and the hook is seeded with the literal `updated-at[gt_or_eq] = anchor` (step 1). The hook upserts by the id field and the bulk run skips existing ids, so any overlap converges to the correct final state — a record updated mid-run simply migrates from the bulk's set to the hook's, and the keyset cursor cannot skip anything because of it. (This variant was unsafe under the old offset pagination — mid-run set changes shifted the stream.)
+
+Two costs, both manageable:
+
+- **Shared rate budget:** the hooks drain the same Coupa OAuth client — lower `max_requests_per_second` to ~15 for the remainder of the run.
+- **Verification:** the Phase 4 exact-count check stops being exact while hooks insert post-anchor records. Either verify a dataset *before* activating its hook, or filter the DB count to the bulk run's set: `{"updated-at": {"$lte": "<anchor>"}}` (lexicographic ISO-8601 comparison works). The duplicate audit is unaffected.
+
+Default recipe stays verify-then-activate; use this variant deliberately.
+
+### Restoring `${last_modified_date}` — only where a data-bearing run is confirmed
+
+Step 1 says to flip the literal anchor back to `${last_modified_date}` "after the first successful run". Be strict about what counts: the placeholder is safe once the service has recorded a successful operation for that `dataset_name`, and if it has **not**, the placeholder resolves to epoch and the next cron attempts the full import this whole skill exists to avoid. Since the job's outcome is not observable (step 3), the only evidence you actually have is **records having landed**.
+
+So restore the placeholder per dataset, as each earns it:
+
+- **Confirmed data-bearing run** (you watched the collection grow, or verified specific delta ids arrived) → restore `${last_modified_date}`.
+- **Not yet confirmed** → leave a literal anchor, set to the *most recent* bulk-run anchor for that dataset. It carries **zero** epoch risk and the upserts are idempotent, so it is safe *as a holding position* — but it is not a resting state: only the anchor's lower bound is fixed, so the window it re-pulls **grows with every hour that passes**. A literal anchor left in place for weeks eventually re-imports weeks of changes on every single cron firing.
+
+Treat any dataset still on a literal anchor as an open item with a deadline, not a finished state — the whole point is to earn the placeholder as soon as a delta demonstrably flows.
+
+**Artifact:** Hooks active for every dataset, first delta canary verified, and `${last_modified_date}` restored on every dataset with a confirmed data-bearing run (others explicitly parked on a literal anchor).
+
+---
+
+## Phase 6: Debrief
+
+**Goal:** Every learning from this migration lands in its one durable home, and the run's measurements are preserved for the next migration's calibration.
+
+The raw material already exists by construction: `logs/run_summary.jsonl` (per-unit durations, effective rec/s, restarts, 429 counts — written automatically by every supervised run) and `MIGRATION-NOTES.md` (the live journal from Phase 3). This phase is optional in the sense that skipping it loses nothing *mechanical* — but each skipped debrief is a run the next migration cannot learn from.
+
+**Checklist:**
+
+1. **Estimates vs. reality.** Diff the probe's estimated durations against `run_summary.jsonl`'s actuals per dataset. A consistent miss means the sampled rate or the worker ceiling math needs adjusting — that is a *skill* learning, not a run anecdote.
+2. **Grep the logs for pain.** `grep -c 'Coupa 429' logs/*.log`, give-ups in `supervisor.log`, `[WARN]` lines. Sustained 429s at N workers ≈ Coupa's real concurrency tolerance for this tenant — record the number.
+3. **Doc-vs-observation diff.** Anything this SKILL.md *claims* that the run *contradicted* is a documentation bug — fix it, don't just note it.
+4. **Route each learning to its home:**
+
+   | Learning type | Durable home |
+   |---|---|
+   | Platform-general fact (Coupa behavior, DS behavior, script gap) | This skill / reference packs — marketplace PR |
+   | Client-specific invariant (dataset sizes, tenant quirks, org decisions) | The client repo's CLAUDE.md / context notes |
+   | Numbers for the next environment's run | Nothing to do — `run_summary.jsonl` stays in the migration dir; Phase 0 step 6 of the next run reads it |
+
+5. **Keep `run_summary.jsonl` and `MIGRATION-NOTES.md`** when cleaning up state files (Phase 4 step 4 deletes state; these two survive — they are the migration's memory).
+
+**Artifact:** Updated skill/docs where the run contradicted them, client context updated, summaries preserved.
 
 ---
 
@@ -389,11 +516,14 @@ Consequences:
 
 `insert_many` is **synchronous** (returns 200). When the process stops, writes stop immediately. The state file count equals the DB count.
 
-### Pagination strategy
+### Pagination strategy (keyset)
 
-- **Sort:** `updated_at DESC` — newest records first, so the dataset is usable before the run completes
-- **Anchor:** `updated-at[lt_or_eq]=<timestamp set at run start>` — prevents new records from disrupting pagination order mid-run
-- **Resume:** reload `anchor_updated_at` and `offset` from the state file and continue exactly where stopped
+- **Query shape:** `order_by=id&dir=desc` + moving cursor `id[lt]=<lowest id fetched>` + `offset=0` always — every page is an indexed seek with **constant cost at any depth**. Partitioned workers add a static `id[gt]=<partition floor>`.
+- **Why not offset:** `offset=N` makes Coupa skip N rows per page — cost grows linearly (field run: throughput halved from ~4,400/min to ~2,000/min past ~2M rows). Offset pagination also silently shifted the stream when a record's mid-run update moved it out of the anchored set — the keyset cursor is immune (a set change can never skip unrelated rows).
+- **Sort direction:** id desc ≈ created-newest-first (Coupa ids are per-resource auto-increment), so the most match-relevant records land first and the early-handoff variant gets a usable dataset soonest.
+- **Anchor:** `updated-at[lt_or_eq]=<timestamp set at run start>` — freezes the run's target set; also the delta boundary for Phase 5 seeding. Under keyset it no longer affects pagination consistency, only set membership.
+- **Resume:** reload `anchor_updated_at` and `last_id` (plus the `partition` range, if any) from the state file and continue exactly where stopped. Pre-keyset state files (offset-based) are refused — delete and restart; dedup absorbs the re-fetch.
+- **Counting/planning primitive:** `limit=1&offset=N` in `order_by=id asc` returns the record at rank N — used by `--probe`'s count bisection and by partition boundary planning (count-balanced slices regardless of id gaps).
 
 ### Token refresh — Rossum
 

@@ -614,6 +614,7 @@
     "summary": "Generate hook payload",
     "tools": [
       "rossum_generate_export_payload",
+      "rossum_generate_hook_payload",
       "rossum_test_hook"
     ]
   },
