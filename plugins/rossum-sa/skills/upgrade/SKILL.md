@@ -68,6 +68,18 @@ Settings contain a `calculations` array. Each calculation has:
 
 All fields referenced in expressions (except `timedelta` parameters) must be of type `date` in the schema. Calculations are evaluated in order — later entries can override earlier ones for the same `target_field` (useful for conditional overrides).
 
+### Numbered Export Webhook Chain
+
+**Symptom.** Several webhook hooks on the export event whose names carry an ordinal prefix — `1. Export - ...`, `3. API1 - Create draft`, `5. API 2 - File append`, `9. API 4 - Submit` — chained with `run_after`, usually with a separate "extract response" hook after each call. The ordinal in the name is the only statement of intended order.
+
+**Modern equivalent.** One Request Processor hook whose `settings.stages` array holds the same calls in order; `response_handlers` absorb the response-extraction hooks entirely. Measured on one real implementation: an eleven-hook chain became one hook with four stages. See `export-pipeline-reference` → One Hook, Not a Chain.
+
+**This is opportunistic, not urgent.** A working chain is not deprecated and does not need emergency migration — rewriting a stable production export carries real risk for no functional gain. Propose it when the export is being substantially reworked anyway, or when the chain is already causing ordering bugs. If the project is *adding* an export, the new one should be a Request Processor regardless.
+
+**Before proposing, check the one blocker:** a chain may rely on a formula field being computed between hooks, which a single hook cannot reproduce (formulas evaluate only after the hook completes). Each such value must become a `property` carried between stages. If you cannot account for every mid-chain formula dependency, say so and stop rather than proposing a migration that will silently drop a value.
+
+Record as `export_pipeline_migration` in the manifest `axes`, and set `export_architecture.pattern` accordingly. Not behavior-preserving by default — the response handling is re-expressed, so it needs verification against a real annotation (see "Verify the upgrade against an annotation" below, and the `iterate` skill's export re-fire for the loop).
+
 ### Python Runtime (function hooks)
 
 For each function hook with `config.runtime` older than `python3.12`, note:

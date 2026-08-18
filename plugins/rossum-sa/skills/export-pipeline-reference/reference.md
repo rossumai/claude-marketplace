@@ -17,23 +17,24 @@ A flexible, multi-stage engine for integrating Rossum with external APIs. Config
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [Prerequisites](#prerequisites)
-3. [Settings Structure](#settings-structure)
-4. [Variable Templating](#variable-templating)
-5. [Evaluate Phase](#evaluate-phase)
-6. [Get Content Phase](#get-content-phase)
-7. [Call API Phase](#call-api-phase)
-8. [Authentication](#authentication)
-9. [Response Handlers](#response-handlers)
-10. [Advanced Features](#advanced-features)
-11. [Failure Semantics](#failure-semantics)
-12. [Common Patterns](#common-patterns)
-13. [SFTP Export Pattern](#sftp-export-pattern)
-14. [Complete Examples](#complete-examples)
-15. [Migration from Pipeline v1](#migration-from-pipeline-v1)
-16. [Field Reference](#field-reference)
-17. [Re-testing an Export](#re-testing-an-export)
-18. [Troubleshooting](#troubleshooting)
+2. [One Hook, Not a Chain](#one-hook-not-a-chain)
+3. [Prerequisites](#prerequisites)
+4. [Settings Structure](#settings-structure)
+5. [Variable Templating](#variable-templating)
+6. [Evaluate Phase](#evaluate-phase)
+7. [Get Content Phase](#get-content-phase)
+8. [Call API Phase](#call-api-phase)
+9. [Authentication](#authentication)
+10. [Response Handlers](#response-handlers)
+11. [Advanced Features](#advanced-features)
+12. [Failure Semantics](#failure-semantics)
+13. [Common Patterns](#common-patterns)
+14. [SFTP Export Pattern](#sftp-export-pattern)
+15. [Complete Examples](#complete-examples)
+16. [Migration from Pipeline v1](#migration-from-pipeline-v1)
+17. [Field Reference](#field-reference)
+18. [Re-testing an Export](#re-testing-an-export)
+19. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -54,6 +55,29 @@ Stage 1 ──> Stage 2 ──> Stage 3 ──> ...
 - **Three-phase stages** — evaluate → get_content → call_api (all optional)
 - **Property context** — intermediate data stored and passed between stages
 - **Token caching** — OAuth tokens cached in hook secrets, auto-refreshed on 401
+
+---
+
+## One Hook, Not a Chain
+
+**For any new export, build one Request Processor hook — not a sequence of webhook hooks wired together with `run_after`.** The pattern this replaces is common in older implementations and easy to recognise:
+
+- Hooks named with an ordinal prefix — `1. Export - ...`, `3. API1 - Create draft`, `5. API 2 - File append`, `9. API 4 - Submit` — where the number *is* the documentation of the order.
+- Call and response split across two hooks each (`API 1 - Export`, then `API 1 - Extract response`), because a webhook cannot easily consume its own reply.
+- Execution order held in `run_after` edges plus a naming convention, with nothing validating either.
+
+A Request Processor expresses the same flow as ordered `stages` inside a single hook: each stage's `evaluate` gates it, `get_content` assembles its payload, `call_api` sends it, and `response_handlers` consume the reply into `property` values the next stage can reference. Measured on one real implementation, an **eleven-hook numbered chain became a single hook with four stages** — the same four outbound calls, with the response-extraction hooks disappearing entirely because handlers absorb that work.
+
+Why this matters beyond tidiness:
+
+- **Order stops being a convention.** In a chain, order lives in hook names and `run_after`; renumbering hooks or adding one in the middle silently reorders the export. In a Request Processor, order is array order in one config object.
+- **Ordering bugs become visible.** A chain fails silently when a hook reads a field an earlier hook was supposed to write — the classic failure the numbered names exist to prevent, and don't. Stages share explicit `property` values instead.
+- **One hook log, one timeout budget.** Debugging a chain means correlating logs across eleven hooks; a Request Processor emits one log per run with every stage's rendered request and response in it (see [Re-testing an Export](#re-testing-an-export)).
+- **Fewer moving parts to deploy.** One hook, one `settings` object, one `run_after` edge into the export event.
+
+**The chain is not broken and does not need emergency migration.** Existing numbered chains keep working, and rewriting a stable production export carries real risk — treat migration as opportunistic (see the `upgrade` skill, which classifies this as `export_pipeline_migration`). The rule is about *new* work: a fresh export, or a chain being substantially reworked anyway, should land as one Request Processor hook.
+
+Caveat: a stage cannot use a formula field computed by an earlier stage, because formulas evaluate only after the hook completes. Chains sometimes exploited that mid-process formula evaluation. Where a chain relied on it, the Request Processor equivalent must carry the value as a `property` instead — see [Migration from Pipeline v1](#migration-from-pipeline-v1) for that substitution.
 
 ---
 
@@ -1805,7 +1829,7 @@ A production configuration that creates a Coupa invoice, uploads scans, attaches
 
 ### Key Differences
 
-1. **Single hook** — Request Processor runs as one hook, not a chain of sequential hooks
+1. **Single hook** — Request Processor runs as one hook, not a chain of sequential hooks (this applies equally to replacing a hand-built numbered webhook chain, not just Pipeline v1 — see [One Hook, Not a Chain](#one-hook-not-a-chain))
 2. **Formula fields don't work mid-process** — formulas evaluate only after the hook completes. Cannot set a field in stage 1 and use a formula depending on it in stage 2
 3. **Use property and templating instead** — store intermediate values via `property` target type, reference with `{property.key}`. Template expressions (`{field.base_url}{field.id}/submit`) replace formula field concatenations
 
