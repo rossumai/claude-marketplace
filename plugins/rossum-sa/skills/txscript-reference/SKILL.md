@@ -1,6 +1,6 @@
 ---
 name: txscript-reference
-description: Rossum field-expression reference for TxScript serverless hooks, native Rossum Rule trigger_condition expressions, and schema-field formulas. Covers (a) TxScript Python 3.12 API, (b) the native Rule trigger_condition expression language and the defensive is_empty guard convention (the Rule entity, actions[], and FIRE-vs-PASS polarity live in business-rules-reference), and (c) schema-field formula expressions (default_to, is_set, is_empty, line-item .all_values, helpers, multi-line formulas, the "absorb" refactoring pattern). Use when writing or debugging any Rossum field-expression code — a hook .py file, a Rule trigger_condition, or a schema formula.
+description: Rossum field-expression reference for TxScript serverless hooks, native Rossum Rule trigger_condition expressions, and schema-field formulas. Covers (a) TxScript Python 3.12 API, (b) the native Rule trigger_condition expression language and the defensive is_empty guard convention (the Rule entity, actions[], and FIRE-vs-PASS polarity live in business-rules-reference), and (c) schema-field formula expressions (default_to, is_set, is_empty, line-item .all_values, helpers, multi-line formulas, the "absorb" refactoring pattern, and when formulas do and do not recompute — a queue move carries values across without re-evaluating them). Use when writing or debugging any Rossum field-expression code — a hook .py file, a Rule trigger_condition, or a schema formula.
 user-invocable: false
 ---
 
@@ -23,6 +23,7 @@ Use this knowledge when:
 - Writing or debugging a TxScript serverless hook (the original audience)
 - Writing a native Rule `trigger_condition` expression (the Rule entity and `actions[]` live in `business-rules-reference`)
 - Authoring a schema-field formula (single-expression or multi-line)
+- Working out **when** a formula (re)evaluates — in particular that a plain queue move carries values across without recomputing them
 - Looking up common schema field IDs and their conventions
 
 Cross-references:
