@@ -2266,8 +2266,11 @@ def handle_create_user(request_id, arguments):
     "rossum_patch_user",
     "Updates an existing user. Only provide the fields you want to change — unspecified fields "
     "are left untouched. Use this to assign a user to queues, change their role (groups), rename "
-    "them, or deactivate them (is_active=false; no user-delete tool is provided — DELETE /users "
-    "is not_planned — so deactivation is the supported retirement path). If you don't already "
+    "them, or deactivate them (is_active=false). NOTE on retiring a user: DELETE /v1/users/{id} "
+    "DOES exist and works (returns 204 and leaves a 'deleted': true tombstone on the user) — it "
+    "is simply not wrapped by this MCP server ('not_planned' in api-coverage.md means no tool, "
+    "not no endpoint). Deactivation is the reversible, recommended path and the one available "
+    "here; if a hard delete is genuinely required, issue the DELETE directly. If you don't already "
     "have the user's complete queue/group lists, read them first (rossum_get with path "
     "/api/v1/users/{id}) before sending a replacement. "
     "Email and username cannot be changed here. This is a write operation.",
@@ -4748,7 +4751,10 @@ def handle_patch_schema(request_id, arguments):
     "rossum_validate_schema",
     "Dry-run validation of schema content via POST /schemas/validate — checks a datapoint "
     "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema to catch "
-    "problems without touching the live schema. Returns valid=true/false plus the API's "
+    "problems without touching the live schema. NOTE: the underlying endpoint returns HTTP 200 "
+    "for an INVALID schema too — rejections live in the response body, so a status-code check "
+    "misses them; this tool normalizes that into valid=true/false (valid == empty body), which "
+    "is what you should read. Returns valid=true/false plus the API's "
     "error tree, which mirrors the content positionally: content[N] -> "
     "{'children': {'<child index>': {'<attribute>': ['message', ...]}}}. IMPORTANT: pass "
     "schema_id whenever validating an edit to an EXISTING schema — engine-binding checks "
@@ -5531,8 +5537,12 @@ def handle_confirm_annotation(request_id, arguments):
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Hook actions to fire. Common values: 'user_update' (rules and field-update "
-                    "hooks), 'started' (lazy-lookup hooks). Default ['user_update', 'started']."
+                    "Hook actions to fire. Only two values are usable: ['user_update'] (rules "
+                    "and field-update hooks; emits nothing unless a datapoint actually changed) "
+                    "and ['user_update', 'started'] (also reaches lazy-lookup hooks; the correct "
+                    "choice for a pure recalc). ['started'] ALONE is rejected with HTTP 400 "
+                    "\"Selected actions: [HookActions.started] not allowed.\" — 'started' must "
+                    "be paired with 'user_update'. Default ['user_update', 'started']."
                 ),
             },
         },
@@ -6156,7 +6166,9 @@ def handle_import_email(request_id, arguments):
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "validate mode only — hook actions to fire. "
+                    "validate mode only — hook actions to fire. Only ['user_update'] and "
+                    "['user_update', 'started'] are usable; ['started'] alone is rejected with "
+                    "HTTP 400 (\"Selected actions: [HookActions.started] not allowed.\"). "
                     "Default ['user_update', 'started']."
                 ),
             },

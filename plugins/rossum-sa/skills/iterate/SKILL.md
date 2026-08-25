@@ -146,14 +146,33 @@ What it does, atomically:
 
 > **All three calls return 200/204 and bump `modified_at` whether or not any hook ran.** A clean status transition is not evidence of execution — see [Prove the hook ran](#prove-the-hook-ran--before-you-interpret-the-result) before you read anything into the result.
 
-**Action selection.**
+**Action selection.** There are only **two** usable values: `["user_update"]` and
+`["user_update", "started"]`. `started` is **not** accepted on its own.
+
 - `["user_update"]` — fastest, but ONLY when you are also editing a datapoint. `user_update`
   fires off the back of *changed* datapoints, so on a pure recalc (no edit) it emits nothing
   and you get zero hook runs — a silent no-op that reads as "my fix didn't work".
-- Recalc with no edit → you MUST include `"started"`. Measured: all 9 content events fired
-  as `annotation_content.started`.
-- `["started"]` — use when the hook listens on `annotation_content.started` (lazy lookups, one-time info messages).
-- `["user_update", "started"]` — default; use both when uncertain or when iterating on a chain mixing patterns.
+- `["user_update", "started"]` — **the default.** Use it for a pure recalc (no edit), when the
+  hook listens on `annotation_content.started` (lazy lookups, one-time info messages), or
+  whenever you are iterating on a chain that mixes patterns.
+- `["started"]` alone is **rejected by the API** — `HTTP 400
+  {"actions":["Selected actions: [HookActions.started] not allowed."]}`. To reach a
+  `started`-only hook you must still send `user_update` alongside it; the extra action is
+  harmless (with no datapoint change it emits nothing of its own).
+
+Measured against a live environment, on the same annotation:
+
+| `POST /content/validate` body | result |
+|---|---|
+| `{}` | 200 — **0** `annotation_content` runs |
+| `{"actions": ["user_update"]}` | 200 — **0** runs (no datapoint was edited) |
+| `{"actions": ["started"]}` | **400** `Selected actions: [HookActions.started] not allowed.` |
+| `{"actions": ["user_update", "started"]}` | 200 — **full extension chain fires** |
+
+> **A bare `POST /annotations/{id}/start` fires no `annotation_content` event at all** — only
+> `annotation_status.changed`. It is the natural thing to reach for ("open the document, let the
+> hooks run"), and the resulting silence looks exactly like a broken hook subscription. `start`
+> only takes the review lock; `content/validate` is what runs the content chain.
 
 **Reading the result.** The compact response has:
 - `fields` — flat `{schema_id: {value, ocr?, normalized?, src, score?}}`. `src` is one of `human/formula/connector/rules/data_matching/score/NA`.
@@ -306,7 +325,8 @@ Look for:
 - **`show_info` messages do not reliably surface on the annotation.** Don't use them as a debug channel: a missing message is not evidence that a branch was skipped. Read the `log` from `rossum_test_hook` instead.
 - **The start/cancel lock is for `content/validate` and `confirm` only — NOT for content edits.** `POST /content/operations` (i.e. `rossum_update_annotation_content`) succeeds without a review session on `to_review` and `postponed` annotations and preserves the status; wrapping it in start/cancel just fires needless `annotation_content.started` events. `content/validate` and `confirm`, by contrast, return HTTP 409 unless the annotation is in `reviewing`.
 - **`cancel` is automatic in `mode="validate"`** — the MCP tool wraps cancel in try/finally. If you ever call `rossum_start_annotation` standalone, you MUST call `rossum_cancel_annotation` afterwards (the start tool's success message includes a reminder). Cancel restores the **pre-start** status — a `postponed` annotation returns to `postponed`, not `to_review`.
-- **`content/validate` actions must include the trigger your hook listens on.** If the hook only listens on `started` and you send `actions=["user_update"]`, the hook will not fire. Cross-check the hook's `events` array against the actions list.
+- **`content/validate` actions must include the trigger your hook listens on — and `started` cannot travel alone.** If the hook only listens on `started` and you send `actions=["user_update"]`, the hook will not fire. The fix is `actions=["user_update", "started"]`, **not** `actions=["started"]` — that returns `HTTP 400 {"actions":["Selected actions: [HookActions.started] not allowed."]}`. Cross-check the hook's `events` array against the actions list.
+- **`POST /start` on its own fires nothing a content hook can hear.** It emits `annotation_status.changed` only — no `annotation_content.*` event. Taking the lock is not running the chain; `content/validate` is.
 - **Custom dedup hooks may auto-delete re-uploads (defensive).** Some customer queues have a custom hook on `annotation_content.initialize` that PATCHes `status: deleted` for duplicate documents. The **stock Rossum Duplicate Handling extension does NOT do this** — its valid actions are `fill_field`, `forward_annotation`, `mark_duplicate`, `show_message`, `stop_automation`, `apply_label`; none transition status. (`mark_duplicate` flags the annotation but leaves it in `to_review`.) For customer-custom delete patterns, `mode="reupload"` defensively detects `status: deleted` after upload and restores via PATCH. There is now a `rossum_upload_document` tool for uploading a local file to a queue (modern `/uploads` API); note it performs the upload but **not** the dedup auto-restore, so on a queue with a custom delete-on-duplicate hook, replicate the `status: deleted` → `to_review` check yourself.
 - **The `reviewing` lock scopes validate/confirm — raw content writes bypass it.** Between start and cancel the annotation is locked to the calling user: `content/validate` and `confirm` from another caller 409. Raw `content/operations` from another caller still lands, which is worse — it mutates values under the reviewer's live session. That is why `rossum_update_annotation_content` refuses a `reviewing` annotation unless the session is the caller's own.
 - **Engine re-extraction is not triggered by status toggle.** Only the hook chain re-runs. If your change touches OCR or extraction itself, use `mode="reupload"` — toggle will not produce different captured values.
