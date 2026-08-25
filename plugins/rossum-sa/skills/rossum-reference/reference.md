@@ -253,7 +253,47 @@ Schemas define what data gets extracted from documents.
 | PUT | `/v1/schemas/{id}` | Update schema |
 | PATCH | `/v1/schemas/{id}` | Partial update |
 | DELETE | `/v1/schemas/{id}` | Delete schema |
-| POST | `/v1/schemas/validate` | Validate schema content without saving (dry-run); wrapped by the `rossum_validate_schema` MCP tool — pass the schema `id` in the body to enable engine-binding checks |
+| POST | `/v1/schemas/validate` | Validate schema content without saving (dry-run); wrapped by the `rossum_validate_schema` MCP tool — pass the schema `id` in the body to enable engine-binding checks. **Returns HTTP 200 whether the schema is valid or not** — see below |
+
+### `POST /schemas/validate` returns HTTP 200 for an INVALID schema
+
+The endpoint reports rejections **in the response body, not in the status code**. A valid schema
+returns `200 {}`; an invalid one *also* returns `200`, with an error tree as the body. A
+`resp.raise_for_status()` / `if status == 200: ok` check therefore passes straight over a
+rejection and you push the broken schema anyway.
+
+**Assert that the body is empty.** That is the whole validity test:
+
+```python
+errors = post(f"{base}/api/v1/schemas/validate", {"content": content, "id": schema_id})
+assert not errors, errors        # {} == valid; anything else == rejected
+```
+
+The error tree mirrors the submitted content **positionally** — a per-section list, then
+per-child index, then per-attribute messages:
+
+```json
+{"content": [{}, {}, {"children": {"14": {"prompt": ["This attribute is not allowed for this type of field."]}}}]}
+```
+
+Read it as: the **third** entry of `content` (index 2 — i.e. the third section in the tree you
+submitted), its child at index **14**, attribute **`prompt`**. The empty `{}` entries are the
+sections that passed — placeholders that keep the positions aligned, not findings. So never treat
+the list length as an error count, and always resolve an index back to your own submitted
+`content` to learn which field it is; the response carries no `schema_id`.
+
+Two leftover-attribute cases that trigger this and are easy to create by editing a field's type
+in place:
+
+- **`prompt` / `context` on a non-reasoning field.** These are only legal while
+  `ui_configuration.type` is `reasoning`. Change the type away from `reasoning` and the
+  attributes must be deleted in the same edit.
+- **A leftover `formula` on a non-formula field.** Same shape: convert a `formula` field to
+  `data`/`captured` and the `formula` property has to go with it.
+
+The `rossum_validate_schema` MCP tool already normalizes this — it returns
+`{"valid": <body is empty>, "errors": <body>}`, so read `valid`, not the transport status. The
+trap is only there when you call the endpoint directly.
 
 ### Schema Content Structure
 
@@ -600,7 +640,7 @@ Annotations represent extracted data from documents and track the full processin
 - `modifier` (string): User URL who last modified
 - `created_at`, `updated_at`, `confirmed_at`, `started_at` (string): ISO 8601 timestamps
 - `content` (object): Extracted data structure
-- `messages` (array): Validation messages and errors
+- `messages` (array): Validation messages and errors. **Empty for Rule output** — a native Rule's `show_message` action never lands here; read it from the `POST /content/validate` response body instead (see `business-rules-reference` → *Verifying a rule actually fired*)
 - `metadata` (object): Custom JSON (up to 4 KB)
 
 ### Annotation Response Example
@@ -631,7 +671,44 @@ Annotations represent extracted data from documents and track the full processin
 
 **Search**: `POST /v1/annotations/search` — Max page size 500 (1000 for CSV export)
 
-**Validate**: `POST /v1/annotations/{id}/content/validate` — Returns validation messages, constraint violations, table aggregations, and AI confidence scores
+**Validate**: `POST /v1/annotations/{id}/content/validate` — Returns validation messages, constraint violations, table aggregations, AI confidence scores, and `matched_trigger_rules` (the rules whose `trigger_condition` fired — see `business-rules-reference` → *Verifying a rule actually fired*)
+
+**Move**: `PATCH /v1/annotations/{id}` with `{"queue": "<target queue URL>", "schema": "<target schema URL>", "status": "to_review"}` — relocates the annotation without re-importing it. Send `schema` alongside `queue`: the annotation must point at the *target* queue's schema. Content is carried across as-is, which also means the target schema's **formulas do not re-evaluate** (see `txscript-reference` → *A queue move does NOT recompute formulas*). To re-extract instead, move with `status: "importing"` and accept the data loss (see *Document Sorting*).
+
+### Move permissions — a queue-scoped user can move, but only into their own queues
+
+Moving an annotation between queues is **not** an admin-only operation. A queue-scoped user (an
+annotator, say) can move a document via the `PATCH` above — but **only into a queue they are
+assigned to**. The target queue has to be in their own `user.queues` list.
+
+Attempting to move into a queue outside that list fails with:
+
+```
+HTTP 400 {"queue": ["Invalid hyperlink - Object does not exist."]}
+```
+
+**That is a permission failure wearing a validation error's clothes.** The queue is simply
+invisible to that token, so the serializer cannot resolve the hyperlink and reports it as a bad
+URL — **not** `403 permission_denied`. Reading it literally sends you off checking the URL for
+typos, the queue for deletion, or the org for a wrong hostname, when the actual answer is "this
+user is not assigned to that queue".
+
+- Diagnose it by listing the caller's own queues (`GET /v1/queues` as that token, or
+  `GET /v1/users/{id}` → `queues`). If the target is missing from that list, the 400 is
+  explained.
+- Fix it by assigning the user to the target queue (`PATCH /v1/users/{id}` with the full
+  `queues` list — it replaces, it is not additive), or by performing the move with a token that
+  can see both queues.
+- **An admin whose `token_owner`/user has `queues: []` is unscoped**, not zero-scoped — it can
+  see and target every queue in the organization. So the same PATCH that 400s for an annotator
+  succeeds unchanged for an admin, which makes this failure mode invisible when you test with an
+  admin token and only appears once a real end user tries it. Test moves with a token whose scope
+  matches the intended operator.
+- Expect the same shape — by construction, though only the move was measured — from any other
+  endpoint that takes a queue URL from a scoped token (upload, `POST /annotations/{id}/copy`,
+  rule/hook queue lists): an out-of-scope queue URL reads as nonexistent, not as forbidden. If
+  you get an unexplained `Invalid hyperlink` on a queue reference, check token scope before
+  anything else.
 
 ---
 
@@ -1028,7 +1105,7 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 | GET | `/v1/users/me` | Current user |
 | PUT | `/v1/users/{id}` | Update user |
 | PATCH | `/v1/users/{id}` | Partial update (assign queues, change role via `groups`, deactivate); wrapped by the `rossum_patch_user` MCP tool — `queues`/`groups` replace the full list, not additive |
-| DELETE | `/v1/users/{id}` | Delete user (not exposed as a tool — deactivate with `is_active=false` instead) |
+| DELETE | `/v1/users/{id}` | Delete user — **works** (204 + tombstone, see below); deliberately not wrapped as an MCP tool, so from Claude Code deactivate with `is_active=false` instead |
 | POST | `/v1/users/{id}/set_password` | Set password |
 
 ### User Fields
@@ -1044,6 +1121,14 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 - `max_token_lifetime_s` (integer): Token expiration duration
 
 Users can be auto-provisioned through SSO with roles specified in the JWT `roles` array.
+
+**Deleting vs. deactivating.** `DELETE /v1/users/{id}` is a real, working endpoint: it returns
+**HTTP 204** and leaves a tombstone — the user object remains readable with `deleted: true`
+rather than vanishing. It is simply **not wrapped by the `rossum-api` MCP server** (`not_planned`
+in `api-coverage.md` describes *tool coverage*, never API availability — see that file's legend).
+Deactivation (`PATCH {"is_active": false}`) remains the recommended retirement path because it is
+reversible and preserves the user's audit trail and annotation attribution intact; reach for the
+raw DELETE only when a hard delete is actually required.
 
 ### Memberships
 
@@ -1337,6 +1422,8 @@ TxScript is Rossum's Python-flavored expression language, used in schema-field f
 > **Editing rule:** edit `formulas/<field_id>.py` (formulas) or the `.py` next to a hook's JSON (serverless) — never the `formula`/`code` field in JSON; `prd2` does the round-trip.
 
 For the full reference — field/annotation access, helpers (`is_set`/`is_empty`/`default_to`), messaging, line-item `all_values`, the serverless `rossum_hook_request_handler` payload and `TxScript` API, formula constraints, and best practices — see the `txscript-reference` skill.
+
+> **A plain queue move does not recompute formulas.** A `PATCH` of `queue` + `schema` carries the values computed by the *source* schema across untouched; the target schema's formula for the same `schema_id` does not evaluate until something validates the annotation. This is exploitable (formula on the source, plain `data` field on the target = a value that survives the hop with no hook) and it is a trap (a formula field on a moved document is not necessarily current). See `txscript-reference` → *A queue move does NOT recompute formulas*.
 
 ---
 
@@ -1717,7 +1804,7 @@ The document sorting extension routes documents to different queues based on fie
 
 - `value`: the formula field value that triggers this rule
 - `target_queue`: queue ID to move the document to
-- `target_status`: status in the target queue after move (`"importing"` to re-extract, `"to_review"` to keep existing data)
+- `target_status`: status in the target queue after move (`"importing"` to re-extract, `"to_review"` to keep existing data — and *keeping* the data means the target schema's **formulas do not run**; see `txscript-reference` → *A queue move does NOT recompute formulas*)
 - `trigger_status`: the document must be in this status for the rule to fire
 
 **Reimport gotcha:** When `target_status` is `"importing"`, the document is re-extracted by the AI engine in the destination queue, which **resets all annotation data points** (field values, messages, etc.). To preserve field values across a reimport move, implement a Store/Restore data points hook pair: (1) a hook on the source queue saves critical field values to `annotation.metadata` before the move, and (2) a hook on the destination queue reads them back from metadata after reimport completes. Without this, any values set by formulas, matching, or manual corrections in the source queue will be lost.
