@@ -926,7 +926,7 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 
 ## Atlas Search Index Pre-flight (run before shipping any `$search` query)
 
-A `$search` stage against a missing or misnamed Atlas Search index does **not** error out. It returns zero results, and the hook log shows `status: completed`. A query that "works" in your editor will silently return nothing in production, and the failure mode looks like "no matches found" rather than "broken query" — the hardest class of MDH bug to diagnose. This historically cost real time on Eurofins and other deployments; the pre-flight closes it at build time.
+A `$search` stage against a missing or misnamed Atlas Search index does **not** error out. It returns zero results, and the hook log shows `status: completed`. A query that "works" in your editor will silently return nothing in production, and the failure mode looks like "no matches found" rather than "broken query" — the hardest class of MDH bug to diagnose. This has historically cost real time across multiple deployments; the pre-flight closes it at build time.
 
 **Run this every time you author, modify, or debug a query that contains `$search`.** It is two API calls and prevents hours of downstream debugging.
 

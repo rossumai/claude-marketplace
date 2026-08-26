@@ -195,8 +195,8 @@ old computed values until something re-runs the content pipeline. To re-evaluate
 **`actions` must include `started`.** A pure recalc changes no datapoint, so `user_update`
 emits nothing on its own.
 
-**`POST /content/validate` is what does the work.** Measured on annotation 22429840
-(2026-08-18), across the four calls a soft re-fire makes:
+**`POST /content/validate` is what does the work.** Measured live (2026-08-18) across the
+four calls a soft re-fire makes:
 
 | call | events fired | recomputes? |
 |---|---|---|
@@ -271,7 +271,7 @@ Because this re-sends whatever the export target is, treat it exactly like `conf
 
 Rossum has `POST /api/v1/internal/annotations/reautomate` — a batch endpoint that re-runs the **initialize + automation** pipeline on existing annotations *without re-uploading* (status → `importing`, content preserved, fires `annotation_content.initialize`, then the automation decision → `to_review` or `confirmed`/`exporting`; with `if_modified: try_to_confirm` it simulates open→Confirm for API-modified annotations; non-`to_review` annotations are skipped). It is the natural primitive for *"master data changed — re-run matching/automation on these N documents."*
 
-**It is Rossum-staff-only.** Verified live (NXP sandbox, 2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
+**It is Rossum-staff-only.** Verified live on a customer sandbox (2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
 
 ## Prove the hook ran — before you interpret the result
 
