@@ -80,7 +80,12 @@ In either case, the rule's `message` text reads naturally in the fire state — 
 
 ### Rule.actions — types and payload shape
 
-Three action types are commonly used at validation time:
+Three action types are commonly used at validation time. **The list below is not the complete
+set** — `actions[]` accepts more types than these (notably `change_queue`, which moves the
+annotation to another queue; its `reimport` flag decides whether the target re-extracts the
+document or inherits the existing content, and `reimport: false` is the case where the target
+schema's formulas do **not** re-evaluate — see `txscript-reference` → *A queue move does NOT
+recompute formulas*). Treat the three below as the validation-time workhorses, not an inventory.
 
 **`show_message`** — surface a message in the validation UI (**not** on the annotation object;
 see [Verifying a rule actually fired](#verifying-a-rule-actually-fired)):
@@ -139,8 +144,11 @@ POST /v1/annotations/{id}/content/validate
 ```
 
 (The annotation must be in `reviewing` first — `POST /annotations/{id}/start` — or the call
-returns HTTP 409. See the `iterate` skill for the wrapped start/validate/cancel loop; note that
-`["started"]` alone is rejected, so send both actions.)
+returns HTTP 409. `["started"]` alone is rejected, so send both actions. **From Claude Code, use
+`rossum_start_annotation` → `rossum_validate_content` → `rossum_cancel_annotation`**, not
+`rossum_refire_annotation`: the refire wrapper is the better iteration primitive in general, but
+its validate branch keeps only `updated_datapoints_count` and discards the messages, which are
+the thing you are here for.)
 
 Two places in that response answer "did it fire?":
 
@@ -163,10 +171,18 @@ Two places in that response answer "did it fire?":
 the same `schema_id` — matching on `content` text alone is unreliable once two rules share
 wording.
 
+> **Two different `detail` envelopes — do not reuse a parser across them.** The shape above is the
+> one in the **validate response's** `messages[]`, where `detail` is an *object*. The
+> **automation-blocker** payload nests its own `detail` under
+> `content[].samples[].details.detail`, and there it is a *list* — code that walks blockers
+> indexes `detail[0]`. Same key, different container; a walker written for one silently misreads
+> the other.
+
 **Check polarity in both directions.** A rule that fires when it should is only half the
 evidence; a `trigger_condition` inverted or missing its `is_empty` guard often fires on
 *everything*, which looks like success if you only ever test the problem case. Verify against
-two annotations (or two states of one):
+two annotations (or two states of one) — reading `matched_trigger_rules` from the raw response,
+or `raw_messages` if you are going through `rossum_validate_content`:
 
 | case | expectation |
 |---|---|
@@ -177,22 +193,27 @@ Only both rows together prove the predicate, not just its true branch.
 
 **Corroborating signals**, when you need more than the validate response:
 
-- `GET /v1/rules_execution_logs?annotation=<id>` (MCP: `rossum_list_rule_execution_logs`) — the
-  per-evaluation record of every rule run against that annotation, with `execution_result` and
-  the recorded `trigger_condition_values`. This is the tool for after-the-fact triage on a
-  document you are not re-validating.
-- `GET /v1/automation_blockers?annotation=<id>` — the durable side of an
-  `add_automation_blocker` action. Unlike the message, a blocker *does* persist on the
+- `GET /v1/rules_execution_logs?annotation=<id>` — the per-evaluation record of every rule run
+  against that annotation. The endpoint carries `trigger_condition_values` (what the expression
+  actually saw) and the resolved `actions`, which is what you want when a condition fired on
+  input you did not expect. The MCP wrapper `rossum_list_rule_execution_logs` compacts each row
+  to `{rule_id, rule_name, queue_id, annotation_id, trigger_event, execution_result,
+  execution_error, created_at, request_id}` — enough for "did it run and did it error", **not**
+  enough to see the values; for those, read the endpoint. Either way this is the route for
+  after-the-fact triage on a document you are not re-validating.
+- `GET /v1/automation_blockers?annotation=<id>` (readable through `rossum_get`) — the durable
+  side of an `add_automation_blocker` action. Unlike the message, a blocker *does* persist on the
   annotation, so it survives the validation call that created it.
 - A rule that appears in neither `matched_trigger_rules` nor the logs may simply not be attached
   to the queue: check `GET /v1/rules/{id}` for a populated `queues` array (see
   *Field constraints & create/link gotchas* above) and `enabled: true`.
 
 > **From Claude Code:** the MCP wrappers project the validate response down.
-> `rossum_validate_content` surfaces the messages as `raw_messages` (so `detail.rule_id` is
-> readable), while `rossum_refire_annotation` reports only `updated_datapoints_count`. Neither
-> passes `matched_trigger_rules` through today — for that one field, issue the raw
-> `POST /content/validate` yourself.
+> `rossum_validate_content` surfaces the messages as `raw_messages`, so `detail.rule_id` — the
+> signal you need in practice — **is** readable. `rossum_refire_annotation` reports only
+> `updated_datapoints_count`. Neither passes `matched_trigger_rules` through today, so that one
+> field is **not reachable from Claude Code**: use `raw_messages` plus the rule execution logs,
+> and report the gap rather than open-coding a request around the missing projection.
 
 ## Legacy Business Rules Validation extension
 

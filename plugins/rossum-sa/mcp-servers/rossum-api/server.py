@@ -2270,7 +2270,9 @@ def handle_create_user(request_id, arguments):
     "DOES exist and works (returns 204 and leaves a 'deleted': true tombstone on the user) — it "
     "is simply not wrapped by this MCP server ('not_planned' in api-coverage.md means no tool, "
     "not no endpoint). Deactivation is the reversible, recommended path and the one available "
-    "here; if a hard delete is genuinely required, issue the DELETE directly. If you don't already "
+    "here AND the only one reachable from this server — if a hard delete is genuinely required, "
+    "say so and hand off to the UI or an out-of-band client rather than open-coding a request "
+    "around the missing tool. If you don't already "
     "have the user's complete queue/group lists, read them first (rossum_get with path "
     "/api/v1/users/{id}) before sending a replacement. "
     "Email and username cannot be changed here. This is a write operation.",
@@ -4753,8 +4755,8 @@ def handle_patch_schema(request_id, arguments):
     "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema to catch "
     "problems without touching the live schema. NOTE: the underlying endpoint returns HTTP 200 "
     "for an INVALID schema too — rejections live in the response body, so a status-code check "
-    "misses them; this tool normalizes that into valid=true/false (valid == empty body), which "
-    "is what you should read. Returns valid=true/false plus the API's "
+    "misses them. This tool normalizes that into valid=true/false (valid == empty body); read "
+    "'valid', never the transport status. Also returns the API's "
     "error tree, which mirrors the content positionally: content[N] -> "
     "{'children': {'<child index>': {'<attribute>': ['message', ...]}}}. IMPORTANT: pass "
     "schema_id whenever validating an edit to an EXISTING schema — engine-binding checks "
@@ -5300,7 +5302,9 @@ def handle_patch_annotation(request_id, arguments):
 @_tool(
     "rossum_start_annotation",
     "Starts a review session on an annotation — transitions to 'reviewing' status and "
-    "locks the annotation to the calling user. Fires 'annotation_content.started' hook events. "
+    "locks the annotation to the calling user. It fires ONLY 'annotation_status.changed' — NOT "
+    "'annotation_content.started'. Taking the lock does not run the content chain; content/validate "
+    "is what does that (rossum_validate_content, or rossum_refire_annotation mode='validate'). "
     "Only needed for operations that require an active review session: content/validate "
     "(rossum_validate_content) and confirm (rossum_confirm_annotation) return HTTP 409 without "
     "it. NOT needed for content edits — rossum_update_annotation_content writes directly, no "
@@ -5537,10 +5541,12 @@ def handle_confirm_annotation(request_id, arguments):
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Hook actions to fire. Only two values are usable: ['user_update'] (rules "
-                    "and field-update hooks; emits nothing unless a datapoint actually changed) "
-                    "and ['user_update', 'started'] (also reaches lazy-lookup hooks; the correct "
-                    "choice for a pure recalc). ['started'] ALONE is rejected with HTTP 400 "
+                    "Hook actions to fire. Two combinations are known to work: ['user_update'] "
+                    "(rules and field-update hooks; emits nothing unless a datapoint actually "
+                    "changed) and ['user_update', 'started'] (also reaches lazy-lookup hooks; the "
+                    "correct choice for a pure recalc). Other annotation_content action names "
+                    "('updated', 'initialize', 'export') were not probed. "
+                    "['started'] ALONE is rejected with HTTP 400 "
                     "\"Selected actions: [HookActions.started] not allowed.\" — 'started' must "
                     "be paired with 'user_update'. Default ['user_update', 'started']."
                 ),
@@ -6131,9 +6137,12 @@ def handle_import_email(request_id, arguments):
     "  - 'validate' (default, fastest): start → content/validate(actions) → cancel-in-finally. "
     "Fires hooks listening on 'user_update' and 'started' actions. Returns the resulting "
     "compact annotation view (same shape as rossum_get_annotation).\n"
-    "  - 'toggle': PATCH status postponed → to_review → wait → read. Fires "
-    "'annotation_content.started' plus any status-listening hooks. Slower; use when soft "
-    "validate is not enough.\n"
+    "  - 'toggle': PATCH status postponed → to_review → wait → read. Fires status-listening "
+    "hooks via 'annotation_status.changed'. Whether the transition ALSO emits "
+    "'annotation_content.started' is UNVERIFIED and sits against a measurement showing a status "
+    "PATCH emitting 'annotation_status.changed' only, with no recompute — so do not rely on this "
+    "mode to re-run the content chain; mode='validate' is the primitive for that. Slower; use "
+    "when soft validate is genuinely not enough.\n"
     "  - 'reextract' (preferred for initialize hooks): PATCH status→'importing' with "
     "rir_poll_id=null and messages=[] — the API call behind the UI's Re-extract button — then "
     "poll past 'importing'. Fires 'annotation_content.initialize' and re-runs OCR/extraction "
@@ -6166,8 +6175,9 @@ def handle_import_email(request_id, arguments):
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "validate mode only — hook actions to fire. Only ['user_update'] and "
-                    "['user_update', 'started'] are usable; ['started'] alone is rejected with "
+                    "validate mode only — hook actions to fire. ['user_update'] and "
+                    "['user_update', 'started'] are the combinations known to work; other action "
+                    "names were not probed. ['started'] alone is rejected with "
                     "HTTP 400 (\"Selected actions: [HookActions.started] not allowed.\"). "
                     "Default ['user_update', 'started']."
                 ),

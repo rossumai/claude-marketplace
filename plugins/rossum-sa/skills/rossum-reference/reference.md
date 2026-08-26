@@ -289,7 +289,10 @@ in place:
   `ui_configuration.type` is `reasoning`. Change the type away from `reasoning` and the
   attributes must be deleted in the same edit.
 - **A leftover `formula` on a non-formula field.** Same shape: convert a `formula` field to
-  `data`/`captured` and the `formula` property has to go with it.
+  `data` or `captured` and the `formula` property has to go with it. Prefer `data` for a field
+  that a hook or a carried value populates — on an engine-bound queue, `captured` additionally
+  requires a matching engine field to exist first (see *Binding rules on engine-bound queues*),
+  so switching to `captured` can trade one validation error for another.
 
 The `rossum_validate_schema` MCP tool already normalizes this — it returns
 `{"valid": <body is empty>, "errors": <body>}`, so read `valid`, not the transport status. The
@@ -673,9 +676,9 @@ Annotations represent extracted data from documents and track the full processin
 
 **Validate**: `POST /v1/annotations/{id}/content/validate` — Returns validation messages, constraint violations, table aggregations, AI confidence scores, and `matched_trigger_rules` (the rules whose `trigger_condition` fired — see `business-rules-reference` → *Verifying a rule actually fired*)
 
-**Move**: `PATCH /v1/annotations/{id}` with `{"queue": "<target queue URL>", "schema": "<target schema URL>", "status": "to_review"}` — relocates the annotation without re-importing it. Send `schema` alongside `queue`: the annotation must point at the *target* queue's schema. Content is carried across as-is, which also means the target schema's **formulas do not re-evaluate** (see `txscript-reference` → *A queue move does NOT recompute formulas*). To re-extract instead, move with `status: "importing"` and accept the data loss (see *Document Sorting*).
+**Move**: `PATCH /v1/annotations/{id}` with `{"queue": "<target queue URL>", "schema": "<target schema URL>", "status": "to_review"}` — relocates the annotation without re-importing it. Send `schema` alongside `queue`: the annotation must point at the *target* queue's schema. Content is carried across as-is, which also means the target schema's **formulas do not re-evaluate** (see `txscript-reference` → *A queue move does NOT recompute formulas*). To re-extract instead, move with `status: "importing"` and accept the data loss (see *Document Sorting*). **No MCP tool wraps the move** — `rossum_patch_annotation` accepts only `status` and `metadata`.
 
-### Move permissions — a queue-scoped user can move, but only into their own queues
+#### Move permissions — a queue-scoped user can move, but only into their own queues
 
 Moving an annotation between queues is **not** an admin-only operation. A queue-scoped user (an
 annotator, say) can move a document via the `PATCH` above — but **only into a queue they are
@@ -693,17 +696,19 @@ URL — **not** `403 permission_denied`. Reading it literally sends you off chec
 typos, the queue for deletion, or the org for a wrong hostname, when the actual answer is "this
 user is not assigned to that queue".
 
-- Diagnose it by listing the caller's own queues (`GET /v1/queues` as that token, or
-  `GET /v1/users/{id}` → `queues`). If the target is missing from that list, the 400 is
-  explained.
+- **First establish whether the token is scoped at all.** `queues: []` on an *admin* user means
+  **unscoped**, not zero-scoped — such a token sees and can target every queue in the
+  organization. So an empty `queues` list is not evidence of a scoping problem; the user's role
+  is what tells you how to read it. (This is also why the failure mode is invisible in testing:
+  the same PATCH that 400s for an annotator succeeds unchanged for an admin, and only surfaces
+  once a real end user tries it. Test moves with a token whose scope matches the intended
+  operator.)
+- **Then, for a genuinely scoped token**, list the queues it can actually see — `GET /v1/queues`
+  as that token, or `GET /v1/users/{id}` → `queues`. If the target is missing from what that
+  token can see, the 400 is explained.
 - Fix it by assigning the user to the target queue (`PATCH /v1/users/{id}` with the full
   `queues` list — it replaces, it is not additive), or by performing the move with a token that
   can see both queues.
-- **An admin whose `token_owner`/user has `queues: []` is unscoped**, not zero-scoped — it can
-  see and target every queue in the organization. So the same PATCH that 400s for an annotator
-  succeeds unchanged for an admin, which makes this failure mode invisible when you test with an
-  admin token and only appears once a real end user tries it. Test moves with a token whose scope
-  matches the intended operator.
 - Expect the same shape — by construction, though only the move was measured — from any other
   endpoint that takes a queue URL from a scoped token (upload, `POST /annotations/{id}/copy`,
   rule/hook queue lists): an out-of-scope queue URL reads as nonexistent, not as forbidden. If

@@ -48,12 +48,15 @@ def render_coverage_doc(inventory: list[dict], coverage_map: dict) -> str:
         "the scheduled coverage workflow._",
         "",
         "_**This table is about tool coverage, not about what the Rossum API supports.** Every "
-        "status below describes *this MCP server*; the endpoint itself exists and works "
-        "regardless. ✅ covered = a dedicated tool wraps it. ✅ via rossum_get = readable "
-        "through the generic `rossum_get` tool (no dedicated tool). ⬜ pending = uncovered "
-        "write, no MCP tool yet. 🚫 not_planned = deliberately not wrapped — **it does not mean "
-        "the operation is unavailable**; call it directly if you need it. ⚠️ deprecated = "
-        "deprecated by Rossum._",
+        "status below describes *this MCP server*; whether **your token** may call a given "
+        "endpoint is a separate question. ✅ covered = a dedicated tool wraps it. "
+        "✅ via rossum_get = readable through the generic `rossum_get` tool (no dedicated "
+        "tool). ⬜ pending = uncovered write, no MCP tool yet. 🚫 not_planned = "
+        "deliberately not wrapped (deemed too destructive, too niche, or out of an SA's "
+        "remit) — **it does not mean the operation does not exist**, so never tell a user "
+        "the platform cannot do it; but there is no path to it from here either, so hand off "
+        "rather than open-coding a request around the gap. ⚠️ deprecated = deprecated "
+        "by Rossum._",
         "", head, "",
     ]
     for tag in sorted(rows_by_tag):
