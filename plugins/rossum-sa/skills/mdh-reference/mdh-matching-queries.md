@@ -928,6 +928,8 @@ This pattern ensures: if exact match found, it's pre-selected; otherwise, the em
 
 A `$search` stage against a missing or misnamed Atlas Search index does **not** error out. It returns zero results, and the hook log shows `status: completed`. A query that "works" in your editor will silently return nothing in production, and the failure mode looks like "no matches found" rather than "broken query" — the hardest class of MDH bug to diagnose. This has historically cost real time across multiple deployments; the pre-flight closes it at build time.
 
+**What this pre-flight is now for.** Search indexes live in the MDH datasets registry and are **durable** — a declared index is continuously reconciled onto the collection, so it cannot silently disappear. You therefore do **not** need to audit for indexes that vanished, and index-repair loops are obsolete. What durability does *not* do is create an index nobody declared, so the live failure mode is a **conformance** one: your query names an index that was never declared, or one whose `mappings` omit a field the query references. That is what the steps below check.
+
 **Run this every time you author, modify, or debug a query that contains `$search`.** It is two API calls and prevents hours of downstream debugging.
 
 ### Step 1: List the search indexes on the collection
@@ -937,6 +939,13 @@ data_storage_list_search_indexes(collection_name="<your-collection>")
 ```
 
 Confirm each `index` name referenced in your `$search` stages appears in the response. Index names are case-sensitive. Typos (`vendor_name_idx` vs `vendor_name_index`) silently fall through.
+
+The response is a list of declarations with live status. Two fields decide whether the index is usable *right now*:
+
+- **`queryable`** — `$search` can only use the index once this is `true`.
+- **`status`** — `PENDING_CREATE` / `PENDING_UPDATE` / `PENDING_DELETE` mean the registry is ahead of the engine (a reconcile is still in flight); `PENDING` / `BUILDING` / `READY` / `STALE` / `FAILED` come from the engine. `FAILED` is the one to escalate — the declaration is valid but the engine could not build it.
+
+An environment-suffix mismatch is the classic trap and durability does not protect you from it: a config naming `search_suppliers_v1` against a collection declaring `search_suppliers_dev_v1` returns empty forever, with both indexes healthy.
 
 ### Step 2: Verify field mappings
 
@@ -949,7 +958,11 @@ For each named index, inspect its `mappings.fields` (returned by the same `data_
 
 ### Step 3: If anything is missing, create or update the index
 
-If the index doesn't exist or the field mapping is wrong, use `data_storage_create_search_index` to create one with the right mappings, or drop and recreate (`data_storage_drop_search_index` + `data_storage_create_search_index`) if the existing one is wrong. Creation is asynchronous — wait until the index status is `READY` before re-running the query.
+If the index doesn't exist or the field mapping is wrong, use `data_storage_create_search_index` — it is an **upsert**, so re-declaring an existing name replaces its definition and there is no need to drop first. Use `data_storage_drop_search_index` only to remove an index you genuinely no longer want.
+
+The write returns `202` and the declaration lands immediately, but the index is **not queryable yet** — a reconcile builds it on the engine. Poll `data_storage_list_search_indexes` until `status: READY` and `queryable: true` (~1-2 min) rather than re-issuing the create. There is no job id to poll.
+
+**Never fix an index by editing it on the engine directly** — reconcile restores the declaration and your change is reverted. Change the declaration.
 
 ### Step 4: Smoke-test the query
 
