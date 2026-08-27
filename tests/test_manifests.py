@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
 import repo_lib as R
 
@@ -122,6 +123,47 @@ def test_skill_has_frontmatter(name, skill_md):
     assert fm, f"{skill_md} has no YAML frontmatter block (it won't register)"
     assert fm.get("name"), f"{skill_md} frontmatter missing 'name'"
     assert fm.get("description"), f"{skill_md} frontmatter missing 'description'"
+
+
+def _raw_frontmatter_block(skill_md) -> str | None:
+    """Return the raw text between a SKILL.md's leading ``---`` markers.
+
+    Unlike R.parse_frontmatter, this does no interpretation — it hands the
+    exact text to a real YAML parser.
+    """
+    lines = skill_md.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return "\n".join(lines[1:i])
+    return None
+
+
+@pytest.mark.parametrize(
+    "name,skill_md", _all_skill_mds(), ids=[n for n, _ in _all_skill_mds()]
+)
+def test_skill_frontmatter_is_valid_yaml(name, skill_md):
+    """R.parse_frontmatter is a deliberately lenient first-colon splitter (see
+    its docstring), so it happily accepts frontmatter that a real YAML
+    consumer — e.g. GitHub's SKILL.md renderer — rejects outright. That gap let
+    five SKILL.md files ship with frontmatter GitHub couldn't render. Parse the
+    raw block with an actual YAML parser here so that class of bug fails CI.
+    """
+    raw = _raw_frontmatter_block(skill_md)
+    assert raw is not None, f"{skill_md} has no YAML frontmatter block"
+    try:
+        yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        pytest.fail(
+            f"{skill_md} frontmatter is not valid YAML: {exc}\n"
+            "Note: the line/column YAML reports is usually misleading here — "
+            "the real cause is almost always an unquoted value elsewhere in "
+            "the block that starts with '[' (parsed as a flow sequence) or "
+            "contains a colon followed by a space (ends the plain scalar "
+            "early, e.g. 'block automation: native Rossum...'). Quote the "
+            "whole value instead of reformatting it."
+        )
 
 
 @pytest.mark.parametrize(

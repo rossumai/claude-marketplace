@@ -4,6 +4,11 @@
 # here beyond pytest itself.
 pytest>=8.0
 ruff>=0.6
+# Needed by tests/test_manifests.py to validate SKILL.md frontmatter with a
+# real YAML parser — the lenient in-repo splitter (repo_lib.parse_frontmatter)
+# cannot detect frontmatter that real YAML consumers (e.g. GitHub's renderer)
+# reject.
+pyyaml>=6.0
 # Needed by plugins/rossum-sa/skills/render-export-template/tests when that skill
 # is present on the branch under test.
 jinja2>=3.1

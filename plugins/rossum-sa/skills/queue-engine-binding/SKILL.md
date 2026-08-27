@@ -1,7 +1,7 @@
 ---
 name: queue-engine-binding
 description: Bind Rossum queues to custom extraction engines via the public API. Four modes — convert a generic-engine queue to a new custom engine, create a new engine-bound queue (greenfield), attach a queue to an existing engine, or revert to the generic engine. Use when changing which extraction engine a queue uses, when extraction needs fields outside the pretrained catalog, or when the user says "convert this queue to a custom engine", "create an engine for this queue", "attach this queue to engine X", "detach the engine".
-argument-hint: [convert|greenfield|attach|revert] [queue-id]
+argument-hint: "[convert|greenfield|attach|revert] [queue-id]"
 allowed-tools: Read, Write, Grep, Glob, Bash
 ---
 
