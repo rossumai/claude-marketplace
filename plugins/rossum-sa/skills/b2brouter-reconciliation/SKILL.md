@@ -1,7 +1,7 @@
 ---
 name: b2brouter-reconciliation
 description: Use when checking whether e-invoices received on the B2Brouter network all landed in Rossum — "B2Brouter reconciliation", "did we lose any e-invoices", "reconcile e-invoices against Rossum", "are all invoices from the e-invoicing network in Rossum", "check for missing e-invoices", "invoice arrived at the network but not in Rossum".
-argument-hint: [--ui-host <org>.rossum.app] [--show-discovery|--check-coverage]
+argument-hint: "[--ui-host <org>.rossum.app] [--show-discovery|--check-coverage]"
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
