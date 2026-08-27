@@ -1,7 +1,7 @@
 ---
 name: test-behavioral-equivalence
 description: Verify that changes to a Rossum implementation preserve behavior. Captures a "before" snapshot of annotation outputs, replays the same documents against the upgraded implementation, and diffs the "after" outputs against the snapshot. Use after an upgrade, refactor, or any change intended to be behavior-preserving. Triggers on "test this upgrade", "verify this change", "regression test", "check behavioral equivalence", "did my changes break anything", "test before promoting".
-argument-hint: [path-to-target-impl] [--source-env=<name>] [--target-env=<name>] [--corpus=<ids-file>] [--canary] [--skip-static]
+argument-hint: "[path-to-target-impl] [--source-env=<name>] [--target-env=<name>] [--corpus=<ids-file>] [--canary] [--skip-static]"
 allowed-tools: Read, Grep, Glob, Bash, Agent
 context: fork
 ---

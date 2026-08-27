@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, in-place re-extract, re-upload, and export re-fire (status → exporting) — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", "re-test the export", "export this document again", or when the user invokes a goal-style prompt. Also use when a formula, schema or rule change must be re-evaluated on a document that already exists — "trigger the recalc", "recompute the formulas", "refresh this document", "the field still shows the old value after my push", "re-run matching on this annotation".
-argument-hint: [annotation-id-or-url] [--goal=<short description>] [--env=<name>] [--max-iterations=<N>]
+argument-hint: "[annotation-id-or-url] [--goal=<short description>] [--env=<name>] [--max-iterations=<N>]"
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 ---
 
