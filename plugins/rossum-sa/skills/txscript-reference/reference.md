@@ -720,6 +720,45 @@ The absorbed helper field can be deleted from the schema. The trade-off is reada
 
 This pattern is named "absorb" because the consumer formula absorbs the producer's definition. It's not a Rossum-specific construct — it's a refactoring move enabled by formulas being arbitrary Python expressions.
 
+## A queue move does NOT recompute formulas
+
+Moving an annotation to another queue — `PATCH /v1/annotations/{id}` with a new `queue` +
+`schema` (which is also what a `change_queue` rule action with `reimport: false` and what the
+document-sorting extension with `target_status: "to_review"` do) — **carries the existing
+computed values across untouched**. The target schema's formula for that `schema_id` does not
+evaluate on arrival. Nothing recomputes until something *validates* the annotation
+(`POST /content/validate`, a UI open, a re-import).
+
+Measured: a field whose formula on the **source** schema produced `"A"` landed on a queue whose
+formula for the same `schema_id` produces `"B"`, and still read `"A"` after the move.
+
+Two consequences, and they pull in opposite directions:
+
+**(a) It enables a deliberate carry pattern.** Make the field a **formula** on the source schema
+and a plain **`data`** field (`ui_configuration.type: "data"`, no `formula`) on the target. The
+literal value computed on the source survives the hop and is then frozen — no hook, no metadata
+store/restore, no re-derivation on a schema that may not even have the input fields. This is the
+cheapest way to hand a derived value to a downstream queue.
+
+| Source schema | Target schema | Result after the move |
+|---|---|---|
+| `formula` field | plain `data` field, same `schema_id` | source-computed value carried and frozen ✅ |
+| `formula` field | `formula` field, same `schema_id` | source value carried; **target formula does not run** until a validate ⚠️ |
+
+**(b) Never assume a formula field is current on a moved document.** Provenance decides:
+
+- Arrived by **import** → formulas were computed by that queue's schema. Current.
+- Arrived by **move** → the value is whatever the *previous* queue computed. Stale with respect
+  to the target schema, and it will silently stay stale for as long as nobody validates it.
+- Arrived by **move with re-import** (`reimport: true` / `target_status: "importing"`) → content
+  is re-extracted from scratch, so formulas do run on the target schema — at the cost of losing
+  every other value (see `rossum-reference` → *Document Sorting*).
+
+So when a moved document shows an unexpected value in a formula field, check where it came from
+before you go looking for a bug in the formula. And when you *want* the target's formula to win,
+force a recalc explicitly — a soft re-fire (`content/validate` with
+`actions: ["user_update", "started"]`; see the `iterate` skill) is the lightest lever.
+
 ## Multi-variant formulas across queues
 
 A schema field can have different formulas across queues (when queues share a schema family but diverge in details — e.g. an IT/FR variant of a date-aggregation formula). Each queue's local `formulas/<field_id>.py` is independent.

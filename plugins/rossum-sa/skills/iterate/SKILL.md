@@ -107,7 +107,7 @@ Pick the right one based on **which hook event** your deliverable listens for, o
 | Pattern | MCP tool | Fires hooks on | Use when |
 |---|---|---|---|
 | **Soft re-fire** ⭐ default | `rossum_refire_annotation` `mode="validate"` | `user_update`, `started` (per actions list) | Iterating on validation rules, MDH matching, field-update hooks, formulas. Returns updated datapoints inline plus the full compact annotation view. |
-| **Status toggle** | `rossum_refire_annotation` `mode="toggle"` | `annotation_content.started` + any status-listening hooks | Hook listens **only** to `started`, or you need full content re-render side-effects. |
+| **Status toggle** | `rossum_refire_annotation` `mode="toggle"` | `annotation_status.changed` + any status-listening hooks (see the ⚠️ below on `annotation_content.started`) | You need status-transition side-effects. **Not** the lever for a started-only content hook — send `actions=["user_update", "started"]` to soft re-fire instead. |
 | **Re-extract** ⭐ for initialize | `rossum_refire_annotation` `mode="reextract"` | `annotation_content.initialize`, full OCR, doc-type detection | Iterating on `initialize` hooks or OCR-adjacent logic. Re-imports **in place**: same annotation ID, no duplicate document. **Replaces extracted content.** |
 | **Re-upload** | `rossum_refire_annotation` `mode="reupload"` | `annotation_content.initialize`, full OCR, doc-type detection | Same events as re-extract, but when the original must survive untouched. **Produces a new annotation ID** (returned in the response). |
 | **Direct edit + re-fire** | `rossum_update_annotation_content` → `rossum_refire_annotation` `mode="validate"` `actions=["user_update"]` | `user_update` | Testing a hook that reacts to one specific datapoint change. The content edit itself needs **no** start/cancel lock. |
@@ -146,14 +146,35 @@ What it does, atomically:
 
 > **All three calls return 200/204 and bump `modified_at` whether or not any hook ran.** A clean status transition is not evidence of execution — see [Prove the hook ran](#prove-the-hook-ran--before-you-interpret-the-result) before you read anything into the result.
 
-**Action selection.**
+**Action selection.** Two combinations are known to work: `["user_update"]` and
+`["user_update", "started"]`. `started` is **not** accepted on its own. (The other
+`annotation_content` action names — `updated`, `initialize`, `export` — were not probed; there is
+no reason to send them to `validate`.)
+
 - `["user_update"]` — fastest, but ONLY when you are also editing a datapoint. `user_update`
   fires off the back of *changed* datapoints, so on a pure recalc (no edit) it emits nothing
   and you get zero hook runs — a silent no-op that reads as "my fix didn't work".
-- Recalc with no edit → you MUST include `"started"`. Measured: all 9 content events fired
-  as `annotation_content.started`.
-- `["started"]` — use when the hook listens on `annotation_content.started` (lazy lookups, one-time info messages).
-- `["user_update", "started"]` — default; use both when uncertain or when iterating on a chain mixing patterns.
+- `["user_update", "started"]` — **the default.** Use it for a pure recalc (no edit), when the
+  hook listens on `annotation_content.started` (lazy lookups, one-time info messages), or
+  whenever you are iterating on a chain that mixes patterns.
+- `["started"]` alone is **rejected by the API** — `HTTP 400
+  {"actions":["Selected actions: [HookActions.started] not allowed."]}`. To reach a
+  `started`-only hook you must still send `user_update` alongside it; the extra action is
+  harmless (with no datapoint change it emits nothing of its own).
+
+Measured against a live environment, on the same annotation:
+
+| `POST /content/validate` body | result |
+|---|---|
+| `{}` | 200 — **0** `annotation_content` runs |
+| `{"actions": ["user_update"]}` | 200 — **0** runs (no datapoint was edited) |
+| `{"actions": ["started"]}` | **400** `Selected actions: [HookActions.started] not allowed.` |
+| `{"actions": ["user_update", "started"]}` | 200 — **full extension chain fires** |
+
+> **A bare `POST /annotations/{id}/start` fires no `annotation_content` event at all** — only
+> `annotation_status.changed`. It is the natural thing to reach for ("open the document, let the
+> hooks run"), and the resulting silence looks exactly like a broken hook subscription. `start`
+> only takes the review lock; `content/validate` is what runs the content chain.
 
 **Reading the result.** The compact response has:
 - `fields` — flat `{schema_id: {value, ocr?, normalized?, src, score?}}`. `src` is one of `human/formula/connector/rules/data_matching/score/NA`.
@@ -174,8 +195,8 @@ old computed values until something re-runs the content pipeline. To re-evaluate
 **`actions` must include `started`.** A pure recalc changes no datapoint, so `user_update`
 emits nothing on its own.
 
-**`POST /content/validate` is what does the work.** Measured on annotation 22429840
-(2026-08-18), across the four calls a soft re-fire makes:
+**`POST /content/validate` is what does the work.** Measured live (2026-08-18) across the
+four calls a soft re-fire makes:
 
 | call | events fired | recomputes? |
 |---|---|---|
@@ -197,7 +218,16 @@ field back and assert the new value. A 200 is not a result.
 rossum_refire_annotation(annotation_id=<id>, mode="toggle", wait_seconds=15)
 ```
 
-PATCH status `postponed → to_review`, wait, then read. Slower than validate (one round-trip per status PATCH + the wait), but fires `annotation_content.started` and any status-listening hooks. Engine re-extraction is **not** triggered — only the hook chain re-runs.
+PATCH status `postponed → to_review`, wait, then read. Slower than validate (one round-trip per status PATCH + the wait). It fires `annotation_status.changed` and any status-listening hooks. Engine re-extraction is **not** triggered.
+
+> ⚠️ **Whether a status toggle also emits `annotation_content.started` is unresolved.** This
+> section has long claimed it does, but the measured table above records a status PATCH emitting
+> `annotation_status.changed` only, with **no** recompute. That row does not record which status
+> the annotation came *from*, so it may not be the `postponed → to_review` transition the toggle
+> performs — which is exactly why neither claim is settled. Until someone probes
+> `postponed → to_review` on a live annotation and reads the hook log, **do not
+> reach for toggle to re-run the content chain** — soft re-fire with
+> `actions=["user_update", "started"]` is the primitive that is measured to do it.
 
 ### Re-upload
 
@@ -241,7 +271,7 @@ Because this re-sends whatever the export target is, treat it exactly like `conf
 
 Rossum has `POST /api/v1/internal/annotations/reautomate` — a batch endpoint that re-runs the **initialize + automation** pipeline on existing annotations *without re-uploading* (status → `importing`, content preserved, fires `annotation_content.initialize`, then the automation decision → `to_review` or `confirmed`/`exporting`; with `if_modified: try_to_confirm` it simulates open→Confirm for API-modified annotations; non-`to_review` annotations are skipped). It is the natural primitive for *"master data changed — re-run matching/automation on these N documents."*
 
-**It is Rossum-staff-only.** Verified live (NXP sandbox, 2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
+**It is Rossum-staff-only.** Verified live on a customer sandbox (2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
 
 ## Prove the hook ran — before you interpret the result
 
@@ -304,9 +334,10 @@ Look for:
 - **A 200/204 and a bumped `modified_at` are not proof a hook ran.** `start`, `content/validate` and `cancel` all succeed and walk the status through the transition without necessarily emitting a content event that any hook listens for — a `validate` with no datapoint change can produce zero hook runs. Establish execution explicitly (see [Prove the hook ran](#prove-the-hook-ran--before-you-interpret-the-result)).
 - **Hook log retrieval can be unavailable per deployment.** `GET /hooks/{id}/logs` (and the `/logs`, `/hook_logs` variants) may 404 depending on environment and token. Then no-run and ran-and-skipped are externally identical, and `rossum_list_hook_logs` cannot break the tie — use `rossum_test_hook`, whose `log` comes back inline.
 - **`show_info` messages do not reliably surface on the annotation.** Don't use them as a debug channel: a missing message is not evidence that a branch was skipped. Read the `log` from `rossum_test_hook` instead.
-- **The start/cancel lock is for `content/validate` and `confirm` only — NOT for content edits.** `POST /content/operations` (i.e. `rossum_update_annotation_content`) succeeds without a review session on `to_review` and `postponed` annotations and preserves the status; wrapping it in start/cancel just fires needless `annotation_content.started` events. `content/validate` and `confirm`, by contrast, return HTTP 409 unless the annotation is in `reviewing`.
+- **The start/cancel lock is for `content/validate` and `confirm` only — NOT for content edits.** `POST /content/operations` (i.e. `rossum_update_annotation_content`) succeeds without a review session on `to_review` and `postponed` annotations and preserves the status; wrapping it in start/cancel just adds two pointless status transitions and takes a lock you do not need. `content/validate` and `confirm`, by contrast, return HTTP 409 unless the annotation is in `reviewing`.
 - **`cancel` is automatic in `mode="validate"`** — the MCP tool wraps cancel in try/finally. If you ever call `rossum_start_annotation` standalone, you MUST call `rossum_cancel_annotation` afterwards (the start tool's success message includes a reminder). Cancel restores the **pre-start** status — a `postponed` annotation returns to `postponed`, not `to_review`.
-- **`content/validate` actions must include the trigger your hook listens on.** If the hook only listens on `started` and you send `actions=["user_update"]`, the hook will not fire. Cross-check the hook's `events` array against the actions list.
+- **`content/validate` actions must include the trigger your hook listens on — and `started` cannot travel alone.** If the hook only listens on `started` and you send `actions=["user_update"]`, the hook will not fire. The fix is `actions=["user_update", "started"]`, **not** `actions=["started"]` — that returns `HTTP 400 {"actions":["Selected actions: [HookActions.started] not allowed."]}`. Cross-check the hook's `events` array against the actions list.
+- **`POST /start` on its own fires nothing a content hook can hear.** It emits `annotation_status.changed` only — no `annotation_content.*` event. Taking the lock is not running the chain; `content/validate` is.
 - **Custom dedup hooks may auto-delete re-uploads (defensive).** Some customer queues have a custom hook on `annotation_content.initialize` that PATCHes `status: deleted` for duplicate documents. The **stock Rossum Duplicate Handling extension does NOT do this** — its valid actions are `fill_field`, `forward_annotation`, `mark_duplicate`, `show_message`, `stop_automation`, `apply_label`; none transition status. (`mark_duplicate` flags the annotation but leaves it in `to_review`.) For customer-custom delete patterns, `mode="reupload"` defensively detects `status: deleted` after upload and restores via PATCH. There is now a `rossum_upload_document` tool for uploading a local file to a queue (modern `/uploads` API); note it performs the upload but **not** the dedup auto-restore, so on a queue with a custom delete-on-duplicate hook, replicate the `status: deleted` → `to_review` check yourself.
 - **The `reviewing` lock scopes validate/confirm — raw content writes bypass it.** Between start and cancel the annotation is locked to the calling user: `content/validate` and `confirm` from another caller 409. Raw `content/operations` from another caller still lands, which is worse — it mutates values under the reviewer's live session. That is why `rossum_update_annotation_content` refuses a `reviewing` annotation unless the session is the caller's own.
 - **Engine re-extraction is not triggered by status toggle.** Only the hook chain re-runs. If your change touches OCR or extraction itself, use `mode="reupload"` — toggle will not produce different captured values.
@@ -322,13 +353,14 @@ Look for:
 - **`annotation_status.changed` is not a recompute trigger.** Hooks on that event typically gate
   themselves to confirmed/exported statuses and log a skip. A status PATCH bumps `modified_at`
   and changes nothing computed.
-- **Correction — content hooks CAN be re-fired via the API.** Older notes claim `/start`,
-  `/cancel` and `/validate` "all succeed and bump `modified_at` but emit no
-  `annotation_content.*` event". Disproved on annotation 22429840: `POST
-  /annotations/{id}/content/validate` with an explicit `actions` list emitted 9 of them and
-  re-ran the whole chain. The reconciliation is almost certainly that the endpoint emitting
-  nothing is the *different* `POST /annotations/{id}/validate`. Do not skip a recalc on the
-  strength of the old claim.
+- **Correction — content hooks CAN be re-fired via the API, but only by one endpoint.** Older
+  notes claim `/start`, `/cancel` and `/validate` "all succeed and bump `modified_at` but emit no
+  `annotation_content.*` event". That is **right about `/start` and `/cancel`** — they emit
+  `annotation_status.changed` only. It is **wrong about `POST
+  /annotations/{id}/content/validate`**, which with an explicit `actions` list emitted 9 content
+  events and re-ran the whole chain. (The endpoint that emits nothing is almost certainly the
+  *different* `POST /annotations/{id}/validate`.) So: do not skip a recalc on the strength of the
+  old claim — but do not expect the lock calls to do the work either.
 
 ## When to stop and hand off
 
