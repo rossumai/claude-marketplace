@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-17 skills · 15 reference packs · 91 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+18 skills · 15 reference packs · 91 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -84,6 +84,7 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
 | `/rossum-sa:automation-report [queue-id-or-url]` | Diagnose what blocks queue automation and produce an actionable report with threshold, schema, and rule recommendations |
 | `/rossum-sa:plugin-feedback [description]` | Report friction with this plugin as a sanitized, human-confirmed report — a GitHub issue, or an anonymous submission to the maintainers' private review queue (optionally with a contact email) |
+| `/rossum-sa:b2brouter-reconciliation` | Prove whether every e-invoice B2Brouter handed to an importer hook actually landed in Rossum, exactly once — read-only, self-discovers scope from the org's own hooks |
 
 ## 📚 Autoloaded references
 
