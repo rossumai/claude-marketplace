@@ -44,6 +44,12 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 from b2brouter import B2bError, B2brouterClient
+from credentials import (
+    DEFAULT_CREDENTIALS_PATH,
+    CredentialsError,
+    init_credentials,
+    load_credentials_file,
+)
 from discovery import Channel, discover_channels, map_accounts_to_keys, select_channels
 from match import (
     CSV_COLUMNS,
@@ -169,9 +175,25 @@ ACK_LOOKUP_CAP = 200
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="B2Brouter ↔ Rossum e-invoice reconciliation")
-    parser.add_argument("--ui-host", required=True,
-                        help="host used to build clickable links, e.g. acme.rossum.app")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Rossum API base URL")
+    parser.add_argument("--ui-host", default=None,
+                        help="host used to build clickable links, e.g. acme.rossum.app. "
+                             "Required unless a credentials file supplies rossum.ui_host "
+                             "(see --credentials)")
+    parser.add_argument("--base-url", default=None,
+                        help=f"Rossum API base URL (default: {DEFAULT_BASE_URL}, or a "
+                             "credentials file's rossum.base_url)")
+    parser.add_argument("--init-credentials", nargs="?", const=str(DEFAULT_CREDENTIALS_PATH),
+                        default=None, metavar="PATH",
+                        help="write a credentials template to PATH (default: "
+                             f"{DEFAULT_CREDENTIALS_PATH}) and exit. Refuses to overwrite an "
+                             "existing file. Fill in the printed path yourself -- never paste "
+                             "keys into a chat with an agent")
+    parser.add_argument("--credentials", default=None, metavar="PATH",
+                        help="read ROSSUM_TOKEN/base_url/ui_host and B2Brouter keys from this "
+                             "JSON file instead of the environment. Resolution order: this "
+                             f"flag, if given; else {DEFAULT_CREDENTIALS_PATH} if it exists; "
+                             "else environment variables (ROSSUM_TOKEN, B2B_API_KEY*), exactly "
+                             "as before this flag existed")
     parser.add_argument("--from", dest="date_from", help="window start, ISO date or datetime")
     parser.add_argument("--to", dest="date_to", help="window end, ISO date or datetime")
     parser.add_argument("--channel", default=None, help="hook id or name substring; default all")
@@ -224,6 +246,27 @@ def build_relaxed_x509_ssl_context() -> ssl.SSLContext:
 def collect_keys(env: dict[str, str]) -> dict[str, str]:
     """Every B2Brouter key in the environment, by its variable name."""
     return {name: value for name, value in env.items() if name.startswith(KEY_ENV_PREFIX)}
+
+
+def _credentials_source_path(args: argparse.Namespace) -> Path | None:
+    """Which credentials FILE (if any) this run should use, per the
+    documented resolution order: an explicit `--credentials PATH` wins
+    outright; otherwise the default path is used only if it already
+    exists (so an operator who has never run --init-credentials keeps
+    today's environment-variable behaviour, unchanged); otherwise None,
+    meaning "use the environment".
+
+    Reads the module-level `DEFAULT_CREDENTIALS_PATH` by bare name (not a
+    qualified `credentials.DEFAULT_CREDENTIALS_PATH`) so a test can
+    monkeypatch `recon.DEFAULT_CREDENTIALS_PATH` to a tmp_path location --
+    the same pattern this module already uses for RossumClient/
+    B2brouterClient -- without ever touching the real home directory.
+    """
+    if args.credentials:
+        return Path(args.credentials).expanduser()
+    if DEFAULT_CREDENTIALS_PATH.exists():
+        return DEFAULT_CREDENTIALS_PATH
+    return None
 
 
 def _window(args: argparse.Namespace, now: datetime) -> tuple[datetime, datetime]:
@@ -1010,6 +1053,22 @@ def _report_abort(system: str, exc: RossumError | B2bError) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.init_credentials is not None:
+        # Deliberately the very first thing main() does: no window, no
+        # --ui-host, no token is needed to write a template, and this must
+        # exit before any of those are even checked.
+        path = Path(args.init_credentials).expanduser()
+        try:
+            init_credentials(path)
+        except CredentialsError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"Wrote a credentials template to {path}")
+        print("Fill in the --PASTE...HERE-- placeholders yourself, then run the "
+              "reconciliation again -- never paste keys into a chat with an agent.")
+        return 0
+
     now = datetime.now(timezone.utc)
     try:
         since, until = _window(args, now)
@@ -1017,13 +1076,49 @@ def main(argv: list[str] | None = None) -> int:
         print(f"invalid window: {exc}", file=sys.stderr)
         return 2
 
-    token = os.environ.get("ROSSUM_TOKEN")
-    if not token:
-        print("ROSSUM_TOKEN is not set", file=sys.stderr)
-        return 2
-    keys = collect_keys(dict(os.environ))
-    if not keys:
-        print(f"no B2Brouter key found ({KEY_ENV_PREFIX}...)", file=sys.stderr)
+    # Credentials resolution: an explicit --credentials path wins outright;
+    # otherwise the default path is used only if it already exists;
+    # otherwise environment variables, exactly as before this flag existed.
+    # Whichever source wins is used WHOLESALE -- see credentials.py's
+    # docstring for why a file is never partially trusted and never falls
+    # through to the environment once selected.
+    cred_path = _credentials_source_path(args)
+    if cred_path is not None:
+        try:
+            creds = load_credentials_file(cred_path)
+        except CredentialsError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        token = creds.token
+        keys = creds.keys
+        if not keys:
+            print(
+                f"credentials file at {cred_path}: no usable B2Brouter key -- every "
+                "entry under b2brouter.keys is still a --PASTE placeholder, or none "
+                "was added",
+                file=sys.stderr,
+            )
+            return 2
+        base_url = args.base_url or creds.base_url or DEFAULT_BASE_URL
+        ui_host = args.ui_host or creds.ui_host
+    else:
+        token = os.environ.get("ROSSUM_TOKEN")
+        if not token:
+            print("ROSSUM_TOKEN is not set", file=sys.stderr)
+            return 2
+        keys = collect_keys(dict(os.environ))
+        if not keys:
+            print(f"no B2Brouter key found ({KEY_ENV_PREFIX}...)", file=sys.stderr)
+            return 2
+        base_url = args.base_url or DEFAULT_BASE_URL
+        ui_host = args.ui_host
+
+    if not ui_host:
+        print(
+            "--ui-host is required (pass --ui-host, or supply rossum.ui_host in a "
+            "credentials file -- see --init-credentials)",
+            file=sys.stderr,
+        )
         return 2
 
     # None unless the operator explicitly opted in with --relax-x509-strict.
@@ -1047,7 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
     # row and continuing), and must never be intercepted here as if the whole
     # run had aborted.
     try:
-        rossum = RossumClient(token, args.base_url, **rossum_kwargs)
+        rossum = RossumClient(token, base_url, **rossum_kwargs)
         channels = select_channels(discover_channels(rossum.list_hooks()), args.channel)
         if not channels:
             print("no e-invoice importer hooks found in this organization", file=sys.stderr)
@@ -1112,7 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
             now=now,
             grace_minutes=args.grace_minutes,
             uncovered=channel_uncovered,
-            ui_host=args.ui_host,
+            ui_host=ui_host,
             fallback_cap=FALLBACK_LOOKUP_CAP,
             attribution_cap=ATTRIBUTION_LOOKUP_CAP,
             ack_cap=ACK_LOOKUP_CAP,

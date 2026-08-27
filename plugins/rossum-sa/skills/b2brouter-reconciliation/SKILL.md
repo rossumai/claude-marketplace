@@ -23,25 +23,51 @@ for the environment and token; never search the filesystem for them.
 
 ## Credentials
 
-For **each B2Brouter account group**, create a restricted API key with
-**accounts-read and invoices-read only** — nothing else. B2Brouter keys are
-scoped per account group, not per organization, so a real organization
-normally supplies several keys, one per group. Each key is passed as its own
-`B2B_API_KEY_<LABEL>` environment variable (`B2B_API_KEY` itself, plus any
-number of `B2B_API_KEY_*`, are all picked up) — one key cannot see another
-group's accounts, so a single key is never enough for an organization with
-more than one group.
+**Keys must never be pasted into this chat.** Use the credentials file:
+run `--init-credentials`, tell the operator to open the printed path
+themselves and fill it in, then run normally with `--credentials <path>`
+(or nothing, once a file exists at the default path — see below). The tool
+never prints a token or key value back, in any message, at any point.
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/b2brouter-reconciliation/recon.py --init-credentials
+```
+
+This writes a template (owner-only permissions) to
+`~/.config/rossum-b2brouter-recon/credentials.json` by default — deliberately
+outside any repository, so a filled-in file can't be committed by accident —
+and refuses to overwrite one that already exists. Tell the operator to paste
+their Rossum token and B2Brouter key(s) into that file directly, in their own
+editor, not into this conversation. Once it's filled in, every run picks it
+up automatically (or point `--credentials` at a different path).
+
+For **each B2Brouter account group**, that file needs a restricted API key
+with **accounts-read and invoices-read only** — nothing else. B2Brouter keys
+are scoped per account group, not per organization, so a real organization
+normally supplies several keys, one per group, one entry per group under the
+file's `b2brouter.keys`.
+
+**Alternative for CI:** environment variables, exactly as before this file
+existed. Each key is passed as its own `B2B_API_KEY_<LABEL>` environment
+variable (`B2B_API_KEY` itself, plus any number of `B2B_API_KEY_*`, are all
+picked up) — one key cannot see another group's accounts, so a single key is
+never enough for an organization with more than one group. This route only
+applies when no credentials file is in play (see `reference.md`'s resolution
+order); the tool never merges a file with the environment.
 
 ## Walkthrough
 
 ### 1. Establish the target
 
 Ask the operator for the Rossum API base URL (`--base-url`, defaults to
-`https://elis.rossum.ai`) and the UI host used for links (`--ui-host`,
-required — Rossum's organization endpoint exposes no UI URL, so this can't be
-discovered). Ask for `ROSSUM_TOKEN` and at least one `B2B_API_KEY` /
-`B2B_API_KEY_<LABEL>` to be exported as environment variables (see
-Credentials above).
+`https://elis.rossum.ai`, or a credentials file's `rossum.base_url`) and the
+UI host used for links (`--ui-host`, required unless a credentials file
+supplies `rossum.ui_host` — Rossum's organization endpoint exposes no UI
+URL, so this can't be discovered). Ask for credentials via the file route
+above; only fall back to asking for `ROSSUM_TOKEN` and
+`B2B_API_KEY`/`B2B_API_KEY_<LABEL>` as environment variables when a file
+genuinely isn't practical (e.g. CI) — never ask the operator to paste a
+token or key into this chat.
 
 The tool probes each key on its own: a key that fails its probe (revoked,
 stale, typo'd, wrong group) is reported — by variable name, never its

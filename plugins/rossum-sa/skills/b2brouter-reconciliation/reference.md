@@ -60,7 +60,41 @@ naming every failed variable so you know which credentials to check.
 
 ## Usage
 
-Set your credentials first:
+### Set your credentials first
+
+**Recommended: a credentials file, so keys never have to go through a chat
+with an agent.** Generate a template once, fill it in yourself, then let the
+tool read it:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/b2brouter-reconciliation/recon.py \
+  --init-credentials
+```
+
+This writes a template to `~/.config/rossum-b2brouter-recon/credentials.json`
+(pass a path to put it somewhere else) with owner-only (`0600`) permissions,
+and refuses outright if that file already exists — a filled-in file can
+never be clobbered by a stray re-run. It prints the path and nothing else;
+it never prints the file's contents. Open that path yourself and replace
+every `--PASTE...HERE--` placeholder — **never paste a token or key into
+this chat**, and the tool itself never prints one back either. Then run
+normally, pointing at the file:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/b2brouter-reconciliation/recon.py \
+  --credentials ~/.config/rossum-b2brouter-recon/credentials.json \
+  --show-discovery
+```
+
+Once a file exists at the default path, every run picks it up automatically
+— `--credentials` is only needed to point at a different path. `base_url`
+and `ui_host` in the file are used as defaults; the matching CLI flags
+still override them, and `--ui-host` stops being required once the file
+supplies `rossum.ui_host`. See "Credentials resolution order" below for the
+exact precedence, and the `keys` shape a moment below.
+
+**The alternative, for CI or anywhere a file isn't practical:** environment
+variables, exactly as before this flag existed —
 
 ```bash
 export ROSSUM_TOKEN=<rossum-api-token>
@@ -74,7 +108,29 @@ normal — one per group, each in its own `B2B_API_KEY_<LABEL>` variable
 (`B2B_API_KEY` itself, plus any number of `B2B_API_KEY_*`, are all picked
 up). If one of them turns out to be revoked, stale, or the wrong group, it
 is reported by variable name and skipped — the rest of the run still
-proceeds on the keys that work; see Requirements above.
+proceeds on the keys that work; see Requirements above. Every group still
+needs its own restricted key with **accounts-read and invoices-read only**,
+whichever route supplies it.
+
+### Credentials resolution order
+
+1. `--credentials PATH`, if given — used wholesale; a missing, unreadable,
+   malformed, or incompletely-filled-in file at this path is a hard refusal
+   (exit 2), never a fall-through to environment variables.
+2. Otherwise, `~/.config/rossum-b2brouter-recon/credentials.json`, if it
+   exists — same all-or-nothing handling.
+3. Otherwise, environment variables (`ROSSUM_TOKEN`, `B2B_API_KEY*`),
+   exactly as before this flag existed.
+
+A file, once selected by either of the first two steps, is never partially
+trusted: a required field left as its `--PASTE` placeholder aborts the run
+rather than silently falling back to whatever the environment happens to
+hold. An account-group entry under `b2brouter.keys` whose *value* is still a
+placeholder is simply skipped (not an error) — so the template's two example
+groups don't become two bogus keys when only one is filled in. Any JSON key
+beginning with `_` is a comment and is ignored, at any depth. Key values are
+never logged, printed, or included in any error message — only their
+labels are.
 
 **Always start with `--show-discovery`, before any full run.** It prints
 every discovered channel — one importer hook per line, with its queues,
@@ -141,8 +197,10 @@ hook's name. `--only-exceptions` drops every row whose note is `ok` or
 
 | flag | meaning | default |
 |---|---|---|
-| `--ui-host` | host used to build clickable annotation links, e.g. `example-org.rossum.app` (required) | — |
-| `--base-url` | Rossum API base URL | `https://elis.rossum.ai` |
+| `--ui-host` | host used to build clickable annotation links, e.g. `example-org.rossum.app` (required unless a credentials file supplies `rossum.ui_host`) | — |
+| `--base-url` | Rossum API base URL | `https://elis.rossum.ai`, or a credentials file's `rossum.base_url` |
+| `--init-credentials [PATH]` | write a credentials template to PATH and exit (refuses to overwrite an existing file; never prints file contents) | `~/.config/rossum-b2brouter-recon/credentials.json` |
+| `--credentials PATH` | read credentials from this file instead of the environment — see "Credentials resolution order" above | — |
 | `--from` | window start, ISO date or datetime | 30 days before `--to` |
 | `--to` | window end, ISO date or datetime (must not precede `--from`) | now |
 | `--channel` | hook id or name substring to restrict to | all discovered channels |
@@ -369,11 +427,15 @@ all (uncovered, or an outright API error).
   `--only-exceptions` changes what the CSV holds, never what the exit code
   means.
 - **2** — the run could not be performed: `ROSSUM_TOKEN` is not set, no
-  `B2B_API_KEY*` variable is set, the window is invalid (e.g. `--from` after
-  `--to`), no importer hooks (channels) were discovered at all, or
+  `B2B_API_KEY*` variable is set, `--ui-host` is missing and no credentials
+  file supplied `rossum.ui_host` either, the window is invalid (e.g. `--from`
+  after `--to`), no importer hooks (channels) were discovered at all, or
   Rossum/the invoicing network rejected the token or key outright (HTTP
   401/403) — printed as one plain-language line naming which system rejected
-  it, not a raw traceback.
+  it, not a raw traceback. The same code covers every credentials-FILE
+  failure too (see Credentials below): missing, unreadable, not valid JSON,
+  or a required field (`rossum.token`) still left as its `--PASTE`
+  placeholder — a bad file is a hard refusal, never a partial run.
 
 Exit 1 on an incomplete run is deliberate, not conservative box-ticking. A
 report that silently drops an unenumerable account, but still prints "0
