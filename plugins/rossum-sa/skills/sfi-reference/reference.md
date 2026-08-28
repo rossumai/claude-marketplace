@@ -383,6 +383,23 @@ SFI automatically extracts embedded XML from PDF invoices. It looks for attachme
 - `factur-x.xml`
 - `xrechnung.xml`
 
+### E-Invoice Filename Convention (`einvoice<invoice id>.pdf` / `.xml`)
+
+Production e-invoice import configurations commonly set `name_selectors` (see *Embedded PDF
+Extraction* above) so the rendered PDF is named `einvoice<invoice id>.pdf` and its source XML
+twin `einvoice<invoice id>.xml`, where `<invoice id>` is the **source network's own invoice id**
+(e.g. an id assigned by the e-invoicing network the document arrived from), not anything
+Rossum-assigned. Because that id is minted by the source system and passes through untouched, it
+is a free exact join key back to the source system — no separate mapping table is needed to
+reconcile a Rossum document against the invoice it came from.
+
+A small number of real documents deviate from the plain pattern: `einvoice<invoice
+id>_<annotation id>.pdf`, believed to come from a copy/re-upload path — **measured:** 4
+occurrences out of 8,357 documents sampled over two months. A filename parser written against a
+strict `^einvoice(\d+)\.(pdf|xml)$` regex silently skips these: no match, no error, just a
+document invisible to the parser. Anything that recovers the invoice id from the filename should
+accept an optional `_<digits>` suffix and take the invoice id from the *first* number only.
+
 ---
 
 ## Document Splitting

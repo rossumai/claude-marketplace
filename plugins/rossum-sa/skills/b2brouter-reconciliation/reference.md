@@ -482,20 +482,25 @@ of an error, so getting them wrong is silent, not loud.
   `POST /annotations/search` instead, which does filter correctly. (This tool
   windows on `created_at` and filters on the filename prefix there; it never
   filters on the e-invoice flag, which a `failed_import` XML twin does not
-  carry.)
+  carry.) The `created_at`/`updated_at` half of this is a general platform
+  behaviour, not specific to this tool — see `rossum-reference` → *`created_at`
+  / `updated_at` do not filter — silently ignored* for the platform-wide
+  measurement and the correct replacement.
 - **`GET /documents` only matches an exact filename.** The
   `original_file_name__startswith` and `__contains` query variants are
   ignored; they silently return every document in the organization rather
-  than erroring or narrowing the result.
+  than erroring or narrowing the result. General platform behaviour, not
+  specific to this tool — see `rossum-reference` → *`original_file_name`
+  filtering only matches exact filenames* for the measured row count.
 - **The e-invoice filename convention has a suffixed variant, and the
-  pattern accepts it.** Every e-invoice document is named
-  `einvoice<invoice id>.pdf` or `.xml` — that's how the index and the
-  exact-filename fallback both recover the invoice id from a filename. A
-  small number of real documents (out of a much larger sample) are instead
-  shaped `einvoice<invoice id>_<annotation id>.pdf`, believed to come from a
-  copy/re-upload path; `EINVOICE_FILENAME_RE` in `rossum.py` accepts an
-  optional `_<digits>` suffix for exactly this reason and always takes the
-  invoice id from the *first* number only. Without it, such a document was
+  pattern accepts it.** The naming convention itself — `einvoice<invoice
+  id>.pdf`/`.xml`, the embedded id being the source network's own invoice
+  id, and the measured `_<annotation id>` suffixed variant — is documented
+  in `sfi-reference` → *E-Invoice Filename Convention*, since it's produced
+  by the e-invoice importer extension, not by B2Brouter. What's specific to
+  this tool: `EINVOICE_FILENAME_RE` in `rossum.py` accepts an optional
+  `_<digits>` suffix for exactly that variant, and always takes the invoice
+  id from the *first* number only. Without it, such a document was
   invisible to the index — and if the matching invoice showed up in the
   B2Brouter listing, the tool reported `MISSING_IN_ROSSUM` for a document
   that was sitting right there. The suffix acceptance is deliberately
@@ -504,7 +509,9 @@ of an error, so getting them wrong is silent, not loud.
 - **Search pagination is a cursor, not a page number.** Passing `?page=N`
   to `/annotations/search` is ignored and always returns the first page
   again. The only way to advance is to follow the `next` link in the
-  response and re-POST the same query body against it.
+  response and re-POST the same query body against it. General platform
+  behaviour — see `rossum-reference` → *Annotation search — measured
+  gotchas*.
 - **`/annotations/search` rejects a single-clause query with HTTP 400.**
   Measured directly: `{"query": {"field.document_id.string": {"$eq":
   "..."}}}` on its own always 400s — the same trap as `GET /documents`'
@@ -521,7 +528,10 @@ of an error, so getting them wrong is silent, not loud.
   one bad request" design and a silently-wrong request shape combine into
   exactly the kind of failure that looks like nothing happened at all —
   which is why the fix for this one also added a test that asserts the
-  emitted query body's shape, not just that a search was issued.
+  emitted query body's shape, not just that a search was issued. The 400
+  itself is a general platform behaviour — see `rossum-reference` →
+  *Annotation search — measured gotchas* (this tool's own `$and` wrapping
+  already satisfies it, so it is unaffected).
 - **The annotation search's status coverage cuts both ways, so the index is
   built from two queries.** With an explicit `status.$in` clause the search
   returns rows the default omits (measured: 17,897 rows with the clause,
@@ -533,11 +543,13 @@ of an error, so getting them wrong is silent, not loud.
   The platform's status enum cannot be authoritatively listed from outside
   (even first-party tooling omits statuses that occur live), so the index
   issues both queries — one with the clause, one with no status clause at
-  all — and unions them by annotation id.
+  all — and unions them by annotation id. General platform behaviour — see
+  `rossum-reference` → *Annotation search — measured gotchas*.
 - **The search index is eventually consistent.** An annotation that was
   just imported can take a few seconds to appear in search results. The
   grace window (`--grace-minutes`) exists to absorb that lag instead of
-  reporting a fresh arrival as missing.
+  reporting a fresh arrival as missing. General platform behaviour — see
+  `rossum-reference` → *Annotation search — measured gotchas*.
 - **The Rossum-side index is deliberately built wider than the reporting
   window, and that widening must not be mistaken for the window itself.**
   `einvoice_index()` subtracts a fixed 24-hour lookback (`INDEX_LOOKBACK` in
