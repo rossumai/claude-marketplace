@@ -9,7 +9,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 try:
     import certifi
@@ -736,6 +736,28 @@ def _data_storage_call(request_id, path, body):
         return
     url = f"{base_url}/svc/data-storage/api{path}"
     result = _http_request(request_id, url, method="POST", body=body)
+    if result is not None:
+        tool_result(request_id, json.dumps(result, indent=2))
+
+
+def _mdh_call(request_id, path, *, method="GET", body=None):
+    """Call a Master Data Hub API endpoint.
+
+    Search indexes live in the MDH datasets registry, not in Data Storage. The old
+    ``/svc/data-storage/api/v1/search_indexes/*`` endpoints are URL-rewritten to MDH
+    for legacy callers, but that compat layer is deprecated -- new code targets the
+    dataset subresource directly. Unlike Data Storage, MDH uses real HTTP verbs, so
+    this helper takes a method.
+
+    Writes return ``202 Accepted``: the declaration reaches the registry synchronously,
+    then a reconcile applies it to the engine. Poll the subresource's ``status`` /
+    ``queryable`` fields to see it land -- there is no job id to poll.
+    """
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    url = f"{base_url}/svc/master-data-hub/api{path}"
+    result = _http_request(request_id, url, method=method, body=body)
     if result is not None:
         tool_result(request_id, json.dumps(result, indent=2))
 
@@ -1748,14 +1770,33 @@ def handle_list_indexes(request_id, arguments):
     return _handle_index_list(request_id, arguments, "/v1/indexes/list")
 
 
+_SEARCH_INDEX_SCOPE_SCHEMA = {
+    "type": "object",
+    "required": ["collectionName"],
+    "properties": {
+        "collectionName": {
+            "type": "string",
+            "description": "The name of the dataset (same name as the Data Storage collection).",
+        },
+    },
+    "additionalProperties": False,
+}
+
+
 @_tool(
     "data_storage_list_search_indexes",
-    "Lists all Atlas Search indexes of a Rossum Data Storage collection.",
-    _INDEX_LIST_SCHEMA,
+    "Lists the Atlas Search indexes declared on a Rossum dataset, with live status. "
+    "Each entry carries 'queryable' plus a 'status' of PENDING_CREATE/PENDING_UPDATE/"
+    "PENDING_DELETE (registry ahead of engine) or PENDING/BUILDING/READY/STALE/FAILED "
+    "(reported by the engine). An index is only usable by $search once queryable is true. "
+    "Declared indexes are durable: MDH reconciles them back onto the collection, so a "
+    "missing index is a missing *declaration*, not drift.",
+    _SEARCH_INDEX_SCOPE_SCHEMA,
     annotations=_READ_ONLY,
 )
 def handle_list_search_indexes(request_id, arguments):
-    return _handle_index_list(request_id, arguments, "/v1/search_indexes/list")
+    dataset = quote(arguments["collectionName"], safe="")
+    return _mdh_call(request_id, f"/v2/datasets/{dataset}/search_indexes")
 
 
 @_tool(
@@ -1797,25 +1838,49 @@ def handle_create_index(request_id, arguments):
 
 @_tool(
     "data_storage_create_search_index",
-    "Creates an Atlas Search index on a Rossum Data Storage collection. "
-    "This is a write operation that modifies the collection's search index configuration.",
+    "Declares (upserts) an Atlas Search index on a Rossum dataset via the Search Index V2 "
+    "API. Write operation. Returns 202: the declaration reaches the registry immediately, "
+    "then a reconcile builds it on the engine -- the index is NOT queryable yet. Poll "
+    "data_storage_list_search_indexes until status is READY and queryable is true (~1-2 min) "
+    "rather than re-issuing this call. Re-declaring an existing index name replaces its "
+    "definition.",
     {
         "type": "object",
         "required": ["collectionName", "mappings"],
         "properties": {
-            "collectionName": {"type": "string", "description": "The name of the collection."},
+            "collectionName": {
+                "type": "string",
+                "description": "The name of the dataset (same name as the Data Storage collection).",
+            },
             "mappings": {
                 "type": "object",
                 "description": "Atlas Search index mappings (e.g. {\"dynamic\": true}).",
             },
             "indexName": {
                 "type": "string",
-                "description": "Name for the search index. Defaults to 'default' if not specified.",
+                "description": (
+                    "Name for the search index. Defaults to 'default' if not specified -- "
+                    "the index Atlas queries when a $search names none."
+                ),
             },
             "analyzers": {
                 "type": "array",
                 "items": {"type": "object"},
                 "description": "Custom analyzer definitions for the search index.",
+            },
+            "analyzer": {"type": "string", "description": "Default analyzer for indexing."},
+            "searchAnalyzer": {"type": "string", "description": "Analyzer applied to query text."},
+            "synonyms": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Synonym mapping definitions.",
+            },
+            "storedSource": {
+                "description": "true/false, or an object selecting which fields to store.",
+            },
+            "numPartitions": {
+                "type": "integer",
+                "description": "Number of index partitions.",
             },
         },
         "additionalProperties": False,
@@ -1823,12 +1888,19 @@ def handle_create_index(request_id, arguments):
     annotations=_WRITE,
 )
 def handle_create_search_index(request_id, arguments):
-    body = {"collectionName": arguments["collectionName"], "mappings": arguments["mappings"]}
-    if "indexName" in arguments:
-        body["indexName"] = arguments["indexName"]
-    if "analyzers" in arguments:
-        body["analyzers"] = arguments["analyzers"]
-    return _data_storage_call(request_id, "/v1/search_indexes/create", body)
+    dataset = quote(arguments["collectionName"], safe="")
+    index_name = quote(arguments.get("indexName") or "default", safe="")
+    # v2 puts the index name in the URL; the body is the bare definition.
+    definition = {"mappings": arguments["mappings"]}
+    for key in ("analyzers", "analyzer", "searchAnalyzer", "synonyms", "storedSource", "numPartitions"):
+        if key in arguments:
+            definition[key] = arguments[key]
+    return _mdh_call(
+        request_id,
+        f"/v2/datasets/{dataset}/search_indexes/{index_name}",
+        method="PUT",
+        body=definition,
+    )
 
 
 @_tool(
@@ -1855,13 +1927,18 @@ def handle_drop_index(request_id, arguments):
 
 @_tool(
     "data_storage_drop_search_index",
-    "Drops an Atlas Search index from a Rossum Data Storage collection. "
-    "This is a destructive write operation.",
+    "Removes an Atlas Search index declaration from a Rossum dataset via the Search Index "
+    "V2 API. Destructive write operation. Returns 202; the reconcile then drops it from the "
+    "engine. This is the ONLY correct way to remove a declared index -- deleting it directly "
+    "on the engine is undone, because MDH reconciles the registry back onto the collection.",
     {
         "type": "object",
         "required": ["collectionName", "indexName"],
         "properties": {
-            "collectionName": {"type": "string", "description": "The name of the collection."},
+            "collectionName": {
+                "type": "string",
+                "description": "The name of the dataset (same name as the Data Storage collection).",
+            },
             "indexName": {"type": "string", "description": "The name of the search index to drop."},
         },
         "additionalProperties": False,
@@ -1869,10 +1946,13 @@ def handle_drop_index(request_id, arguments):
     annotations=_DESTRUCTIVE,
 )
 def handle_drop_search_index(request_id, arguments):
-    return _data_storage_call(request_id, "/v1/search_indexes/drop", {
-        "collectionName": arguments["collectionName"],
-        "indexName": arguments["indexName"],
-    })
+    dataset = quote(arguments["collectionName"], safe="")
+    index_name = quote(arguments["indexName"], safe="")
+    return _mdh_call(
+        request_id,
+        f"/v2/datasets/{dataset}/search_indexes/{index_name}",
+        method="DELETE",
+    )
 
 
 @_tool(
