@@ -1,7 +1,7 @@
 ---
 name: render-export-template
 description: Author, render, and iterate on Rossum Custom Format Templating export templates — the legacy Jinja2 templates stored inside an export hook's settings.export_configs that turn an annotation into a flat file, CSV, XML, EDI, or custom JSON. Pull a template out of a hook into a local file, render it faithfully against a real annotation to preview the exact export output, and generate hook settings back from an edited template. Use whenever the user wants to edit, test, preview, debug, or build an export template, mentions file_content_template / file_content_template_multiline / export_reference_key, or says things like "render the export template for hook X", "test my export template against annotation Y", "pull the export template", "why does my export file come out wrong", "change the export format". This is the legacy template-based export — NOT the JSON-stage Request Processor (for that, see export-pipeline-reference).
-argument-hint: [hook-id-or-url] [annotation-id-or-url] [--key=<export_reference_key>] [--env=<name>]
+argument-hint: "[hook-id-or-url] [annotation-id-or-url] [--key=<export_reference_key>] [--env=<name>]"
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 

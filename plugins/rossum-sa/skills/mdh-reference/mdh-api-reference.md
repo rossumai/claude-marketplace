@@ -133,6 +133,151 @@ Disable fuzzy search on a dataset (removes the search index).
 
 ---
 
+## Endpoints: Search Indexes V2
+
+Atlas Search indexes are a **subresource of the dataset**, held in the MDH datasets
+registry. This is the current, official API — use it for all new work.
+
+Base path: `/svc/master-data-hub/api/v2/datasets/{dataset_name}/search_indexes`
+
+> The old `POST /svc/data-storage/api/v1/search_indexes/{list,create,drop}` endpoints are
+> URL-rewritten at ingress to MDH and still work, but that compat layer is flagged
+> `deprecated: true` in MDH's own spec and exists only for existing code that is hard to
+> change. The `rossum-api` MCP tools already call V2.
+
+### `GET .../search_indexes` -- List Declared Indexes
+
+**Response 200:** array of `SearchIndexWithStatus`:
+
+| Field | Type | Description |
+|---|---|---|
+| name | string | Index name |
+| definition | object | The declared definition |
+| queryable | boolean | **Whether `$search` can actually use it yet** |
+| status | enum | See below |
+| latest_definition_version | object? | `{version, created_at}` |
+
+`status` values — `PENDING_CREATE`, `PENDING_UPDATE`, `PENDING_DELETE` are MDH-derived sync
+states meaning the registry is ahead of the engine; `PENDING`, `BUILDING`, `READY`, `STALE`,
+`FAILED` are engine values passed through verbatim.
+
+**Response shape differs from the legacy endpoint.** V2 returns a **bare JSON array**; the
+old Data Storage call returned `{"code": "ok", "message": "", "result": [...]}`. The btree
+`data_storage_list_indexes` still returns the wrapped shape, so the two list tools no longer
+agree — read V2's array directly, with no `.result` unwrapping.
+
+**Caveat — `definition` key casing is not stable across states.** Measured on one index: while
+`PENDING_CREATE` all three read paths return **snake_case** (`search_analyzer`,
+`num_partitions`); once it flips to `PENDING_DELETE` the same endpoints return **camelCase**
+(`searchAnalyzer`, `numPartitions`). Writes accept camelCase either way. Do not key logic off
+either spelling — read `mappings` (stable in both) and treat the rest as display.
+
+### `GET .../search_indexes/{index_name}` -- Get One
+
+**Response 200:** a single `SearchIndexWithStatus`. **404** when the index exists in neither
+the registry nor the engine.
+
+### `PUT .../search_indexes/{index_name}` -- Upsert One Index
+
+The index name is in the **URL**; the body is the bare **definition** (not a
+`{collectionName, indexName, mappings}` envelope like the legacy endpoint).
+
+**Request body (`SearchIndexDefinition`):**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| mappings | object | yes | `{"dynamic": true}` or `{"dynamic": false, "fields": {...}}` |
+| analyzer | string? | no | Default indexing analyzer |
+| searchAnalyzer | string? | no | Query-time analyzer |
+| analyzers | object[]? | no | Custom analyzer definitions |
+| synonyms | object[]? | no | Synonym mappings |
+| storedSource | bool\|object? | no | Store all, or select fields |
+| numPartitions | int? | no | Index partitions |
+
+Validated as a whole before it reaches the registry (**422**, nothing persisted).
+
+**Response 202.** The declaration lands in the registry synchronously; a reconcile then
+builds it on the engine. **The index is not queryable yet** — poll `GET` until
+`status: READY` and `queryable: true` (~1-2 min). There is no job id to poll: the old
+`operation_status/{job_id}` flow is superseded by reading the subresource.
+
+### `DELETE .../search_indexes/{index_name}` -- Remove One Declaration
+
+**Response 202.** Deleting the last declaration leaves `[]` — explicitly no search indexes,
+not an absent field. **404** when the dataset or the declared index does not exist.
+
+Measured: an explicit `DELETE` drops the declaration from the listing **immediately**,
+whereas omitting an index from the bulk `PUT` leaves it listed as `PENDING_DELETE` until the
+reconcile runs. Both end up removed; only the intermediate listing differs.
+
+### `PUT .../search_indexes` -- Bulk Replace (destructive by omission)
+
+Body is the **full desired list** of `{name, definition}` entries; `[]` declares no indexes
+at all. Validated as a whole (**422**, nothing persisted), then the reconcile **drops
+whatever the list leaves out**.
+
+> **Not exposed as an MCP tool, deliberately.** Omission deletes. Use the per-index `PUT`
+> unless you genuinely intend to replace the entire set, and read the current list first.
+
+Verified: with `search_probe_v1` and `keep_me_v1` both declared, a bulk `PUT` naming only
+`keep_me_v1` flipped `search_probe_v1` to `PENDING_DELETE` — no warning, no error, 202.
+
+### Declaring indexes at dataset creation
+
+`POST /api/v2/datasets/{name}` accepts `search_indexes` in the body. **Omitting the field
+declares a default index named `default`** — the one Atlas queries when a `$search` names
+none; `[]` declares none at all.
+
+Measured on a sandbox org (2026-08-26): omitting the field provisions not just
+`{"dynamic": true}` but the full established baseline — a `default_whitespace_lowercase`
+analyzer set as both `analyzer` and `search_analyzer`, with a whitespace tokenizer, a
+lowercase token filter, and a char-mapping filter folding `.` `/` `\` `-` `,`:
+
+```json
+{"name": "default", "definition": {
+  "mappings": {"dynamic": true},
+  "analyzer": "default_whitespace_lowercase",
+  "search_analyzer": "default_whitespace_lowercase",
+  "analyzers": [{"name": "default_whitespace_lowercase",
+                 "tokenizer": {"type": "whitespace"},
+                 "token_filters": [{"type": "lowercase"}],
+                 "char_filters": [{"type": "mapping",
+                   "mappings": {".": " ", "/": "", "\\": "", "-": " ", ",": " "}}]}]}}
+```
+
+This is the analyzer long observed on established collections, so a **v2-created** dataset
+now lands with the correct search-index baseline rather than bare. It says nothing about
+btree indexes (see the scope limit below). Immediately after create the index is
+`status: PENDING_CREATE`, `queryable: false`.
+
+### What durability does and does not guarantee
+
+Declared indexes are **durable**: MDH continuously reconciles the registry onto the
+collection. Every index that existed on the engine before the cutover was adopted into the
+registry in a one-time migration, and creates through the legacy compat endpoints now write
+registry-first-then-engine — so unmanaged "engine-only" indexes are not a population you
+meet in practice.
+
+- **Retire index-repair tooling.** Code that audits for a missing search index and
+  re-creates it is redundant; the platform guarantees existence.
+- **Keep query-vs-index conformance checks.** Durability never creates an index nobody
+  declared. A query naming `search_suppliers_v1` against a collection that declares
+  `search_suppliers_dev_v1` still returns zero results silently — as does an index whose
+  `mappings` omit a field the query references.
+- **Never fix a bad index on the engine.** Reconcile restores the declaration; an
+  out-of-band Atlas change is reverted. Change the declaration instead.
+
+### Scope limit: btree indexes are not covered
+
+This registry covers **Atlas Search indexes only**. Regular btree indexes — including the
+wildcard `$**` index (`dmv2_default_normal_index` / `__dynamic_index`) that keeps `$match`
+off a full collection scan — have **no MDH v2 endpoint at all** and remain Data Storage
+concerns (`/svc/data-storage/api/v1/indexes/{list,create,drop}`, MCP:
+`data_storage_list_indexes` / `_create_index` / `_drop_index`). They are not self-healing,
+so the "a recreated dataset lands with only `_id_`" trap still applies to precisely the
+index that matters most for query performance.
+
+---
+
 ## Key Schemas: Hook Configuration Model
 
 MDH hooks are configured as JSON objects attached to Rossum extensions. The hook config defines how extracted document fields are matched against master data datasets using MongoDB-style queries. Below are the key schemas.

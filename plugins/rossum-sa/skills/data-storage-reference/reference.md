@@ -329,37 +329,58 @@ All endpoints: `POST`, auth required.
 
 ---
 
-## Search Index Operations (Atlas Search)
+## Search Index Operations (Atlas Search) -- MOVED TO MASTER DATA HUB
 
-All endpoints: `POST`, auth required. For MongoDB Atlas full-text search indexes.
+**Do not use these endpoints in new code.** Atlas Search indexes are no longer owned by
+Data Storage. They now live in the Master Data Hub **datasets registry**, and the
+`/api/v1/search_indexes/*` endpoints below are **URL-rewritten at ingress to MDH** — the
+rewrite is transparent (no 3xx is observable) and MDH declares a backwards-compatible API
+with the same models, so legacy callers keep working. That compat layer exists only to
+support existing code that is hard to change, and MDH's own spec ships it flagged
+`deprecated: true`.
 
-### `POST /api/v1/search_indexes/list` -- List Search Indexes
-Same request as regular index list (`ListIndexesRequest`).
+**New code targets the Search Index V2 API** — a subresource of the dataset:
 
-**Response 200:** `ListObjectsResponse`
+| Legacy Data Storage endpoint | Search Index V2 replacement |
+|---|---|
+| `POST /api/v1/search_indexes/list` | `GET /svc/master-data-hub/api/v2/datasets/{name}/search_indexes` |
+| `POST /api/v1/search_indexes/create` | `PUT .../search_indexes/{index_name}` (upsert; body is the bare definition) |
+| `POST /api/v1/search_indexes/drop` | `DELETE .../search_indexes/{index_name}` |
+| `GET /api/v1/operation_status/{id}` (for the above) | *gone* — poll the subresource's `status` / `queryable` instead |
 
----
+The `rossum-api` MCP tools `data_storage_list_search_indexes`,
+`data_storage_create_search_index` and `data_storage_drop_search_index` already call V2
+directly. Full documentation in
+[mdh-reference → Search Indexes V2](../mdh-reference/mdh-api-reference.md#endpoints-search-indexes-v2).
 
-### `POST /api/v1/search_indexes/create` -- Create Search Index (ASYNC)
-**Request body (`CreateSearchIndexRequest`):**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| collectionName | string | yes | Target collection |
-| indexName | string | yes | Index name |
-| mappings | object | yes | Field mappings definition |
-| analyzer | string? | no | Default analyzer |
-| analyzers | object[]? | no | Custom analyzer definitions |
-| searchAnalyzer | string? | no | Search-time analyzer |
-| synonyms | object[]? | no | Synonym mapping definitions |
+**The legacy endpoints are already dataset-scoped**, so switching to V2 changes no behaviour:
+because the rewrite lands in MDH, a `collectionName` that is not an MDH dataset returns
+`404 {"message": "Dataset '<name>' not found"}` from the *legacy* path too — verified
+identical on both paths. Note that dataset deletion is async: the MDH dataset disappears from
+`/v2/datasets` before the underlying collection leaves `collections/list`, so the two
+listings can briefly disagree, and search-index calls 404 during that window.
 
-**Response 202:** `AcceptResponse`
+Response shape also differs: V2 returns a bare JSON array where the legacy call returned
+`{"code": "ok", "message": "", "result": [...]}`.
 
----
+Three consequences that change how you work with search indexes:
 
-### `POST /api/v1/search_indexes/drop` -- Drop Search Index (ASYNC)
-Same request as regular index drop (`DropIndexRequest`).
+1. **Declared indexes are durable.** MDH continuously reconciles the registry onto the
+   collection, so a declared index cannot silently disappear. Every index that existed on
+   the engine before the cutover was adopted into the registry in a one-time migration, and
+   creates through the legacy endpoints now write registry-first-then-engine — so there is
+   no residual population of unmanaged "engine-only" indexes.
+2. **You can no longer fix a bad index on the engine.** Reconcile restores the
+   declaration; an out-of-band Atlas change gets reverted. Fix the *declaration* instead.
+   (Dropping through the API removes the declaration too, so that path is safe.)
+3. **Retire index-repair tooling.** Code that audits for missing search indexes and
+   re-creates them is now redundant — the platform guarantees existence. What is still
+   worth checking is whether a query's named index *exists as a declaration* and maps the
+   fields the query references; durability never creates an index nobody declared.
 
-**Response 202:** `AcceptResponse`
+**Regular (btree) indexes are NOT affected** — `/api/v1/indexes/{list,create,drop}` above
+remain Data Storage endpoints with no MDH equivalent, including the wildcard `$**` index
+that prevents full scans.
 
 ---
 

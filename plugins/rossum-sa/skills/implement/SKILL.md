@@ -140,7 +140,7 @@ Create a task list with one task per applicable phase to track progress.
 
 1. **Verify data storage collections exist.** Use `data_storage_list_collections` to check. If datasets need to be created or imported, confirm with the user first.
 
-2. **Check indexes.** Use `data_storage_list_indexes` and `data_storage_list_search_indexes`. If the matching strategy uses Atlas Search (fuzzy matching), an Atlas Search index must exist on the relevant fields.
+2. **Check indexes.** Use `data_storage_list_indexes` (btree) and `data_storage_list_search_indexes` (Atlas Search). If the matching strategy uses Atlas Search (fuzzy matching), the named index must be declared on the dataset, `queryable: true`, and must map every field the query references. Search-index declarations are durable — MDH reconciles them onto the collection — so a gap here is a missing or misnamed *declaration*, not drift. Btree indexes are **not** self-healing: a recreated dataset can land without the wildcard `$**` index and every `$match` then full-scans.
 
 3. **Design the query cascade** for each MDH section. Follow the mandatory order from `mdh-matching-queries`:
    - **Query 1: Exact identifiers** — VAT/tax ID, PO number, ERP ID
