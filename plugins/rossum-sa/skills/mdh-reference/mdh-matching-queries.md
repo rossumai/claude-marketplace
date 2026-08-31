@@ -935,7 +935,7 @@ A `$search` stage against a missing or misnamed Atlas Search index does **not** 
 ### Step 1: List the search indexes on the collection
 
 ```
-data_storage_list_search_indexes(collection_name="<your-collection>")
+data_storage_list_search_indexes(collectionName="<your-collection>")
 ```
 
 Confirm each `index` name referenced in your `$search` stages appears in the response. Index names are case-sensitive. Typos (`vendor_name_idx` vs `vendor_name_index`) silently fall through.
@@ -949,10 +949,12 @@ An environment-suffix mismatch is the classic trap and durability does not prote
 
 ### Step 2: Verify field mappings
 
-For each named index, inspect its `mappings.fields` (returned by the same `data_storage_list_search_indexes` call):
+For each named index, inspect **`definition.mappings`** on the entry returned by the same `data_storage_list_search_indexes` call. Under the Search Index V2 shape each entry is `{name, definition, latest_definition_version, status, queryable}` — the mappings live *inside* `definition`, not at the top level.
 
-- Every field you reference in `$search` (under `path`, `compound.must.path`, `compound.should.path`, etc.) **must** appear in `mappings.fields`.
-- Field names are case-sensitive — `Supplier_Name` and `SUPPLIER_NAME` are different indexes.
+**First check whether the index is dynamic.** `definition.mappings.dynamic: true` means every field is indexed automatically and there is **no `fields` key at all**. The checks below do not apply to a dynamic index, and a missing `fields` on one is not a fault to fix — treating it as one leads to "repairing" a healthy index by replacing its definition. Only a static mapping (`"dynamic": false`, carrying `fields`) needs field-by-field verification:
+
+- Every field you reference in `$search` (under `path`, `compound.must.path`, `compound.should.path`, etc.) **must** appear in `definition.mappings.fields`.
+- Field names are case-sensitive — `Supplier_Name` and `SUPPLIER_NAME` are different fields.
 - For `$search` with `regex`, the field must be mapped with a keyword analyzer (`"analyzer": "lucene.keyword"`). The default analyzer will silently no-op on regex queries.
 - For `text` and `phrase` queries, the default analyzer is usually correct — but verify rather than assume.
 
