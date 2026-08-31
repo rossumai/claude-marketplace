@@ -1408,6 +1408,39 @@ Records include: user, action type (create/update/delete/export), timestamp, aff
 
 **Filtering**: date range, user, action type, object type, queue, workspace.
 
+Audit logs cover **runtime** objects only — `document`, `annotation`, `user`. For changes to
+**configuration** objects, use the configuration changelog below.
+
+---
+
+## Configuration Changelog
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/v1/configuration_changelog` | Version history of configuration objects |
+
+The config-side complement to audit logs: one entry per version of a `hook`, `schema`, `queue`,
+`rule`, `email_template`, `trigger`, or `workspace`. Each entry carries `version_id`,
+`version_event` (create/update/delete), `changed_fields`, `modifier_id`, `version_created_at`,
+and optionally the full object `snapshot`. Newest-first by `version_id`. Admin or organization
+group admin only — 403 otherwise.
+
+Use it to answer "who changed this schema", "when did this hook last change", and "what changed
+just before this queue broke" — the questions that used to require diffing a prd2 pull against
+git history.
+
+**Filtering**: `object_type`, `object_id`, `version_event`, `changed_fields` and `modifier_id`
+accept a comma-separated list for multiple values (`changed_fields` matches entries where ANY of
+the named fields changed), and so does `version_id`. Single-valued: `version_id_range_min` /
+`version_id_range_max` (integers), `version_created_at_after` / `_before` (one instant each), and
+`q` (one free-text term, searched across the entry including the snapshot).
+
+> **`include_snapshot` is expensive.** Snapshots are excluded by default for a reason: one
+> real schema snapshot measured **~108 kB** — all but ~180 bytes of the entry. Always list entries
+> first, then request the snapshot for a single `version_id`. The
+> `rossum_list_configuration_changelog` tool enforces this — it refuses `include_snapshot`
+> without a `version_id` and caps snapshot mode at 3 entries.
+
 ---
 
 ## Hook Logs
