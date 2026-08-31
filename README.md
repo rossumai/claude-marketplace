@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-17 skills · 15 reference packs · 91 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+17 skills · 15 reference packs · 92 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -224,6 +224,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_create_user` | ✏️ Create a new user in the organization |
 | `rossum_patch_user` | ✏️ Update a user — assign queues, change role (groups), rename, or deactivate (`is_active=false`); queue/group lists replace, not add |
 | `rossum_list_audit_logs` | Query audit logs (admin only) |
+| `rossum_list_configuration_changelog` | Config version history for hooks/schemas/queues/rules/templates/triggers/workspaces — who changed what, when (admin only) |
 
 #### Data Storage
 
