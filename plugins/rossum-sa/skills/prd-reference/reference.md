@@ -186,15 +186,33 @@ Rossum 4xx field-validation errors are pretty-printed as a per-field list rather
 
 Interactive wizard that creates a deploy YAML file. Prompts for source/target directories, workspace selection, queue selection (with schema/inbox auto-detection), hook selection, rule selection, engine selection, label selection, email template selection, attribute overrides, secrets file, and deploy state file.
 
-Labels and email templates are opt-in: offered from the top-level `labels/` dir and from the `email_templates/` dirs of the selected queues (a template needs its parent queue in the deploy file). Types `rejection_default` and `email_with_no_processable_attachments` are never offered — they are auto-created with every queue. Anything referenced by a selected rule's `add_label`, `add_remove_label`, or `send_email` action is force-included: shown checked and disabled (`required by rule(s) N`) and tagged `included_by_rules` in the deploy file. Rule dependencies with no local file are warned about rather than listed — they still deploy, auto-loaded from the source.
-
 | Option | Description |
 |--------|-------------|
 | `-mf` / `--mapping-file` | PRD v1 mapping file for reusing IDs and attribute overrides |
 
+#### Standalone labels and email templates (prd2 2.20.0+)
+
+**Check `prd2 --version` before concluding the prompts are broken.** The label and email-template prompts, and the standalone `labels:` / `email_templates:` deploy-file sections, landed in **2.20.0**. Older prd2 still deploys labels and email templates, but only the ones a rule pulls in automatically — there are no prompts, and the deploy-file skeleton has no such sections.
+
+Both are opt-in:
+
+- **Labels** are offered from the top-level `labels/` dir. **Email templates** are offered from the `email_templates/` dirs of the queues selected *in this run*.
+- Types `rejection_default` and `email_with_no_processable_attachments` are never offered — they are auto-created with every queue, and only `rejection` and `custom` can be created through the API at all.
+- Anything referenced by a selected rule's `add_label`, `add_remove_label`, or `send_email` action is force-included. There are three cases and only the first is visible in the menu:
+
+  | Case | What you see |
+  |------|--------------|
+  | Object is in the menu | Shown checked and **disabled** (`required by rule(s) N`) — it cannot be unticked |
+  | Object has a local file but is outside the menu (a template on a queue *not* selected in this run) | **No prompt at all** — appended straight to the deploy file |
+  | Object has no local file | Warned about and left out of the deploy file; it still deploys, auto-loaded from the source |
+
+  The first two cases are tagged `included_by_rules` in the deploy file.
+
+**An email template needs its parent queue in the same deploy file** — the API requires `queue` on create. If the queue is absent, the reference has nothing to remap to and prd2 *silently drops it* (`allow_empty_reference`), so the create goes out without `queue` and Rossum rejects it. The middle case above produces exactly that combination without warning: if a rule sends an email from a template on a queue you did not select, either add the queue or drop the rule.
+
 ### `prd2 deploy template update <deploy_file> [options]`
 
-Updates an existing deploy YAML file, adding new objects or modifying existing ones.
+Updates an existing deploy YAML file, adding new objects or modifying existing ones. It re-runs the same label/email-template derivation as `template create`, so the `included_by_rules` tags are rebuilt from the current rule selection on every run.
 
 ```bash
 prd2 deploy template update -i ./deploy_files/dev_test.yaml
@@ -208,6 +226,8 @@ prd2 deploy template update -i ./deploy_files/dev_test.yaml
 ### `prd2 deploy template reverse <deploy_file>`
 
 Creates a reversed deploy file (swaps source and target) for reverse deployment.
+
+From 2.20.0 it also reverses the `labels:` and `email_templates:` sections. An email template's `base_path` has to be rebuilt from the *target* queue and workspace; if that lookup fails, prd2 only prints `Could not compute base_path for email template <id>` and carries on, leaving an entry whose local file cannot be read. Check for that warning before running a reversed deploy.
 
 ### `prd2 deploy run <deploy_file> [options]`
 
@@ -237,6 +257,8 @@ Behavior:
 7. Saves deploy state and timestamps
 8. Pulls target directory to sync local files
 
+From 2.20.0 the `deploy_files/.auto/<deploy_file>.yaml` mappings file is gone. Target IDs for the labels and email templates a rule auto-loads now come from the deploy state, so a repeat deploy updates the existing target object instead of creating a duplicate. A stale `.auto/` directory in an older project tree is no longer read and can be deleted.
+
 Not automatically migrated (must be set manually for newly created objects):
 - `queue.engine`, `queue.dedicated_engine` and `queue.generic_engine`
 - `queue.users` and `queue.workflows`
@@ -245,6 +267,8 @@ Not automatically migrated (must be set manually for newly created objects):
 ### `prd2 deploy revert <deploy_file> [options]`
 
 Deletes all target objects found in the deploy file. Shows a plan first and requires confirmation.
+
+From 2.20.0 that includes the `labels:` and `email_templates:` sections. **Labels are org-level and shared across queues**, so reverting a deploy file that carries a label deletes it for every queue in the target org that uses it — not just the queues in the deploy file. Read the revert plan's label lines before confirming.
 
 | Option | Description |
 |--------|-------------|
@@ -424,8 +448,8 @@ Key fields:
 - `deploy_state_file` — path to deploy state snapshot (for 3-way merge)
 - `targets` — array of target mappings (supports 1:N deployment)
 - `target_id: null` — object will be created on first deploy
-- `base_path` — for queues, the local filesystem path to the queue's parent workspace; for email templates, the queue's `email_templates/` directory
-- `included_by_rules` — rule IDs that pulled this label/email template in; re-derived by the wizard on every run, so removing a rule removes its dependencies
+- `base_path` — for queues, the local filesystem path to the queue's parent workspace; for email templates, the queue's `email_templates/` directory. Optional on an email template: a template a rule auto-loads has no local file — and so no deploy-file entry — and is read from the API at deploy time instead (pre-2.20.0 prd2 ignores the key entirely and always reads from the API)
+- `included_by_rules` — rule IDs that pulled this label/email template in. Wizard bookkeeping only — `deploy run` ignores the key. It is re-derived on every wizard run, so dropping a rule drops its dependencies **including ones you also picked by hand**: the tag is what marks an entry as non-manual, so a tagged label silently leaves the deploy file once no rule references it
 - `ignore_deploy_warnings` — suppress non-critical warnings for this object
 - `unselected_hooks` — hook IDs to exclude from deployment even if attached to selected queues
 
