@@ -535,6 +535,14 @@ Data values are preserved when: adding/removing fields, reordering fields, movin
 
 **Supported formats**: PDF, PNG, JPEG, TIFF, XLSX, XLS, DOCX, DOC, HTML (max 40 MB)
 
+### `original_file_name` filtering only matches exact filenames
+
+`GET /v1/documents` accepts `original_file_name__startswith` and `original_file_name__contains`
+but silently ignores both — the endpoint returns HTTP 200 with every document in the
+organization, not a filtered subset, rather than erroring or narrowing the result. **Measured:**
+a `original_file_name__contains` query returned all 4,694,856 documents in the organization.
+Only the exact-match form (`original_file_name=<name>`) actually filters.
+
 ---
 
 ## Annotations
@@ -664,15 +672,45 @@ Annotations represent extracted data from documents and track the full processin
 
 ### Filtering & Sideloading
 
-**Query parameters**: `status`, `queue` (integer), `workspace` (integer), `modifier` (integer), `created_at`, `updated_at` (ISO 8601 date ranges), `ordering`
+**Query parameters**: `status`, `queue` (integer), `workspace` (integer), `modifier` (integer), `ordering`
 
 **Sideloading**: `sideload=content` (include extracted data), `sideload=document` (include document metadata). When `sideload=content` is not used, search max page size is 500.
+
+#### `created_at` / `updated_at` do not filter — silently ignored
+
+`GET /v1/annotations` accepts `created_at__gte`/`created_at__lte` (and the `updated_at`
+equivalents) but they are **not honoured** — the endpoint returns **HTTP 200 with the full,
+unfiltered result set**, not an error and not a partial match. **Measured:** a queue holding
+90,851 annotations returned all 90,851 with a `created_at__gte`/`__lte` window applied. `status`,
+`queue`, and the other parameters listed above still filter correctly; only the date-range
+params are the trap. For an actual time window, use `POST /v1/annotations/search` with a
+`created_at` clause instead (see *Annotation Operations Detail* below) — that endpoint does
+filter. The danger is that the failure is silent: a 200 with the complete, unwindowed result set
+looks identical to "no filter was requested," so a date-windowed query that quietly stopped
+filtering gives no signal that anything went wrong.
 
 ### Annotation Operations Detail
 
 **Copy**: `POST /v1/annotations/{id}/copy` — Body: `{"target_queue": "URL", "target_status": "to_review"}`
 
 **Search**: `POST /v1/annotations/search` — Max page size 500 (1000 for CSV export)
+
+#### Annotation search — measured gotchas
+
+- **Pagination is a cursor, not a page number.** Passing `?page=N` is ignored and always returns
+  the first page again. Advance by following the response's `next` link and RE-POSTing the same
+  query body against it.
+- **A single-clause query is rejected with HTTP 400.** At least two clauses under `$and` are
+  required — a query with only one condition (e.g. a lone `field.document_id.string` equality on
+  its own) 400s.
+- **A `status` clause cuts both ways.** Supplying an explicit `status.$in` returns rows the
+  default search omits — measured 17,897 rows with the clause versus 17,891 without on the same
+  queue — but it also makes any status *not* named in the list invisible rather than flagged. A
+  complete index therefore has to run the query twice, once with the `status` clause and once
+  without, and union the results by annotation id; otherwise a status you failed to anticipate
+  silently disappears instead of showing up as unknown.
+- **The search index is eventually consistent.** A just-imported annotation can lag behind by a
+  few seconds, so a search run immediately after import may not see it yet.
 
 **Validate**: `POST /v1/annotations/{id}/content/validate` — Returns validation messages, constraint violations, table aggregations, AI confidence scores, and `matched_trigger_rules` (the rules whose `trigger_condition` fired — see `business-rules-reference` → *Verifying a rule actually fired*)
 
