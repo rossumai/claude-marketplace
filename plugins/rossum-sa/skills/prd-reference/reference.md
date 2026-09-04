@@ -184,7 +184,9 @@ Rossum 4xx field-validation errors are pretty-printed as a per-field list rather
 
 ### `prd2 deploy template create [options]`
 
-Interactive wizard that creates a deploy YAML file. Prompts for source/target directories, workspace selection, queue selection (with schema/inbox auto-detection), hook selection, rule selection, engine selection, attribute overrides, secrets file, and deploy state file.
+Interactive wizard that creates a deploy YAML file. Prompts for source/target directories, workspace selection, queue selection (with schema/inbox auto-detection), hook selection, rule selection, engine selection, label selection, email template selection, attribute overrides, secrets file, and deploy state file.
+
+Labels and email templates are opt-in: offered from the top-level `labels/` dir and from the `email_templates/` dirs of the selected queues (a template needs its parent queue in the deploy file). Types `rejection_default` and `email_with_no_processable_attachments` are never offered — they are auto-created with every queue. Anything referenced by a selected rule's `add_label`, `add_remove_label`, or `send_email` action is force-included: shown checked and disabled (`required by rule(s) N`) and tagged `included_by_rules` in the deploy file. Rule dependencies with no local file are warned about rather than listed — they still deploy, auto-loaded from the source.
 
 | Option | Description |
 |--------|-------------|
@@ -393,6 +395,22 @@ rules:
       - id: 2716
         attribute_override: {}
 
+labels:
+  - id: 118
+    name: Needs Review
+    included_by_rules: [2597]
+    targets:
+      - id: 141
+        attribute_override: {}
+
+email_templates:
+  - id: 39172
+    name: Validation Warning Notice
+    base_path: sandbox-org/dev/workspaces/DEV Workspace_[700852]/queues/Cost Invoices (AT)_[2137275]/email_templates
+    targets:
+      - id: 41905
+        attribute_override: {}
+
 engines: []
 unselected_hooks: []
 ```
@@ -406,7 +424,8 @@ Key fields:
 - `deploy_state_file` — path to deploy state snapshot (for 3-way merge)
 - `targets` — array of target mappings (supports 1:N deployment)
 - `target_id: null` — object will be created on first deploy
-- `base_path` — for queues, the local filesystem path to the queue's parent workspace
+- `base_path` — for queues, the local filesystem path to the queue's parent workspace; for email templates, the queue's `email_templates/` directory
+- `included_by_rules` — rule IDs that pulled this label/email template in; re-derived by the wizard on every run, so removing a rule removes its dependencies
 - `ignore_deploy_warnings` — suppress non-critical warnings for this object
 - `unselected_hooks` — hook IDs to exclude from deployment even if attached to selected queues
 

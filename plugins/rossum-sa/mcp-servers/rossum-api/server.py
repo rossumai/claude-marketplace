@@ -209,7 +209,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.36.0"
+_SERVER_VERSION = "0.37.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -1067,6 +1067,11 @@ _RULE_FIELDS = ("id", "name", "enabled", "queues")
 _RULE_EXEC_LOG_FIELDS = (
     "rule_id", "rule_name", "queue_id", "annotation_id", "trigger_event",
     "execution_result", "execution_error", "created_at", "request_id",
+)
+
+_CONFIG_CHANGELOG_FIELDS = (
+    "version_id", "object_type", "object_id", "name", "version_event",
+    "changed_fields", "version_created_at", "modifier_id", "description",
 )
 _SCHEMA_FIELDS = ("id", "name", "queues")
 _WORKSPACE_FIELDS = ("id", "name", "organization", "queues", "autopilot")
@@ -2513,6 +2518,124 @@ def handle_list_audit_logs(request_id, arguments):
     if "action" in arguments:
         params.append(("action", arguments["action"]))
     _rossum_list(request_id, "/api/v1/audit_logs", params, max_results=max_results)
+
+
+@_tool(
+    "rossum_list_configuration_changelog",
+    "Lists the configuration changelog (/v1/configuration_changelog) — the version history of "
+    "CONFIG objects: hook, schema, queue, rule, email_template, trigger, workspace. Each entry "
+    "records the event (create/update/delete), which fields changed, who changed them, and when. "
+    "The config-side complement to rossum_list_audit_logs, which covers runtime document/annotation/"
+    "user actions. Use it to answer 'who changed this schema', 'when did this hook last change', or "
+    "'what changed just before this queue broke'. Requires admin or organization group admin — "
+    "returns HTTP 403 otherwise. Entries are newest-first by version_id. Returns up to "
+    "max_results entries (default 20, max 200), so a filtered sweep can stop at the cap "
+    "rather than exhausting the history — narrow with object_id or a time range instead of "
+    "raising it. Compacted to {version_id, "
+    "object_type, object_id, name, version_event, changed_fields, version_created_at, modifier_id, "
+    "description}; add the full object snapshot with include_snapshot plus a version_id.",
+    {
+        "type": "object",
+        "properties": {
+            "object_type": {
+                "type": "string",
+                "description": (
+                    "Filter by object type, comma-separated for several: 'hook', 'schema', "
+                    "'queue', 'rule', 'email_template', 'trigger', 'workspace'."
+                ),
+            },
+            "object_id": {
+                "type": "string",
+                "description": "Filter by object ID, comma-separated for several (e.g. '1042,1043').",
+            },
+            "version_event": {
+                "type": "string",
+                "description": "Filter by event: 'create', 'update', or 'delete'. Comma-separated for several.",
+            },
+            "changed_fields": {
+                "type": "string",
+                "description": (
+                    "Filter by changed field name, comma-separated for several (e.g. 'content,settings'). "
+                    "Matches entries where ANY of the named fields changed."
+                ),
+            },
+            "modifier_id": {
+                "type": "string",
+                "description": "Filter by the user ID that made the change. Comma-separated for several.",
+            },
+            "version_id": {
+                "type": "string",
+                "description": (
+                    "Filter by version ID, comma-separated for several. Required when "
+                    "include_snapshot is set."
+                ),
+            },
+            "version_id_range_min": {
+                "type": "integer",
+                "description": "Only entries with a version ID greater than or equal to this value.",
+            },
+            "version_id_range_max": {
+                "type": "integer",
+                "description": "Only entries with a version ID less than or equal to this value.",
+            },
+            "version_created_at_after": {
+                "type": "string",
+                "description": "Only entries created at or after this ISO 8601 timestamp (e.g. '2026-01-15T00:00:00Z').",
+            },
+            "version_created_at_before": {
+                "type": "string",
+                "description": "Only entries created at or before this ISO 8601 timestamp.",
+            },
+            "q": {
+                "type": "string",
+                "description": "Free-text search across the entry, including the object snapshot.",
+            },
+            "include_snapshot": {
+                "type": "boolean",
+                "description": (
+                    "Include the full object snapshot in each entry. Requires version_id and caps "
+                    "results at 3 — one schema snapshot alone can exceed 100 kB. List entries "
+                    "without it first, then request the snapshot for the version you care about."
+                ),
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum entries to return (default: 20, max: 200; max 3 with include_snapshot).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    annotations=_READ_ONLY,
+)
+def handle_list_configuration_changelog(request_id, arguments):
+    include_snapshot = bool(arguments.get("include_snapshot"))
+    if include_snapshot and not arguments.get("version_id"):
+        tool_result(
+            request_id,
+            "include_snapshot requires version_id — a single object snapshot can exceed 100 kB. "
+            "List entries without include_snapshot first, then request the snapshot for one "
+            "specific version_id.",
+            is_error=True,
+        )
+        return
+    cap = 3 if include_snapshot else 200
+    # Clamp to >= 1: _paginate's caps are `if max_results and ...`, so a falsy 0 would
+    # disable them and walk every page — with snapshots attached, that is megabytes.
+    max_results = max(1, min(arguments.get("max_results", 3 if include_snapshot else 20), cap))
+    params = [("page_size", min(max_results, 100))]
+    for key in ("version_id", "version_id_range_min", "version_id_range_max", "q",
+                "object_type", "object_id", "version_event", "modifier_id",
+                "changed_fields", "version_created_at_after", "version_created_at_before"):
+        if key in arguments:
+            params.append((key, arguments[key]))
+    pick_fields = _CONFIG_CHANGELOG_FIELDS
+    if include_snapshot:
+        params.append(("include_snapshot", "true"))
+        pick_fields = _CONFIG_CHANGELOG_FIELDS + ("snapshot",)
+    _rossum_list(
+        request_id, "/api/v1/configuration_changelog", params,
+        max_results=max_results, pick_fields=pick_fields,
+    )
 
 
 @_tool(

@@ -358,6 +358,13 @@
   },
   {
     "method": "GET",
+    "path": "/api/v1/configuration_changelog",
+    "operationId": "configuration_changelog_list",
+    "summary": "List configuration changelog",
+    "tag": "Configuration Changelog"
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/connectors",
     "operationId": "connectors_list",
     "summary": "List connectors",
@@ -1093,6 +1100,48 @@
   },
   {
     "method": "GET",
+    "path": "/api/v1/integration_credentials",
+    "operationId": "integration_credentials_list",
+    "summary": "List integration credentials",
+    "tag": "Integration Credential"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/integration_credentials",
+    "operationId": "integration_credentials_create",
+    "summary": "Create integration credential",
+    "tag": "Integration Credential"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/integration_credentials/{integrationCredentialID}",
+    "operationId": "integration_credentials_delete",
+    "summary": "Delete integration credential",
+    "tag": "Integration Credential"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/integration_credentials/{integrationCredentialID}",
+    "operationId": "integration_credentials_retrieve",
+    "summary": "Retrieve integration credential",
+    "tag": "Integration Credential"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/integration_credentials/{integrationCredentialID}",
+    "operationId": "integration_credentials_partial_update",
+    "summary": "Partial update integration credential",
+    "tag": "Integration Credential"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/integration_credentials/{integrationCredentialID}",
+    "operationId": "integration_credentials_update",
+    "summary": "Update integration credential",
+    "tag": "Integration Credential"
+  },
+  {
+    "method": "GET",
     "path": "/api/v1/labels",
     "operationId": "labels_list",
     "summary": "List labels",
@@ -1566,6 +1615,48 @@
     "operationId": "rules_execution_logs_list",
     "summary": "List rules execution logs",
     "tag": "Rules Execution Log"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/saved_views",
+    "operationId": "saved_views_list",
+    "summary": "List saved views",
+    "tag": "Saved View"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/saved_views",
+    "operationId": "saved_views_create",
+    "summary": "Create saved view",
+    "tag": "Saved View"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/saved_views/{savedViewID}",
+    "operationId": "saved_views_delete",
+    "summary": "Delete saved view",
+    "tag": "Saved View"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/saved_views/{savedViewID}",
+    "operationId": "saved_views_retrieve",
+    "summary": "Retrieve saved view",
+    "tag": "Saved View"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/saved_views/{savedViewID}",
+    "operationId": "saved_views_partial_update",
+    "summary": "Partial update saved view",
+    "tag": "Saved View"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/saved_views/{savedViewID}",
+    "operationId": "saved_views_update",
+    "summary": "Update saved view",
+    "tag": "Saved View"
   },
   {
     "method": "GET",

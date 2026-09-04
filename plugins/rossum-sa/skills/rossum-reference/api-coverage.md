@@ -4,7 +4,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 
 _**This table is about tool coverage, not about what the Rossum API supports.** Every status below describes *this MCP server*; whether **your token** may call a given endpoint is a separate question. ✅ covered = a dedicated tool wraps it. ✅ via rossum_get = readable through the generic `rossum_get` tool (no dedicated tool). ⬜ pending = uncovered write, no MCP tool yet. 🚫 not_planned = deliberately not wrapped (deemed too destructive, too niche, or out of an SA's remit) — **it does not mean the operation does not exist**, so never tell a user the platform cannot do it; but there is no path to it from here either, so hand off rather than open-coding a request around the gap. ⚠️ deprecated = deprecated by Rossum._
 
-**63 covered · 81 via rossum_get · 0 pending · 125 not planned · 269 total operations**
+**64 covered · 85 via rossum_get · 4 pending · 129 not planned · 282 total operations**
 
 ## Annotation
 
@@ -68,6 +68,12 @@ _**This table is about tool coverage, not about what the Rossum API supports.** 
 |---|---|---|
 | `GET /automation_blockers` | ✅ via rossum_get | rossum_get |
 | `GET /automation_blockers/{id}` | ✅ via rossum_get | rossum_get |
+
+## Configuration Changelog
+
+| Operation | Status | Tool(s) |
+|---|---|---|
+| `GET /configuration_changelog` | ✅ covered | rossum_list_configuration_changelog |
 
 ## Connector
 
@@ -263,6 +269,17 @@ _**This table is about tool coverage, not about what the Rossum API supports.** 
 | `PATCH /inboxes/{inboxID}` | 🚫 not_planned |  |
 | `PUT /inboxes/{inboxID}` | 🚫 not_planned |  |
 
+## Integration Credential
+
+| Operation | Status | Tool(s) |
+|---|---|---|
+| `GET /integration_credentials` | ✅ via rossum_get | rossum_get |
+| `POST /integration_credentials` | ⬜ pending |  |
+| `DELETE /integration_credentials/{integrationCredentialID}` | ⬜ pending |  |
+| `GET /integration_credentials/{integrationCredentialID}` | ✅ via rossum_get | rossum_get |
+| `PATCH /integration_credentials/{integrationCredentialID}` | ⬜ pending |  |
+| `PUT /integration_credentials/{integrationCredentialID}` | ⬜ pending |  |
+
 ## Label
 
 | Operation | Status | Tool(s) |
@@ -375,6 +392,17 @@ _**This table is about tool coverage, not about what the Rossum API supports.** 
 | Operation | Status | Tool(s) |
 |---|---|---|
 | `GET /rules_execution_logs` | ✅ covered | rossum_list_rule_execution_logs |
+
+## Saved View
+
+| Operation | Status | Tool(s) |
+|---|---|---|
+| `GET /saved_views` | ✅ via rossum_get | rossum_get |
+| `POST /saved_views` | 🚫 not_planned |  |
+| `DELETE /saved_views/{savedViewID}` | 🚫 not_planned |  |
+| `GET /saved_views/{savedViewID}` | ✅ via rossum_get | rossum_get |
+| `PATCH /saved_views/{savedViewID}` | 🚫 not_planned |  |
+| `PUT /saved_views/{savedViewID}` | 🚫 not_planned |  |
 
 ## Schema
 
