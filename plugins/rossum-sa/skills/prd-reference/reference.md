@@ -554,6 +554,55 @@ Key differences from prd v1:
 - Each org directory has its own `credentials.yaml`
 - No top-level `mapping.yaml` — deployment mappings are in `deploy_files/`
 
+## Working in a prd2 Tree
+
+### Local ≠ live is the normal state on API-patched projects
+
+On any project where `prd2 deploy` is blocked and fixes go in through the API instead, the local tree drifting from the live config is **routine, not an exception**. Such repos carry commits literally titled *"apply the billing-string GL guard via API (deploy is blocked)"* and *"cherry-pick … via API"* — each one a change that exists remotely and in git history, but was never pushed through prd2 and may not match what the local JSON says today.
+
+The failure this causes is diagnosing a bug from the local file and reasoning about code that is not running. **Verify before you diagnose**: fetch the live object, slice out the part you care about, and diff it against local.
+
+```bash
+API=https://<org>.rossum.app/api/v1
+T=<token>
+
+curl -s "$API/hooks/<id>" -H "Authorization: Bearer $T" \
+  | jq '.settings.configurations[] | select(.name|test("<cfg>"))' > /tmp/live.json
+
+jq '.settings.configurations[] | select(.name|test("<cfg>"))' \
+   "<org>/<env>/hooks/<HookName>_[<id>].json" > /tmp/local.json
+
+diff /tmp/local.json /tmp/live.json && echo IDENTICAL
+```
+
+Slice both sides with the *same* `jq` filter so the diff is about content, not key ordering or unrelated config drift. Do this before forming any hypothesis about hook behavior; without it, the check only happens if you independently think of it, which is exactly when you are least likely to.
+
+If they differ, the live side is what is running. Decide deliberately whether to reconcile (`prd2 pull` to adopt live, or re-apply local via API) — do not silently patch on top of a stale local file.
+
+### Diagnose stock CIB hooks from `settings`, not the `.py`
+
+Stock Coupa Integration Baseline hooks — imports, memorization, and friends — are **generic settings-driven engines**. The Python is boilerplate shared across every deployment; all the behavior that differs between orgs lives in `settings`. Reading ~370 lines of a memorization hook's `.py` teaches you nothing that `settings` would not have told you in ten seconds.
+
+Read `.py` only when you have a specific reason to believe the code itself is non-stock (it was customized, or `settings` genuinely cannot explain the observed behavior).
+
+```bash
+jq '.settings' "<org>/<env>/hooks/<HookName>_[<id>].json"
+```
+
+### Prefer `jq` on absolute paths
+
+Three things reliably bite in prd2 trees:
+
+- **Paths contain spaces and `[id]` brackets.** Always quote them, and prefer absolute paths.
+- **`python3 -c` gets blocked by the permission classifier.** Use `jq` for JSON inspection; it reads as an ordinary read-only file operation and is a better tool for the job anyway.
+- **`cd` leaks across Bash calls.** The working directory persists between invocations, so a `cd` into an object directory silently breaks every later relative path. Pass absolute paths instead of changing directory.
+
+```bash
+# good — absolute, quoted, no cd
+jq '.settings.configurations[].name' \
+   "/abs/path/project/org/dev/hooks/MDH - Main_[735953].json"
+```
+
 ## Important Notes
 
 - prd2 does NOT automatically make git commits — use `-c` flag to opt in
