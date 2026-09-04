@@ -275,6 +275,7 @@ substitute for actually checking exit status and stderr.
 
 ## Known limitations
 
+- **Legacy B2Brouter API version only.** The client calls `app.b2brouter.net` under API version `2025-01-01`, which is what the importer extension itself uses. A B2Brouter account group whose default API version is newer (measured: `2026-06-26`) rejects every such call with `400 api_version_subdomain_mismatch`; the tool then reports all of that group's accounts as `UNVERIFIED_SOURCE` rather than failing silently, but it cannot reconcile them. The API version is a per-request header, not a property of the key, so this is fixable in the client; a follow-up adds a version-aware client.
 - Verified against one production organization, one B2Brouter deployment and
   one account-group structure; discovery is designed to generalise but that
   is a design claim, not a measurement.
