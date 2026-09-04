@@ -1081,5 +1081,52 @@
     "decision": "not_planned",
     "reason": "niche event-binding entity (queue+event+condition -> email_templates/delete_recommendations); the SA-authored automation surface is the native Rule entity (covered by rule CRUD) with an inline trigger_condition. Confirmed not_planned with the team",
     "summary": "Delete trigger"
+  },
+  "GET /configuration_changelog": {
+    "decision": "covered",
+    "tools": [
+      "rossum_list_configuration_changelog"
+    ],
+    "summary": "List configuration changelog"
+  },
+  "POST /saved_views": {
+    "decision": "not_planned",
+    "reason": "UI filter presets; not scripted by an SA",
+    "summary": "Create saved view"
+  },
+  "PUT /saved_views/{savedViewID}": {
+    "decision": "not_planned",
+    "reason": "UI filter presets; not scripted by an SA",
+    "summary": "Update saved view"
+  },
+  "PATCH /saved_views/{savedViewID}": {
+    "decision": "not_planned",
+    "reason": "UI filter presets; not scripted by an SA",
+    "summary": "Partial update saved view"
+  },
+  "DELETE /saved_views/{savedViewID}": {
+    "decision": "not_planned",
+    "reason": "UI filter presets; not scripted by an SA",
+    "summary": "Delete saved view"
+  },
+  "POST /integration_credentials": {
+    "decision": "pending",
+    "reason": "only one credential type (coupa_sand_oauth2) and no instances yet; revisit when the type list grows",
+    "summary": "Create integration credential"
+  },
+  "PUT /integration_credentials/{integrationCredentialID}": {
+    "decision": "pending",
+    "reason": "only one credential type (coupa_sand_oauth2) and no instances yet; revisit when the type list grows",
+    "summary": "Update integration credential"
+  },
+  "PATCH /integration_credentials/{integrationCredentialID}": {
+    "decision": "pending",
+    "reason": "only one credential type (coupa_sand_oauth2) and no instances yet; revisit when the type list grows",
+    "summary": "Partial update integration credential"
+  },
+  "DELETE /integration_credentials/{integrationCredentialID}": {
+    "decision": "pending",
+    "reason": "only one credential type (coupa_sand_oauth2) and no instances yet; revisit when the type list grows",
+    "summary": "Delete integration credential"
   }
 }

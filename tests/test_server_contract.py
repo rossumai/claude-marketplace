@@ -2191,3 +2191,115 @@ def test_update_marks_failed_annotation_readback(monkeypatch):
     out = emitted_payload(emitted)
     assert "status" not in out                # unknown, not fabricated
     assert "read-back failed" in out["_meta"]["read_back"]
+
+
+def test_configuration_changelog_snapshot_is_opt_in_and_gated(monkeypatch):
+    """A single object snapshot can exceed 100 kB, so it must be excluded by default
+    and only fetched for an explicitly named version_id."""
+    row = {
+        "version_id": 900001, "object_type": "schema", "object_id": 1042,
+        "name": "Invoice Schema", "version_event": "update", "changed_fields": ["content"],
+        "version_created_at": "2026-01-01T00:00:00Z", "modifier_id": 77,
+        "description": None, "snapshot": {"content": ["HUGE"]},
+    }
+    responder = lambda url, method, body: {"results": [row], "pagination": {"total": 1}}
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_list_configuration_changelog",
+        {"object_type": "schema"}, responder)
+    default = emitted[-1]["result"]["content"][0]["text"]
+    assert "HUGE" not in default
+    assert "snapshot" not in json.loads(default)["results"][0]
+    assert "include_snapshot" not in fake.calls[0]["url"]
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_list_configuration_changelog",
+        {"version_id": "900001", "include_snapshot": True}, responder)
+    opted_in = json.loads(emitted[-1]["result"]["content"][0]["text"])
+    assert opted_in["results"][0]["snapshot"] == {"content": ["HUGE"]}
+    assert "include_snapshot=true" in fake.calls[0]["url"]
+
+
+def test_configuration_changelog_snapshot_without_version_id_is_refused(monkeypatch):
+    """include_snapshot on an unfiltered list would return megabytes — refuse before
+    spending the request."""
+    responder = lambda url, method, body: {"results": [], "pagination": {"total": 0}}
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_list_configuration_changelog",
+        {"include_snapshot": True}, responder)
+    assert fake.calls == []
+    result = emitted[-1]["result"]
+    assert result["isError"] is True
+    assert "requires version_id" in result["content"][0]["text"]
+
+
+def test_configuration_changelog_passes_multivalue_filters_verbatim(monkeypatch):
+    """The API takes comma-separated multi-value filters; the handler must not mangle them."""
+    responder = lambda url, method, body: {"results": [], "pagination": {"total": 0}}
+    fake, _ = run_handler(
+        monkeypatch, "rossum_list_configuration_changelog",
+        {"object_type": "hook,rule", "changed_fields": "content,settings",
+         "version_event": "update,delete", "max_results": 5}, responder)
+    url = fake.calls[0]["url"]
+    assert "object_type=hook%2Crule" in url
+    assert "changed_fields=content%2Csettings" in url
+    assert "version_event=update%2Cdelete" in url
+    assert "page_size=5" in url
+
+
+def _changelog_pages(row, pages=5, per_page=100):
+    """Responder yielding a finite but oversized paginated feed — enough rows (500) to blow
+    past every cap in the handler if one is missing, but bounded, so a regression fails on an
+    assertion instead of hanging the suite on an endless walk."""
+    state = {"n": 0}
+
+    def responder(url, method, body):
+        state["n"] += 1
+        next_url = (f"{BASE}/api/v1/configuration_changelog?p={state['n'] + 1}"
+                    if state["n"] < pages else None)
+        return {
+            "results": [dict(row, version_id=i) for i in range(per_page)],
+            "pagination": {"total": pages * per_page, "next": next_url},
+        }
+    return responder
+
+
+def test_configuration_changelog_caps_are_enforced_not_just_defaulted(monkeypatch):
+    """The caps are the point of the tool: snapshot mode must stay at 3 even when a larger
+    max_results is asked for, and plain mode must stop at 200 of an endless feed."""
+    row = {"version_id": 1, "object_type": "schema", "object_id": 2, "name": "s",
+           "version_event": "update", "changed_fields": ["content"],
+           "version_created_at": "2026-01-01T00:00:00Z", "modifier_id": 3,
+           "description": None, "snapshot": {"content": ["HUGE"]}}
+    responder = _changelog_pages(row)
+
+    # Snapshot mode: an explicit larger max_results must not widen the page or the result set.
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_list_configuration_changelog",
+        {"version_id": "1", "include_snapshot": True, "max_results": 50}, responder)
+    assert "page_size=3" in fake.calls[0]["url"]
+    assert len(json.loads(emitted[-1]["result"]["content"][0]["text"])["results"]) == 3
+
+    # Plain mode: 200 is the ceiling on an endless feed, page_size stays at the API max.
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_list_configuration_changelog",
+        {"max_results": 1000}, responder)
+    assert "page_size=100" in fake.calls[0]["url"]
+    assert len(json.loads(emitted[-1]["result"]["content"][0]["text"])["results"]) == 200
+
+
+def test_configuration_changelog_falsy_max_results_does_not_disable_the_cap(monkeypatch):
+    """_paginate's caps are `if max_results and ...`, so a falsy 0 would walk every page —
+    with snapshots attached that is megabytes. It must clamp to 1, not to unlimited."""
+    row = {"version_id": 1, "object_type": "schema", "object_id": 2, "name": "s",
+           "version_event": "update", "changed_fields": [], "version_created_at": "x",
+           "modifier_id": 3, "description": None, "snapshot": {"content": ["HUGE"]}}
+    responder = _changelog_pages(row)
+
+    for args in ({"max_results": 0}, {"max_results": -5}):
+        fake, emitted = run_handler(
+            monkeypatch, "rossum_list_configuration_changelog", args, responder)
+        payload = json.loads(emitted[-1]["result"]["content"][0]["text"])
+        assert len(payload["results"]) == 1, args
+        assert len(fake.calls) == 1, args
+        assert "page_size=1" in fake.calls[0]["url"], args
