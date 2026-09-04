@@ -275,7 +275,7 @@ substitute for actually checking exit status and stderr.
 
 ## Known limitations
 
-- **Legacy B2Brouter API version only.** The client calls `app.b2brouter.net` under API version `2025-01-01`, which is what the importer extension itself uses. A B2Brouter account group whose default API version is newer (measured: `2026-06-26`) rejects every such call with `400 api_version_subdomain_mismatch`; the tool then reports all of that group's accounts as `UNVERIFIED_SOURCE` rather than failing silently, but it cannot reconcile them. The API version is a per-request header, not a property of the key, so this is fixable in the client; a follow-up adds a version-aware client.
+- **Both B2Brouter API generations are supported, auto-detected by default.** The client sends `X-B2B-API-Version` explicitly on every request rather than relying on an account group's configured default, and supports both the legacy generation (`2025-01-01`, host `app.b2brouter.net` — what the importer extension itself uses, and this tool's default) and the newer one (`2026-06-26`, host `api.b2brouter.net`). Per host, the tool probes at the legacy default first; if that specific host rejects it with `400 api_version_subdomain_mismatch`, it retries once at the other generation and, on success, uses that version for every later call on that host — printing one line to stderr naming the switch. `--b2b-api-version` (or a credentials file's `b2brouter.api_version`) pins a generation explicitly and skips the probe. Both directions were measured live: a legacy-default group's calls succeeding when the header explicitly requests the new generation instead, and explicit legacy pinning working unchanged on two separate account groups (one production, one staging). What has **not** itself been observed is a live account group whose configured default genuinely IS the new generation — auto-detection's switch path is therefore verified against the measured `api_version_subdomain_mismatch` error code (confirmed to be what a version/host mismatch returns), not against an actual group defaulting to it.
 - Verified against one production organization, one B2Brouter deployment and
   one account-group structure; discovery is designed to generalise but that
   is a design claim, not a measurement.
@@ -285,9 +285,6 @@ substitute for actually checking exit status and stderr.
 - In the CSV a `DELETED` row reads the same whether its verification search
   ran and found nothing or never ran; only the run summary distinguishes
   them.
-- One code path — the fallback to the newer B2Brouter API response shape,
-  where the account id sits under `account` rather than `project` — has
-  never been exercised against a live response.
 
 ## Red flags — stop and correct course
 

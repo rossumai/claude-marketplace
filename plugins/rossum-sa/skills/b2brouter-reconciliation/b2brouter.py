@@ -1,26 +1,65 @@
-"""Read-only B2Brouter client.
+"""Read-only B2Brouter client, supporting both API generations B2Brouter runs
+concurrently.
 
-The working listing endpoint, measured directly against the live API by
-replicating what the production importer integration itself sends:
+B2Brouter selects the API generation per request via the `X-B2B-API-Version`
+header -- not a property of the key -- defaulting, when the header is
+omitted, to whatever version the account GROUP is configured for. A group
+whose default is the newer generation rejects every legacy-host call with
+`400 {"error": {"code": "api_version_subdomain_mismatch"}}`. This client
+therefore sends the header explicitly on EVERY request, never relying on a
+group's default, and derives host/path/envelope/field-name differences from
+a small per-version profile table (`API_PROFILES` below) rather than
+hardcoding one generation.
 
-    GET {base}/projects/{ACCOUNT_ID}/received.json?type=ReceivedInvoice&ack=true
-      -> {"invoices": [...], "total_count": N, "offset": O, "limit": L}
+Everything below was measured live against BOTH versions, with two different
+keys, on two different account groups:
 
-`invoices.json` (the endpoint this client used to call) is not a working
-alias for received invoices: it measured total_count: 0 for every account and
-every parameter combination tried. `received.json` is the correct index.
+    LEGACY (`2025-01-01`, the importer extension's own version, and this
+    client's default -- matches the behaviour this tool has always had):
+      host:   https://app.b2brouter.net      (staging: app-staging.)
+      list:   GET /projects/{ACCOUNT_ID}/received.json?...
+                -> flat envelope {"invoices": [...], "total_count", "offset", "limit"}
+      sender: row["client"]["name"]
+      detail: GET /invoices/{ID}.json -> invoice.project.id is the account;
+              invoice.account is null
+      dates:  no fractional seconds, e.g. 2026-08-27T12:00:32Z
 
-`ack=true` is REQUIRED, not optional. Omitting `ack` entirely (or sending
-`ack=false`) does not return the full index -- it returns ONLY the importer's
-pending/unacknowledged queue, which for a mostly-processed account is a
-handful of rows out of thousands. That silent default is why this tool used
-to see next to nothing even once pointed at the right path. `ack=true` was
-verified NOT to mutate anything: three consecutive `ack=true` list calls left
-a pending invoice's `ack_at` still None and its `updated_at` unchanged, and a
-follow-up `ack=false` call still returned that same invoice -- the parameter
-is a read filter, not a state change, despite the alarming name. `ack=false`
-must never be sent by this tool; it is the importer's own work queue, not the
-reconciliation's population.
+    NEW (`2026-06-26`):
+      host:   https://api.b2brouter.net      (staging: api-staging.)
+      list:   GET /accounts/{ACCOUNT_ID}/invoices?...
+                -> {"invoices": [...], "meta": {"total_count", "offset", "limit"}}
+      sender: row["contact"]["name"]; list rows carry NO account/project
+              field at all -- the account comes from the request, not the row
+      detail: GET /invoices/{ID} (no .json) -> invoice.account.id is the
+              account; invoice.project is null
+      dates:  millisecond fractions, e.g. 2026-08-27T12:00:32.000Z
+
+Shared by both, regardless of version:
+  - `GET /accounts?limit=500` -> a FLAT envelope on BOTH generations (the
+    new generation's invoice listing is the odd one out, not `/accounts`).
+  - Listing received invoices requires `type=ReceivedInvoice&ack=true&limit=
+    N&offset=M` -- identical query parameters on both hosts/paths. `ack` is
+    REQUIRED, not optional: omitting it entirely (or sending `ack=false`)
+    does not return the full index -- it returns ONLY the importer's
+    pending/unacknowledged queue, which for a mostly-processed account is a
+    handful of rows out of thousands, on BOTH versions. `ack=true` was
+    verified NOT to mutate anything: three consecutive `ack=true` list calls
+    left a pending invoice's `ack_at` still None and its `updated_at`
+    unchanged, and a follow-up `ack=false` call still returned that same
+    invoice. `ack=false` must never be sent by this tool.
+  - `limit` is clamped at 500 server-side and the CLAMPED value is echoed
+    back, on both versions -- see the page-fullness reasoning below.
+  - List rows carry `ack_at: null` and (on the legacy host) `from_net: null`
+    regardless of the truth, on both versions; only the per-invoice DETAIL
+    response populates them.
+  - Detail responses are WRAPPED as `{"invoice": {...}}` on both versions.
+  - Wrong-generation host/path (legacy path hit on the new host, or vice
+    versa) -> `400 api_version_subdomain_mismatch`. An unrecognised version
+    string in the header -> `400 invalid_api_version`. A key from the wrong
+    environment (e.g. a staging key against a production host) ->
+    `401 invalid_api_key`. `B2bError.code` (see below) exposes the parsed
+    `error.code` from any of these so callers can branch on them without
+    string-matching.
 
 This endpoint's `date_from`/`date_to` filters key on the invoice's ISSUE
 date, not its arrival, and issue-to-arrival skew is unbounded in principle
@@ -52,9 +91,120 @@ PAGE_SIZE = 500
 # hanging.
 MAX_PAGES = 10_000
 
+# The two measured API generations. LEGACY matches what the Rossum importer
+# extension itself sends and is this client's default, so an operator who
+# never touches version selection sees exactly today's behaviour.
+LEGACY_API_VERSION = "2025-01-01"
+NEW_API_VERSION = "2026-06-26"
+
+
+@dataclass(frozen=True)
+class ApiProfile:
+    """Everything that differs between B2Brouter API generations.
+
+    Adding a THIRD generation means adding one more entry to API_PROFILES
+    with these facts -- nothing else in this module should need to change on
+    the strength of a version bump alone. `host_own`/`host_other` are
+    parallel tuples of host-family markers (staging variant first, since
+    "app-staging." contains "app." as a substring and must be matched before
+    it -- see `_rehost`).
+    """
+    version: str
+    host_own: tuple[str, ...]
+    host_other: tuple[str, ...]
+    list_path: Callable[[str], str]
+    list_envelope: str  # "flat" or "meta"
+    sender_field: str  # "client" or "contact"
+    detail_path: Callable[[str], str]
+    # The field tried FIRST for the owning account on a detail lookup ("project"
+    # or "account"). The other of the two is always tried as a fallback,
+    # regardless of profile -- see B2brouterClient._account_id_from_invoice --
+    # because both generations were measured to carry the unused field as a
+    # real, always-null key rather than omitting it.
+    detail_account_field: str
+
+
+API_PROFILES: dict[str, ApiProfile] = {
+    LEGACY_API_VERSION: ApiProfile(
+        version=LEGACY_API_VERSION,
+        host_own=("app-staging.", "app."),
+        host_other=("api-staging.", "api."),
+        list_path=lambda account_id: f"/projects/{account_id}/received.json",
+        list_envelope="flat",
+        sender_field="client",
+        detail_path=lambda einvoice_id: f"/invoices/{einvoice_id}.json",
+        detail_account_field="project",
+    ),
+    NEW_API_VERSION: ApiProfile(
+        version=NEW_API_VERSION,
+        host_own=("api-staging.", "api."),
+        host_other=("app-staging.", "app."),
+        list_path=lambda account_id: f"/accounts/{account_id}/invoices",
+        list_envelope="meta",
+        sender_field="contact",
+        detail_path=lambda einvoice_id: f"/invoices/{einvoice_id}",
+        detail_account_field="account",
+    ),
+}
+
+
+def other_api_version(version: str) -> str:
+    """The other known profile's version string -- used by recon.py's
+    auto-detection to retry once against the alternate generation. Raises
+    ValueError for an unrecognised version rather than guessing."""
+    others = [v for v in API_PROFILES if v != version]
+    if version not in API_PROFILES or len(others) != 1:
+        raise ValueError(f"no single alternate profile for version {version!r}")
+    return others[0]
+
+
+def _rehost(base_url: str, profile: ApiProfile) -> str:
+    """Swap `base_url`'s host onto `profile`'s own family (app./api.,
+    including the staging variants), derived from whatever host the hook's
+    `b2b_router_base_url` setting configured -- which always names the
+    LEGACY host, since that is what the importer extension itself uses.
+    Left unchanged if it already matches this profile's family, or if it
+    matches neither known family at all (an unrecognised host shape must
+    fail loudly downstream, not be silently rewritten here).
+    """
+    for own, other in zip(profile.host_own, profile.host_other):
+        if own in base_url:
+            return base_url
+        if other in base_url:
+            return base_url.replace(other, own)
+    return base_url
+
+
+def _error_code(exc: urllib.error.HTTPError) -> str | None:
+    """The parsed `error.code` from an HTTPError's JSON body, e.g.
+    `api_version_subdomain_mismatch` / `invalid_api_version` /
+    `invalid_api_key` -- or None when the body isn't that shape (already
+    consumed, not JSON, or missing the key). Never raises: a body this
+    client cannot parse is simply an error with no code, not a reason to
+    obscure the original HTTP failure.
+    """
+    try:
+        body = json.loads(exc.read())
+    except Exception:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
+
 
 class B2bError(RuntimeError):
-    pass
+    """Raised for any B2Brouter request failure.
+
+    `code` is the parsed `error.code` from a JSON error body (e.g.
+    `api_version_subdomain_mismatch`, `invalid_api_version`,
+    `invalid_api_key`) when the response carried one, else None -- callers
+    branch on this attribute instead of substring-matching `str(exc)`. The
+    message text is unchanged from before this attribute existed.
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -98,9 +248,23 @@ class B2brouterClient:
         page_size: int = PAGE_SIZE,
         max_pages: int = MAX_PAGES,
         ssl_context: ssl.SSLContext | None = None,
+        api_version: str = LEGACY_API_VERSION,
     ) -> None:
+        if api_version not in API_PROFILES:
+            raise ValueError(
+                f"unknown B2Brouter API version {api_version!r} "
+                f"(known: {sorted(API_PROFILES)})"
+            )
         self._key = api_key
-        self._base = base_url.rstrip("/")
+        self._api_version = api_version
+        self._profile = API_PROFILES[api_version]
+        # `base_url` is whatever the hook's `b2b_router_base_url` setting
+        # configured, which always names the LEGACY host -- that is what the
+        # importer extension itself sends. Rehosted onto THIS profile's own
+        # family so a client pinned or auto-detected to the new generation
+        # still talks to the right host without the caller needing to know
+        # the swap happened.
+        self._base = _rehost(base_url.rstrip("/"), self._profile)
         self._page_size = page_size
         self._max_pages = max_pages
         self._transport = transport or self._get
@@ -120,8 +284,17 @@ class B2brouterClient:
     def _get(self, path: str) -> dict:
         """The ONLY HTTP verb in this module."""
         url = f"{self._base}{path}"
+        # The API generation is a per-REQUEST header, not a property of the
+        # key or the host -- sent explicitly on every call so behaviour never
+        # depends on the account group's configured default (see module
+        # docstring).
         request = urllib.request.Request(
-            url, headers={"X-B2B-API-Key": self._key}, method="GET"
+            url,
+            headers={
+                "X-B2B-API-Key": self._key,
+                "X-B2B-API-Version": self._api_version,
+            },
+            method="GET",
         )
         # context is only added to the call when a caller supplied one -- not
         # passed as context=None -- so the no-flag path calls urlopen() with
@@ -137,7 +310,7 @@ class B2brouterClient:
                 if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
                     time.sleep(2 ** attempt)
                     continue
-                raise B2bError(f"GET {url} -> HTTP {exc.code}") from exc
+                raise B2bError(f"GET {url} -> HTTP {exc.code}", code=_error_code(exc)) from exc
             except urllib.error.URLError as exc:
                 # Detect certificate verification errors and give helpful guidance.
                 if isinstance(exc.reason, ssl.SSLCertVerificationError):
@@ -225,33 +398,34 @@ class B2brouterClient:
         second request -- to backfill `acked_at` for exception rows after the
         join.
 
-        Response shape MEASURED directly against the legacy host's live
-        response (unlike the rest of this docstring's usual caveats, this one
-        is confirmed, not assumed): the invoice comes back WRAPPED as
-        `{"invoice": {"id": ..., "project": {"id": ..., "name": ...},
-        "account": null, "created_at": ..., ...}}` -- the account/project id
-        lives at `invoice.project.id`; `invoice.account` is a real key on
-        this host but is always `null`. A newer API version has been
-        reported to return the invoice UNWRAPPED (no `"invoice"` envelope)
-        with the id under `account` instead of `project` -- this client
-        supports both: it unwraps `payload["invoice"]` when present (falling
-        back to treating `payload` itself as the invoice object when it is
-        not), and reads `project.id`, falling back to `account.id` only when
-        `project` is absent or `null`. A payload with neither field, on
+        Response shape MEASURED directly against BOTH hosts' live responses:
+        the invoice comes back WRAPPED as `{"invoice": {"id": ..., "project":
+        {"id": ..., "name": ...}, "account": null, "created_at": ..., ...}}`
+        on the legacy generation -- the account/project id lives at
+        `invoice.project.id`; `invoice.account` is a real key but always
+        `null`. The new generation is the mirror image: `invoice.account.id`
+        is the account and `invoice.project` is null (or absent). Both are
+        wrapped the same way. This client reads whichever of the two fields
+        `self._profile.detail_account_field` says is primary for the active
+        version, falling back to the other one -- so a payload that happens
+        to carry the OTHER generation's shape (e.g. a version mismatch that
+        the server tolerated instead of rejecting) is still read correctly
+        rather than raising. A payload with neither field populated, on
         either shape, raises rather than being silently read as "no
-        account" -- see the raise below. `created_at` is read straight off
-        that same invoice object; if it is absent or not a string, the
-        returned `InvoiceRef.created_at` is None rather than raising -- an
-        account id without a usable arrival date is still useful to the
-        caller (it just can't be used to detect a pre-window re-import).
-        `ack_at` is read the same way, off the same invoice object: if it is
-        absent or not a string, `InvoiceRef.ack_at` is None. That None is
-        genuinely ambiguous in isolation (unacknowledged vs. a field this
-        host doesn't populate at all) -- but the caller only ever reaches
-        into `ack_at` after this lookup already SUCCEEDED (a real invoice
-        object came back), so None here means "this invoice, confirmed to
-        exist, has no acknowledgement timestamp" -- as distinct from a lookup
-        that failed or 404d entirely, which the caller marks differently.
+        account" -- see `_account_id_from_invoice` below. `created_at` is
+        read straight off that same invoice object; if it is absent or not a
+        string, the returned `InvoiceRef.created_at` is None rather than
+        raising -- an account id without a usable arrival date is still
+        useful to the caller (it just can't be used to detect a pre-window
+        re-import). `ack_at` is read the same way, off the same invoice
+        object: if it is absent or not a string, `InvoiceRef.ack_at` is
+        None. That None is genuinely ambiguous in isolation (unacknowledged
+        vs. a field this host doesn't populate at all) -- but the caller
+        only ever reaches into `ack_at` after this lookup already SUCCEEDED
+        (a real invoice object came back), so None here means "this
+        invoice, confirmed to exist, has no acknowledgement timestamp" -- as
+        distinct from a lookup that failed or 404d entirely, which the
+        caller marks differently.
 
         A 404 means this key/account group cannot see this invoice id and
         returns None, exactly like a per-id fallback lookup that legitimately
@@ -261,32 +435,17 @@ class B2brouterClient:
         never silently count a real failure as proof no account owns the id.
         """
         try:
-            payload = self._transport(f"/invoices/{einvoice_id}.json")
+            payload = self._transport(self._profile.detail_path(einvoice_id))
         except B2bError as exc:
             if "HTTP 404" in str(exc):
                 return None
             raise
-        # Wrapped (measured, legacy host) vs. unwrapped (reported, newer API
-        # version): unwrap only when "invoice" is actually present and is
-        # itself an object, so an unwrapped payload that merely lacks the key
-        # is read as the invoice object directly rather than as garbage.
+        # Wrapped on both generations (measured) -- unwrap only when
+        # "invoice" is actually present and is itself an object, so a
+        # payload that merely lacks the key is read as the invoice object
+        # directly rather than as garbage.
         invoice = payload["invoice"] if isinstance(payload.get("invoice"), dict) else payload
-        project = invoice.get("project")
-        account_id = None
-        if isinstance(project, dict) and project.get("id") is not None:
-            account_id = str(project["id"])
-        else:
-            # `project` absent or null (measured: always null on the legacy
-            # host's own `account` key) -- fall back to `account.id`, the
-            # newer API version's shape.
-            account = invoice.get("account")
-            if isinstance(account, dict) and account.get("id") is not None:
-                account_id = str(account["id"])
-        if account_id is None:
-            raise B2bError(
-                f"Invoice {einvoice_id} lookup response has no usable 'project' "
-                f"or 'account' object (keys present: {sorted(invoice)})."
-            )
+        account_id = self._account_id_from_invoice(invoice, einvoice_id)
         created_at = invoice.get("created_at")
         ack_at = invoice.get("ack_at")
         return InvoiceRef(
@@ -295,15 +454,42 @@ class B2brouterClient:
             ack_at=ack_at if isinstance(ack_at, str) else None,
         )
 
+    def _account_id_from_invoice(self, invoice: dict, einvoice_id: str) -> str:
+        """The owning account id off a detail-lookup invoice object, trying
+        this client's profile's primary field first (`project` for legacy,
+        `account` for the new generation) and the other one as a fallback --
+        see `get_invoice`'s docstring for why the fallback exists. Raises
+        B2bError, naming the invoice id and both field names, if neither is
+        a usable object -- never silently reads that as "no account".
+        """
+        primary_field = self._profile.detail_account_field
+        fallback_field = "account" if primary_field == "project" else "project"
+        for field in (primary_field, fallback_field):
+            candidate = invoice.get(field)
+            if isinstance(candidate, dict) and candidate.get("id") is not None:
+                return str(candidate["id"])
+        raise B2bError(
+            f"Invoice {einvoice_id} lookup response has no usable "
+            f"'{primary_field}' or '{fallback_field}' object "
+            f"(keys present: {sorted(invoice)})."
+        )
+
     def received_invoices(
         self, account_id: str, *, since: datetime, until: datetime
     ) -> list[B2bInvoice]:
         """Received invoices that ARRIVED in [since, until] for one account.
 
-        Calls GET /projects/{account_id}/received.json with ack=true. ack=true
-        is required to see the full index rather than just the importer's
-        pending queue (see the module docstring for the measured evidence
-        that this does not mutate anything); ack=false must never be sent.
+        Calls the active profile's list endpoint (`/projects/{account_id}/
+        received.json` on the legacy generation, `/accounts/{account_id}/
+        invoices` on the new one) with the SAME query parameters on both --
+        `type=ReceivedInvoice&ack=true&limit=N&offset=M`. ack=true is
+        required to see the full index rather than just the importer's
+        pending queue on EITHER generation (see the module docstring for the
+        measured evidence that this does not mutate anything); ack=false
+        must never be sent. `total_count`/`limit` are read from the active
+        profile's envelope location -- top-level for the flat (legacy)
+        envelope, under `meta` for the new one -- via `_list_meta_object`
+        below; every check on them is otherwise identical for both.
 
         The listing order is unspecified, so the account is paged in full and the
         window applied client-side on created_at -- this endpoint's date_from/
@@ -368,10 +554,13 @@ class B2brouterClient:
                 "limit": self._page_size,
                 "offset": offset,
             })
-            payload = self._transport(f"/projects/{account_id}/received.json?{query}")
+            path = self._profile.list_path(account_id)
+            payload = self._transport(f"{path}?{query}")
             # I3: require the key. `.get("invoices", [])` turned any 200
             # response of an unexpected shape -- a captive proxy page, an
             # envelope change -- into a clean, empty, error-free account.
+            # `invoices` itself is always top-level, on BOTH envelope kinds --
+            # only `limit`/`total_count` move under `meta` on the new one.
             if "invoices" not in payload:
                 raise B2bError(
                     f"Account {account_id}: listing response has no 'invoices' key "
@@ -384,6 +573,7 @@ class B2brouterClient:
                     f"Account {account_id}: 'invoices' is {type(rows).__name__}, "
                     "not a list."
                 )
+            meta_obj = self._list_meta_object(payload)
 
             # Capture and validate total_count the first time it appears on
             # any page -- a server may omit it on page one and include it
@@ -404,8 +594,8 @@ class B2brouterClient:
             # general "declared count is never a stop signal" contract; this
             # comment is what is left to explain why total_declared plays no
             # part in the loop's own stop condition.
-            if total_declared is None and "total_count" in payload:
-                total_declared = payload["total_count"]
+            if total_declared is None and "total_count" in meta_obj:
+                total_declared = meta_obj["total_count"]
                 # Guard against non-numeric total_count (bool is a subclass of
                 # int in Python but is never a legitimate count here).
                 if not isinstance(total_declared, int) or isinstance(total_declared, bool):
@@ -429,14 +619,14 @@ class B2brouterClient:
             # envelope always carries `limit`; its absence means this response
             # is not a shape this tool understands, and an unverified account
             # is always better than a truncated one.
-            if "limit" not in payload:
+            if "limit" not in meta_obj:
                 raise B2bError(
                     f"Account {account_id}: listing response has no 'limit' key "
-                    f"(keys present: {sorted(payload)}). The documented response "
+                    f"(keys present: {sorted(meta_obj)}). The documented response "
                     "envelope always carries it; refusing to treat its absence "
                     "as 'the requested page size was honoured'."
                 )
-            echoed_limit = payload["limit"]
+            echoed_limit = meta_obj["limit"]
             if not isinstance(echoed_limit, int) or isinstance(echoed_limit, bool):
                 raise B2bError(
                     f"Invalid limit for account {account_id}: expected int, got "
@@ -471,7 +661,12 @@ class B2brouterClient:
                         einvoice_id=str(row["id"]),
                         account_id=str(account_id),
                         number=row.get("number"),
-                        sender=(row.get("client") or {}).get("name"),
+                        # "client" on the legacy generation, "contact" on the
+                        # new one -- see self._profile.sender_field. New-
+                        # generation rows carry NO account/project field at
+                        # all; the account this invoice belongs to comes from
+                        # `account_id` (the request), never from the row.
+                        sender=(row.get(self._profile.sender_field) or {}).get("name"),
                         total=None if row.get("total") is None else str(row["total"]),
                         currency=row.get("currency"),
                         state=row.get("state"),
@@ -504,3 +699,19 @@ class B2brouterClient:
                 return invoices
 
             offset = rows_walked
+
+    def _list_meta_object(self, payload: dict) -> dict:
+        """The sub-object carrying `limit`/`total_count`/`offset` for the
+        active profile's envelope shape -- the flat top-level `payload`
+        itself for the legacy generation, or `payload["meta"]` for the new
+        one. `invoices` is unaffected by this and always stays top-level on
+        both (see the caller). Never raises on a missing/malformed `meta`:
+        an empty dict here simply reads as "the keys are absent" to every
+        check that already handles absence -- an unrecognised envelope must
+        still fail loudly downstream (the `limit`-required check), not
+        silently here.
+        """
+        if self._profile.list_envelope == "meta":
+            meta = payload.get("meta")
+            return meta if isinstance(meta, dict) else {}
+        return payload

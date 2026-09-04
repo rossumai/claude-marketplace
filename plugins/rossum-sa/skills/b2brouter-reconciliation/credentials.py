@@ -59,7 +59,11 @@ TEMPLATE = {
             "account group, so one key cannot see another group's accounts "
             "-- add as many entries as you have groups. Each key needs "
             "accounts-read and invoices-read ONLY, nothing else. The label "
-            "is yours and appears in messages; the key value never does."
+            "is yours and appears in messages; the key value never does. "
+            "Optional: add \"api_version\": \"2025-01-01\" (or \"2026-06-26\") "
+            "here to pin the B2Brouter API generation and skip "
+            "auto-detection; leave it out to auto-detect, which is the "
+            "default and normally all you need."
         ),
         "keys": {
             "GROUP-1": "--PASTE-B2BROUTER-KEY-FOR-THIS-GROUP-HERE--",
@@ -92,11 +96,18 @@ class Credentials:
     opinion from the file", letting its own CLI-flag-then-default cascade
     take over unchanged. `token` is never None -- an unfilled token is a
     CredentialsError, not a value on this object (see `load_credentials_file`).
+
+    `api_version` is None when the file omits `b2brouter.api_version`
+    entirely (the normal case: recon.py then auto-detects, per host) --
+    recon.py, not this module, validates it against the known B2Brouter
+    generations, since this module deliberately knows nothing about
+    b2brouter.py's version strings.
     """
     token: str
     base_url: str | None
     ui_host: str | None
     keys: dict[str, str]
+    api_version: str | None = None
 
 
 def _is_placeholder(value: object) -> bool:
@@ -208,4 +219,10 @@ def load_credentials_file(path: Path) -> Credentials:
         if isinstance(value, str) and value and not _is_placeholder(value)
     }
 
-    return Credentials(token=token, base_url=base_url, ui_host=ui_host, keys=keys)
+    api_version = b2brouter.get("api_version")
+    if not isinstance(api_version, str) or not api_version or _is_placeholder(api_version):
+        api_version = None
+
+    return Credentials(
+        token=token, base_url=base_url, ui_host=ui_host, keys=keys, api_version=api_version,
+    )

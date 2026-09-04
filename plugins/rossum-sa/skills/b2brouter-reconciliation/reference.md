@@ -210,6 +210,45 @@ hook's name. `--only-exceptions` drops every row whose note is `ok` or
 | `--show-discovery` | print discovered channels and exit; no report is run | off |
 | `--check-coverage` | print per-channel account coverage (and the uncovered ids) and exit; fetches no invoices | off |
 | `--relax-x509-strict` | opt-in: clear `ssl.VERIFY_X509_STRICT` for both Rossum and B2Brouter connections; see [TLS interception](#tls-interception) | off |
+| `--b2b-api-version` | pin the B2Brouter API generation (`2025-01-01` or `2026-06-26`) and skip auto-detection | auto-detect, per host — see [B2Brouter API version](#b2brouter-api-version) below |
+
+## B2Brouter API version
+
+B2Brouter runs two API generations side by side and selects between them
+per request via the `X-B2B-API-Version` header — not a property of the key —
+defaulting, when the header is omitted, to whatever generation the account
+GROUP is configured for. This client never relies on that default: it sends
+the header explicitly on every request, and knows the host, list/detail
+paths, response envelope shape, and sender-name field for both generations
+(`2025-01-01`, the legacy generation the importer extension itself uses and
+this tool's own default; `2026-06-26`, the newer one). See the version-facts
+entries under Gotchas below for exactly what was measured to differ.
+
+**By default, the version is auto-detected, per host.** The tool probes each
+B2Brouter host at the legacy default first. If that specific host rejects
+the probe with `400 api_version_subdomain_mismatch` — the code B2Brouter
+returns for a version/host mismatch — it retries exactly once at the other
+generation; a successful retry is used for every later call on that host,
+for every key and every channel that shares it, and prints one line to
+stderr naming the host and the version it switched to. Any other failure
+code (an outright bad key, for instance) is never retried — that failure is
+identical at either version, and a retry would only spend a second request
+confirming the same answer.
+
+**Pin a generation explicitly to skip the probe** — useful once you already
+know a group's generation, or while investigating a version-related failure
+in isolation. Either:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/b2brouter-reconciliation/recon.py \
+  --ui-host example-org.rossum.app --b2b-api-version 2026-06-26
+```
+
+or add `"api_version": "2026-06-26"` under `b2brouter` in a credentials file
+(optional — omit it to auto-detect, which is the default and normally all
+you need). `--b2b-api-version` wins over a credentials file's `api_version`
+when both are given, matching `--base-url`/`--ui-host`'s existing
+CLI-over-file precedence.
 
 ## Reading the report
 
@@ -621,6 +660,62 @@ of an error, so getting them wrong is silent, not loud.
   honoured and the run fails for that account: an account reported
   `UNVERIFIED_SOURCE` is far better than one reported complete from
   truncated data.
+- **B2Brouter selects the API generation per REQUEST, via the
+  `X-B2B-API-Version` header — not a property of the key.** Omitting the
+  header falls back to whatever generation the account GROUP happens to be
+  configured for, which this tool never relies on: it sends the header
+  explicitly, every time (see the dedicated [B2Brouter API
+  version](#b2brouter-api-version) section above for auto-detection and
+  pinning). A key itself works on either generation; only the version
+  header, host, and path need to line up.
+- **A version/host mismatch is `400 api_version_subdomain_mismatch`; an
+  unrecognised version string is `400 invalid_api_version`.** Sending the
+  legacy path against the new host (or the new generation's version header
+  against the legacy host/path) gets the first; a typo'd or unsupported
+  version string in the header gets the second. This tool's auto-detection
+  retries ONLY on the first code — see above.
+- **The new generation lives on a different HOST family — `api.` /
+  `api-staging.` — mirroring the legacy `app.` / `app-staging.` pair,
+  including its own staging host.** A hook's configured
+  `b2b_router_base_url` always names the legacy host (what the importer
+  extension itself uses); this client derives the other generation's host by
+  swapping the `app.`/`api.` (or `app-staging.`/`api-staging.`) prefix,
+  never by asking the operator for a second URL.
+- **The new generation's invoice LISTING wraps its envelope under `meta`;
+  everything else stays flat, including `/accounts` on BOTH generations.**
+  The legacy listing is `{"invoices": [...], "total_count", "offset",
+  "limit"}` at the top level; the new one is `{"invoices": [...], "meta":
+  {"total_count", "offset", "limit"}}` — only `total_count`/`offset`/`limit`
+  move under `meta`, `invoices` stays top-level either way. `GET
+  /accounts?limit=500` is flat on BOTH generations (`{"accounts": [...],
+  "total_count", "offset", "limit"}`) — the account listing is NOT the odd
+  one out just because the invoice listing is.
+- **The sender-name field on a listing row is `client` on the legacy
+  generation and `contact` on the new one.** Reading the wrong key for the
+  active version silently returns an empty sender rather than an error.
+  Also: new-generation listing rows carry NO account/project field at all —
+  the owning account comes from the request (`/accounts/{ACCOUNT_ID}/
+  invoices`), never from the row.
+- **A detail lookup's owning-account field is `project` on the legacy
+  generation and `account` on the new one — both WRAPPED as `{"invoice":
+  {...}}`, on both generations.** The unused field is a real, always-`null`
+  key on either host rather than being omitted, so this client tries the
+  active version's primary field first and falls back to the other one
+  before raising — see `B2brouterClient._account_id_from_invoice` in
+  `b2brouter.py`.
+- **The new generation's timestamps carry millisecond fractions** (e.g.
+  `2026-08-27T12:00:32.000Z`) where the legacy generation has none (e.g.
+  `2026-08-27T12:00:32Z`). Both parse correctly through this tool's
+  `datetime.fromisoformat(value.replace("Z", "+00:00"))` pattern — a 3-digit
+  fractional-second suffix is valid input to `fromisoformat` even before
+  Python 3.11's parser rewrite — so no special-casing was needed, only
+  confirming it.
+- **A key from the wrong environment is `401 invalid_api_key`, not a
+  version mismatch.** A `stag_`-prefixed key is staging-only and gets `401
+  invalid_api_key` against a production host (and vice versa) regardless of
+  which `X-B2B-API-Version` is sent — don't mistake an environment mismatch
+  for a version one; the error code tells them apart (see `B2bError.code`
+  in `b2brouter.py`).
 
 ## TLS interception
 

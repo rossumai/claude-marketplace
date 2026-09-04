@@ -43,7 +43,13 @@ from pathlib import Path as _Path
 # from the test suite via a different cwd).
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
-from b2brouter import B2bError, B2brouterClient
+from b2brouter import (
+    LEGACY_API_VERSION,
+    NEW_API_VERSION,
+    B2bError,
+    B2brouterClient,
+    other_api_version,
+)
 from credentials import (
     DEFAULT_CREDENTIALS_PATH,
     CredentialsError,
@@ -214,6 +220,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                              "hostname verification stay fully enforced; see "
                              "README's TLS interception section. NOT a "
                              "verification bypass -- default off")
+    parser.add_argument("--b2b-api-version", default=None,
+                        choices=(LEGACY_API_VERSION, NEW_API_VERSION),
+                        help="pin the B2Brouter X-B2B-API-Version header to this exact "
+                             "generation and skip auto-detection entirely. By DEFAULT "
+                             "this tool auto-detects: it probes each host at "
+                             f"{LEGACY_API_VERSION} and, if the host rejects that with "
+                             "api_version_subdomain_mismatch, retries once at "
+                             f"{NEW_API_VERSION} and uses whichever one worked for every "
+                             "later call on that host. This flag, or a credentials "
+                             "file's b2brouter.api_version, overrides that -- useful "
+                             "when you already know a group's generation and want to "
+                             "skip the probe")
     return parser.parse_args(argv)
 
 
@@ -296,20 +314,41 @@ def _window(args: argparse.Namespace, now: datetime) -> tuple[datetime, datetime
 def build_client_resolver(
     channels: list[Channel],
     keys: dict[str, str],
-    client_factory: Callable[[str, str], object] = B2brouterClient,
+    client_factory: Callable[..., object] = B2brouterClient,
+    pinned_api_version: str | None = None,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, list[str]],
     Callable[[Channel], Callable[[str], object | None]],
     set[str],
 ]:
-    """Build one B2Brouter client per (key label, base URL) pair, lazily and cached.
+    """Build one B2Brouter client per (key label, base URL, api version) pair,
+    lazily and cached.
 
     Visibility is probed PER BASE URL: a key's visible accounts are discovered
     against the same host the channel that owns them will actually be queried
     on, never against some other channel's host. Real organizations mix hosts
     (e.g. a production channel and a channel on a staging host); reusing one
     client across hosts would silently read the wrong environment.
+
+    API VERSION: `pinned_api_version` (from `--b2b-api-version` or a
+    credentials file's `b2brouter.api_version`) is used outright for every
+    client on every host when given -- no probing of the alternate
+    generation at all. Left as None (the default), the API version is
+    AUTO-DETECTED, per host: the first key probed against a given host tries
+    B2brouterClient's own default (LEGACY_API_VERSION). If that specific
+    call fails with `api_version_subdomain_mismatch` -- the code B2Brouter
+    returns when a request's version and its host/path don't match, meaning
+    this host's account group actually defaults to the OTHER generation --
+    it is retried exactly once against `other_api_version(...)`. A
+    successful retry locks that version for every LATER call against this
+    same host, across every key and both listing and detail lookups, and
+    prints one line to stderr naming the host and the version chosen. Any
+    OTHER failure code (an outright bad key, for instance) is never retried
+    -- it is the same failure at either version, and a retry would just
+    waste a second request confirming that. If detection has already locked
+    a version for a host, every later probe on it uses that version
+    directly and is not itself retried again.
 
     A real organization routinely supplies SEVERAL keys, one per B2Brouter
     account group, so the visibility probe is run PER KEY rather than as one
@@ -351,13 +390,44 @@ def build_client_resolver(
         visibility probe raised B2bError on at least one host. Callers should
         report this set to the operator so they know which variable to fix.
     """
-    cache: dict[tuple[str, str], object] = {}
+    cache: dict[tuple[str, str, str], object] = {}
+    # host -> the version an earlier successful retry locked in for it. Only
+    # ever written when pinned_api_version is None -- see _version_for and
+    # _probe_visibility below.
+    detected_version_by_host: dict[str, str] = {}
 
-    def client_for(label: str, base_url: str) -> object:
-        cache_key = (label, base_url)
+    def _version_for(base_url: str) -> str:
+        if pinned_api_version is not None:
+            return pinned_api_version
+        return detected_version_by_host.get(base_url, LEGACY_API_VERSION)
+
+    def client_for(label: str, base_url: str, version: str) -> object:
+        cache_key = (label, base_url, version)
         if cache_key not in cache:
-            cache[cache_key] = client_factory(keys[label], base_url)
+            cache[cache_key] = client_factory(keys[label], base_url, api_version=version)
         return cache[cache_key]
+
+    def _probe_visibility(label: str, base_url: str) -> set[str]:
+        """One key's visibility probe against one host -- see this
+        function's role in the docstring above ("API VERSION")."""
+        version = _version_for(base_url)
+        try:
+            return client_for(label, base_url, version).visible_account_ids()
+        except B2bError as exc:
+            if pinned_api_version is not None or exc.code != "api_version_subdomain_mismatch":
+                raise
+            alternate = other_api_version(version)
+            result = client_for(label, base_url, alternate).visible_account_ids()
+            if detected_version_by_host.get(base_url) != alternate:
+                detected_version_by_host[base_url] = alternate
+                print(
+                    f"B2Brouter: host {base_url} rejected API version {version} "
+                    "(api_version_subdomain_mismatch) -- auto-detected "
+                    f"{alternate} instead; using it for every later call on "
+                    "this host",
+                    file=sys.stderr,
+                )
+            return result
 
     mapping: dict[tuple[str, str], str] = {}
     uncovered_by_host: dict[str, list[str]] = {}
@@ -368,7 +438,7 @@ def build_client_resolver(
         host_failed: list[str] = []
         for label in keys:
             try:
-                visibility[label] = client_for(label, base_url).visible_account_ids()
+                visibility[label] = _probe_visibility(label, base_url)
             except B2bError as exc:
                 host_failed.append(label)
                 failed_keys.add(label)
@@ -404,7 +474,7 @@ def build_client_resolver(
             label = mapping.get((channel.b2b_base_url, account_id))
             if label is None:
                 return None
-            return client_for(label, channel.b2b_base_url)
+            return client_for(label, channel.b2b_base_url, _version_for(channel.b2b_base_url))
         return b2b_for_account
 
     return mapping, uncovered_by_host, get_b2b_for_account, failed_keys
@@ -1101,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         base_url = args.base_url or creds.base_url or DEFAULT_BASE_URL
         ui_host = args.ui_host or creds.ui_host
+        pinned_api_version = args.b2b_api_version or creds.api_version
     else:
         token = os.environ.get("ROSSUM_TOKEN")
         if not token:
@@ -1112,6 +1183,23 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         base_url = args.base_url or DEFAULT_BASE_URL
         ui_host = args.ui_host
+        pinned_api_version = args.b2b_api_version
+
+    # --b2b-api-version is choice-restricted by argparse, so an invalid
+    # value can only ever arrive via a credentials file's free-text
+    # b2brouter.api_version -- checked here, once, rather than trusting the
+    # file the way base_url/ui_host are (those have no "wrong" value; a
+    # bogus API version would otherwise surface much later as an opaque
+    # invalid_api_version from B2Brouter itself).
+    if pinned_api_version is not None and pinned_api_version not in (
+        LEGACY_API_VERSION, NEW_API_VERSION,
+    ):
+        print(
+            f"invalid B2Brouter API version {pinned_api_version!r} "
+            f"(known: {LEGACY_API_VERSION}, {NEW_API_VERSION})",
+            file=sys.stderr,
+        )
+        return 2
 
     if not ui_host:
         print(
@@ -1165,7 +1253,8 @@ def main(argv: list[str] | None = None) -> int:
         # B2brouterClient name above, at main()'s own call time, so this still
         # holds.
         _mapping, uncovered_by_host, get_b2b_for_account, failed_keys = build_client_resolver(
-            channels, keys, client_factory=b2b_client_factory
+            channels, keys, client_factory=b2b_client_factory,
+            pinned_api_version=pinned_api_version,
         )
         if failed_keys:
             # build_client_resolver already warned per-key at the moment of

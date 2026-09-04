@@ -1,10 +1,12 @@
 import csv
 from datetime import datetime, timezone
 
-from b2brouter import B2bError
+import pytest
+
+from b2brouter import LEGACY_API_VERSION, NEW_API_VERSION, B2bError
 from discovery import Channel
 from match import B2bInvoice, RossumAnn
-from recon import check_coverage, main, reconcile_channel
+from recon import build_client_resolver, check_coverage, main, reconcile_channel
 
 import recon
 
@@ -114,7 +116,7 @@ def _fake_rossum_factory(hooks, index):
 
 def _fake_b2b_factory(per_account, failing=()):
     class _FakeB2bClient:
-        def __init__(self, api_key, base_url):
+        def __init__(self, api_key, base_url, api_version=None):
             self.skipped_rows = {}
 
         def visible_account_ids(self):
@@ -220,7 +222,7 @@ def test_main_check_coverage_exits_one_and_prints_the_uncovered_account(monkeypa
     class _NoInvoiceFetchB2bClient:
         """--check-coverage must never list invoices, only probe visibility."""
 
-        def __init__(self, api_key, base_url):
+        def __init__(self, api_key, base_url, api_version=None):
             self.skipped_rows = {}
 
         def visible_account_ids(self):
@@ -237,3 +239,81 @@ def test_main_check_coverage_exits_one_and_prints_the_uncovered_account(monkeypa
     captured = capsys.readouterr()
     assert rc == 1
     assert "800002" in captured.out
+
+
+# --- B2Brouter API version auto-detection / pinning -------------------------
+#
+# A group whose default API generation is newer rejects a legacy-host call
+# with api_version_subdomain_mismatch (see b2brouter.py's module docstring).
+# build_client_resolver must retry exactly once against the other generation
+# on THAT code, lock it in for every later call on the host, and must NOT
+# retry on any other failure code -- a plain bad key must not cost a second
+# request "confirming" the same failure at the other version.
+
+_VERSION_CHANNEL = Channel(
+    hook_id=1, name="Region A", queue_ids=(1,), account_ids=("900001",),
+    b2b_base_url="https://app.example-router.net", active=True,
+)
+
+
+def _versioned_fake_client_factory(calls, *, always_fails_with=None, works_at=NEW_API_VERSION):
+    """A fake B2brouterClient whose visible_account_ids() outcome depends on
+    the api_version it was built with -- `calls` records every version this
+    factory was asked to build a client for, in order, so a test can assert
+    exactly which versions were tried and how many times."""
+    class _FakeClient:
+        def __init__(self, api_key, base_url, api_version=LEGACY_API_VERSION):
+            self.api_version = api_version
+
+        def visible_account_ids(self):
+            calls.append(self.api_version)
+            if always_fails_with is not None:
+                raise B2bError("HTTP 400", code=always_fails_with)
+            if self.api_version != works_at:
+                raise B2bError("HTTP 400", code="api_version_subdomain_mismatch")
+            return {"900001"}
+
+    return _FakeClient
+
+
+def test_build_client_resolver_auto_detects_the_new_version_on_subdomain_mismatch():
+    calls: list[str] = []
+    mapping, uncovered, _get_b2b, failed = build_client_resolver(
+        [_VERSION_CHANNEL], {"K": "key"},
+        client_factory=_versioned_fake_client_factory(calls, works_at=NEW_API_VERSION),
+    )
+
+    assert not failed
+    assert not uncovered
+    assert mapping[("https://app.example-router.net", "900001")] == "K"
+    # The default (legacy) was tried first and rejected; the retry at the
+    # other generation is what actually succeeded -- never more than once.
+    assert calls == [LEGACY_API_VERSION, NEW_API_VERSION]
+
+
+def test_build_client_resolver_does_not_retry_on_a_different_error_code():
+    calls: list[str] = []
+    with pytest.raises(B2bError):
+        build_client_resolver(
+            [_VERSION_CHANNEL], {"K": "key"},
+            client_factory=_versioned_fake_client_factory(calls, always_fails_with="invalid_api_key"),
+        )
+    # A bad key fails identically at either version -- retrying would just
+    # spend a second request confirming the same answer.
+    assert calls == [LEGACY_API_VERSION]
+
+
+def test_build_client_resolver_pinned_version_skips_detection():
+    calls: list[str] = []
+    mapping, uncovered, _get_b2b, failed = build_client_resolver(
+        [_VERSION_CHANNEL], {"K": "key"},
+        client_factory=_versioned_fake_client_factory(calls, works_at=NEW_API_VERSION),
+        pinned_api_version=NEW_API_VERSION,
+    )
+
+    assert not failed
+    assert not uncovered
+    assert mapping[("https://app.example-router.net", "900001")] == "K"
+    # Pinning goes straight to the working version -- the legacy default is
+    # never tried, so there is nothing to detect or retry.
+    assert calls == [NEW_API_VERSION]

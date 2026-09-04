@@ -160,7 +160,7 @@ def test_main_uses_the_credentials_files_token_keys_and_ui_host(tmp_path, monkey
             return False
 
     class _FakeB2bClient:
-        def __init__(self, api_key, base_url):
+        def __init__(self, api_key, base_url, api_version=None):
             assert api_key == "file-key"  # the placeholder-labelled key must
             self.skipped_rows = {}         # never reach a client at all
 
