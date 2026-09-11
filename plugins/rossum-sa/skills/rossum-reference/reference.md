@@ -1056,6 +1056,80 @@ curl -H 'Authorization: Bearer TOKEN' \
 
 ---
 
+## Document Splitting Extension
+
+Splits a multi-document file (typically a scanned batch) into separate annotations. Rossum Store hook template **20**, `Document Splitting` — a webhook on `annotation_content.initialize` with `config.private: true` and `sideload: ["schemas"]`. Like Master Data Hub, it must be created **from the store template** (`hook_template` on create), not hand-rolled as a custom webhook.
+
+This is page-based splitting driven by the document's text and extracted fields. It is **not** SFI's `split_selectors`, which splits one *structured* XML/JSON file by selector — see the `sfi-reference` skill for that. Official reference: https://knowledge-base.rossum.ai/docs/document-splitting-extension/
+
+### Settings
+
+```json
+{"configurations": [{"rule": "...", "suggest": true, "condition": "...",
+                     "text_condition": {"phrases": ["..."], "logic": "any"},
+                     "max_splits": null, "rule_params": {}}]}
+```
+
+Rules: `number_of_pages`, `field_occurrence`, `text_search`, `field_value_comparison`.
+
+`rule_params` by rule: `number_of_pages` takes `number_of_pages`; `field_occurrence` takes `schema_id` + `skip_empty`; `text_search` takes `phrase` + `tolerance`. `split_before` and `unmatched_pages` appear where applicable (`unmatched_pages` on `field_occurrence`, `text_search` and `field_value_comparison`).
+
+### The queue must be `suggested_edit: "disable"`
+
+**There is one suggested-edit slot per annotation, and Rossum's native suggestion engine competes for it.** With the queue on `settings.suggested_edit: "suggest"` the extension fails:
+
+```
+Error occurred when splitting the document: Suggesting splits failed: HTTP 400,
+content: {"detail":"Suggested edit for annotation N already exists.","code":"bad_request"}
+```
+
+Whoever writes first wins, so **the symptom is per-document and looks like a config bug**. **Measured** on one organization: a 22-page batch got the extension's correct 22-part split, while a 51-page batch in the same queue got a *native* 2-part suggestion that silently covered only 32 of its 51 pages. Deleting the stale suggestion does not help — the native producer recreates it on every `initialize`.
+
+Fix: set the queue to `suggested_edit: "disable"`. Extension suggestions still render in the UI. Only `"suggest"` and `"disable"` are valid; `"disabled"`, `"none"`, `"off"` and `null` are all rejected, and the error does **not** list the choices. Read them from `OPTIONS /queues/{id}` at `actions.PUT.settings.children.suggested_edit.choices`.
+
+### `field_value_comparison` cannot be set up as documented on an `engines`-based org
+
+The KB setup requires a hidden multivalue whose child carries `rir_field_names: ["document_id"]`. That schema PATCH is rejected:
+
+```
+Engine (id: N) restriction: extracted field 'split_document_id' must have empty rir_field_names
+```
+
+The KB article predates the `engines` framework. Schema datapoints now bind to **engine fields** (schema field `id` == engine field `name`, see `GET /engine_fields?engine=N`) and `rir_field_names` must be empty. Using `field_value_comparison` there would mean creating a new engine field on a shared engine — and whether a non-tabular engine field yields per-page occurrences at all is unverified. Prefer `text_search`: no schema change, deterministic. **Measured** on one organization running the engines framework; not proven for every tenant.
+
+### Choose the phrase by measuring
+
+`GET /annotations/{id}/search?phrase=<text>&tolerance=<n>` returns per-page hits and is the **same endpoint the extension uses**, so candidates can be verified before configuring anything. It is a GET with a required `phrase` query param — POST returns 405.
+
+**Measured** on a 51-page batch whose page 1 is a cover sheet listing the invoices:
+
+| Phrase | Hits | Pages |
+|---|---|---|
+| `Ship To` | 49 | 3–51 — invoice pages only ✅ |
+| `Invoice No.` | 50 | **1**, 3–51 — also matches the cover's summary-table header ❌ |
+
+### Prefer `text_condition` over `condition` on batch files
+
+`condition` evaluates extracted fields. On a batch file the extracted `sender_name` comes from whichever page the engine picked — on a batch with a cover sheet that is the cover, not an invoice. `text_condition` searches the file's text directly and does not depend on extraction landing on the right page.
+
+### Do not reach for `number_of_pages: 1`
+
+It is the KB's first example and fits any batch that happens to be one invoice per page — and it shreds genuinely multi-page invoices (a telco bill can run 20+ pages for a single invoice). Scope each rule to a vendor layout via `text_condition` so a document matching no rule is left untouched.
+
+### `unmatched_pages` defaults to permanent deletion
+
+`unmatched_pages` (`field_occurrence`, `text_search`, `field_value_comparison`) governs pages before the first trigger (`split_before: true`) or after the last (`false`). The default `"delete"` is **permanent and unrecoverable**; `"keep"` makes them a standalone document. It only takes effect when `suggest: false`, so set `"keep"` explicitly *before* anyone flips `suggest` — otherwise cover sheets and separator pages vanish the moment automation is enabled.
+
+### Reading the result
+
+A suggestion lands at `GET /suggested_edits/{annotation_id}` → `{documents: [{pages: [{page, rotation_deg}], target_queue, values}]}`.
+
+`pages` entries are **URLs**, so map them through `GET /pages?annotation={id}&page_size=100` (paginated — walk `pagination.next`) to read the split as page ranges. **Always verify total coverage**: an incomplete suggestion is the tell-tale of the suggested-edit slot conflict above. Read the suggestion with `rossum_get`; `DELETE /suggested_edits/{id}` clears it and returns 204, but has no MCP tool — issue it as a direct API call. The annotation also gains a `suggested_edit_present` automation-blocker item.
+
+A multi-invoice batch parent produces one matching warning per extracted line (e.g. ~85 "no PO line matches" messages on a 51-page file) because the whole batch is one annotation. That is expected on the parent and disappears once split — not a matching defect.
+
+---
+
 ## Connectors
 
 | Method | Endpoint | Purpose |
@@ -1711,7 +1785,7 @@ For the **export** side via the Request Processor's `file-storage-export` servic
 
 Structured Formats Import (SFI) processes non-visual documents (XML, JSON, e-invoices) by extracting data with XPath/JMESPath selectors and rendering a PDF for review. It runs as a webhook extension on `upload.created` and requires the relevant structured MIME types to be enabled.
 
-For end-to-end setup, field mapping, value transformations, document splitting, PDF rendering, and production e-invoicing examples (ZUGFeRD, X-Rechnung), see the `sfi-reference` skill.
+For end-to-end setup, field mapping, value transformations, PDF rendering, and production e-invoicing examples (ZUGFeRD, X-Rechnung), see the `sfi-reference` skill — including SFI's own `split_selectors` document splitting, which splits one structured file by selector. For page-based splitting of a scanned batch, see the `Document Splitting Extension` section above; the two are unrelated mechanisms.
 
 ## Embedded Mode
 

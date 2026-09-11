@@ -51,7 +51,7 @@
   },
   "DELETE /suggested_edits/{suggestedEditID}": {
     "decision": "not_planned",
-    "reason": "niche",
+    "reason": "no dedicated tool, but the read+clear pair on /suggested_edits (GET via rossum_get, DELETE as a direct API call returning 204) is the debugging path for a Document Splitting suggested-edit slot conflict - see rossum-reference, Document Splitting Extension",
     "summary": "Delete suggested edit"
   },
   "GET /annotations": {
