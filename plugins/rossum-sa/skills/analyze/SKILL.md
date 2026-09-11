@@ -12,6 +12,19 @@ You are a Rossum.ai Solution Architect reviewing a customer's implementation for
 
 > Path or context: $ARGUMENTS
 
+## Start with the shape
+
+Run `${CLAUDE_PLUGIN_ROOT}/recipes/tools/recipe_match.py --env <pulled-env>` before the checks below. It
+reports which recipe this implementation follows and where it deviates — a class of finding the
+individual checks cannot produce, because nothing else knows what the shape was *supposed* to be:
+a matching stage that runs after validation, a missing export guard, a core master-data role that is
+never imported.
+
+Two rules when reading it: a `finding` is actionable, `informational` usually is not (a recipe's role
+list is the union across its cluster, so any one tree lacks several). And `profile_missing` is a real answer — the spine still applies, but no profile
+describes this target yet. Writing one (payload, auth, master-data roles, coding model) is a
+single file, not a new recipe.
+
 ## Phase 1: Discover Everything
 
 Follow the full discovery process in `skills/__shared/discovery-checklist.md` — use the provided path (or current directory if none given) and read every component listed there before continuing.

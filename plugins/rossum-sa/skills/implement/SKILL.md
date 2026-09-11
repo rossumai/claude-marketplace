@@ -30,6 +30,53 @@ This applies to:
 If in doubt, confirm. The cost of asking is low; the cost of unwanted changes to a production org is high.
 </HARD-GATE>
 
+## Start from a recipe
+
+**Before Phase 0, check whether a recipe covers this shape.** `${CLAUDE_PLUGIN_ROOT}/recipes/` ships
+ordered build plans mined from delivered implementations: intents, phase order, the decisions an SA
+has to resolve, and a `verify` per phase. A recipe does not replace these phases — it tells you which
+of them apply, in what order, and what to ask.
+
+1. Run `recipes/tools/recipe_match.py --env <pulled-env>` if a tree already exists, or read
+   `recipes/idp-spine/` if starting fresh. The spine applies to essentially every IDP delivery; the
+   target-specific half is a **profile** under `idp-spine/profiles/`. If the matcher says
+   `profile_missing`, write the profile first — payload shape, auth, master-data roles, coding
+   model. That is one file, and the rest of the spine still applies.
+2. **Read its `platform_contract` block before writing anything.** Every entry cost a failed API call
+   to learn — a multi-line rule condition must be parenthesised, every MDH-written field must be
+   `enum`, formula fields cap at 2000 characters, an engine without `settings.use_case` silently
+   extracts no line items.
+3. Work the recipe's `decide[]` list in Phase 0 instead of inventing questions. Anything the SOW does
+   not answer is what you go back to the customer with.
+4. Take ordering from `hook_chain` and `recipes/hook-ordering.md`, not intuition. Ordering errors are
+   silent: a hook that runs before the field it reads is populated reads empty and writes nothing.
+5. Run each phase's `verify` before starting the next. A phase without a passing verify is not done.
+
+**If the spine itself does not apply** (`not_idp`), build from the phases below and record the
+shape.
+
+## Work it as a todo list, one subagent per phase
+
+The phases are delivery chunks, and they are what makes this buildable in a session: each one has a
+`verify` that is the exit test, so a phase either passes or is not done.
+
+- **Turn every `decide[]` entry into a todo** before building that phase. An unresolved decision is
+  the single most common reason a build stalls at hour two.
+- **Dispatch one subagent per phase**, handing it the phase's intents, the parts it references, the
+  relevant `platform_contract` entries, and its `verify` as the exit test. Phases are ordered, so run
+  them in sequence and let each one's `verify` gate the next.
+- **Keep the contract in the prompt, not in the agent's memory.** The facts that cost a failed call —
+  parenthesised rule conditions, enum-only MDH targets, the 2000-char formula cap — must be in the
+  subagent's instructions or it will rediscover them one failure at a time.
+- Report per phase: what was built, what its `verify` returned, and which `decide[]` answers it
+  assumed.
+
+**Delivery order is not runtime order.** Deliver in chunks: digest the target API, import master data,
+**pin the export payload**, then matching, then validation. Pinning the export contract early stops
+matching from resolving fields the target never wanted.
+
+---
+
 ## How to Use This Skill
 
 This skill has 7 phases. Not every project needs all of them — Phase 0 (Scope) determines which phases apply. Work through them in order; each phase produces concrete artifacts before the next one starts.
@@ -40,6 +87,7 @@ At each phase, reference the appropriate skill for detailed guidance rather than
 
 | Phase | Reference Skills |
 |-------|-----------------|
+| 0 — Scope | `recipes/` (phase order, `decide[]`, `verify`), `write-sow` (SOW gap review) |
 | 1 — Project Setup | `prd-reference` |
 | 2 — Schema Design | `rossum-reference` (schema templates, extraction engines), `queue-engine-binding` (engine-bound queues) |
 | 3 — Master Data Hub | `mdh-reference`, `mongodb-reference`, `data-storage-reference` |
@@ -52,7 +100,7 @@ At each phase, reference the appropriate skill for detailed guidance rather than
 
 ## Phase 0: Scope
 
-Before building anything, understand what needs to be built. If a SOW exists, use it to pre-fill answers. Otherwise, ask the user these questions (one at a time):
+Before building anything, understand what needs to be built. If a SOW exists, use it to pre-fill answers — and if a recipe matches, use its `decide[]` as the checklist and report which entries the SOW leaves open. Otherwise, ask the user these questions (one at a time):
 
 1. **Project directory** — does a prd2 project already exist, or are we starting fresh?
 2. **Environments** — which ones? (dev, test, UAT, prod)

@@ -7,10 +7,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from engine_binding import (  # noqa: E402
+    alias_warnings,
     clean_schema,
     derive_engine_fields,
     iter_datapoints,
+    resolve_use_case,
     restore_rir,
+    seed_type_overrides,
 )
 
 
@@ -137,3 +140,60 @@ def test_restore_rir():
     assert by_id["issue_date"]["rir_field_names"] == ["date_issue"]
     assert by_id["internal_ref"]["rir_field_names"] == []   # custom field: unrestorable
     assert by_id["vendor_match"]["rir_field_names"] == []   # ui type "data": untouched
+
+
+# --- use_case gate: an engine without one is header-only and silently drops line items ---
+
+class _Args:
+    def __init__(self, use_case=None):
+        self.use_case = use_case
+
+
+def test_use_case_required_when_schema_has_line_items():
+    content = _load("pre_schema.json")["content"]
+    fields = derive_engine_fields(content, _load("pre_trained_fields.json"))
+    assert any(f["tabular"] for f in fields), "fixture must have tabular fields for this test"
+    try:
+        resolve_use_case(_Args(), fields)
+    except SystemExit:
+        pass          # fail() exits - refusing to guess is the point
+    else:
+        raise AssertionError("expected a refusal when line items exist and no use case is given")
+
+
+def test_use_case_passed_through_and_omitted_for_header_only():
+    content = _load("pre_schema.json")["content"]
+    fields = derive_engine_fields(content, _load("pre_trained_fields.json"))
+    assert resolve_use_case(_Args("coupa_line_level"), fields) == "coupa_line_level"
+    header_only = [f for f in fields if not f["tabular"]]
+    assert resolve_use_case(_Args(), header_only) is None
+
+
+# --- the queue flip compares schema type to engine-field type, so the schema type must win ---
+
+def test_schema_type_wins_over_seed_type():
+    catalog = [{"name": "currency", "type": "enum", "subtype": "", "multiline": "false"}]
+    content = [{"category": "section", "id": "s", "children": [
+        {"category": "datapoint", "id": "currency", "label": "Currency", "type": "string",
+         "rir_field_names": ["currency"], "ui_configuration": {"type": "captured"}}]}]
+    field = derive_engine_fields(content, catalog)[0]
+    assert field["type"] == "string", "schema type must win or the queue flip 400s"
+    assert field["pre_trained_field_id"] == "currency", "the seed is kept regardless of type"
+    assert seed_type_overrides(derive_engine_fields(content, catalog))
+
+
+# --- leniency for a mis-authored table column, reported rather than silent ---
+
+def test_item_vocabulary_column_is_aliased_and_reported():
+    catalog = [{"name": "table_column_description", "type": "string", "subtype": "",
+                "multiline": "false"}]
+    content = [{"category": "section", "id": "s", "children": [
+        {"category": "multivalue", "id": "line_items", "rir_field_names": ["line_items"],
+         "children": {"category": "tuple", "id": "line_item", "children": [
+             {"category": "datapoint", "id": "item_description", "label": "Description",
+              "type": "string", "rir_field_names": ["item_description"],
+              "ui_configuration": {"type": "captured"}}]}}]}]
+    fields = derive_engine_fields(content, catalog)
+    assert fields[0]["pre_trained_field_id"] == "table_column_description"
+    warnings = alias_warnings(fields)
+    assert warnings and "should bind 'table_column_description'" in warnings[0]

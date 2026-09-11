@@ -6,6 +6,15 @@ Turn Claude into a Rossum implementation partner — audit hooks, analyze schema
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
+
+## Recipes
+
+`plugins/rossum-sa/recipes/` ships ordered, checkable build plans — what runs in which order, what an
+SA must decide per customer, and how each phase is proven. Recipes reference parts by name and carry
+no customer data; `tests/test_recipes.py` enforces the tier rules (provenance is a count, n>=5 before
+publishing, no worked recipe). `recipes/tools/shape_extract.py` turns one pulled `prd2` tree into a
+shape record for clustering.
+
 ## 🚀 Quick start
 
 You need the [Claude Code CLI](https://code.claude.com/) and a Rossum account.
