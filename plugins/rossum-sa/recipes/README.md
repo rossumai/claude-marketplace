@@ -15,6 +15,7 @@ parts by name. It never carries a customer's values.
 | `<name>/README.md` | the narrative an SA reads |
 | `hook-ordering.md` | ordering rules that hold across recipes |
 | `tools/shape_extract.py` | read-only extractor: one pulled `prd2` tree → a shape record |
+| `tools/recipe_match.py` | the read path: shape record → nearest recipe, findings, or `unclassified` |
 
 ## The contract
 

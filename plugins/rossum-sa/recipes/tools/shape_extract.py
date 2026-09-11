@@ -162,6 +162,42 @@ def internal_units(h):
 
 SLUG_ID = re.compile(r"_\[(\d+)\]$")
 
+COUNTRY_HINT = re.compile(
+    r"^(australia|austria|belgium|canada|czech|denmark|finland|france|germany|hungary|india|"
+    r"ireland|italy|japan|korea|malaysia|mexico|netherlands|norway|poland|portugal|romania|"
+    r"serbia|singapore|spain|sweden|switzerland|taiwan|thailand|turkey|uk|usa|united)", re.I)
+ENTITY_HINT = re.compile(r"^[A-Z]{2}\d{2}\b")
+DOCTYPE_HINT = re.compile(r"invoice|order|credit|receipt|remittance|delivery|bol\b|mtr\b", re.I)
+
+
+def queue_axis(queues):
+    """What differentiates the queues - the axis a recipe clusters on.
+
+    Reported with evidence rather than asserted: the label vocabulary is the only signal a
+    read-only pass has, and it is a heuristic.
+    """
+    global axis_evidence
+    labels = [str(q.get("name") or "") for q in queues]
+    processing = [x for x in labels if not re.search(r"inbox|sorting", x, re.I)]
+    if not processing:
+        axis_evidence = {"labels_seen": len(labels), "basis": "no processing queues"}
+        return []
+    counts = {
+        "country": sum(1 for x in processing if COUNTRY_HINT.search(x)),
+        "entity": sum(1 for x in processing if ENTITY_HINT.search(x)),
+        "document_type": sum(1 for x in processing if DOCTYPE_HINT.search(x)),
+    }
+    axis_evidence = {"processing_queues": len(processing), "hits": counts}
+    ranked = [k for k, v in sorted(counts.items(), key=lambda kv: -kv[1])
+              if v >= max(3, len(processing) * 0.3)]
+    if not ranked:
+        return ["single"] if len(processing) <= 2 else ["flat"]
+    return ranked
+
+
+axis_evidence = {}
+
+
 def load(env):
     """Hooks are keyed by BOTH numeric id and file slug: some repo layouts reference hooks by
     slug from the queue side, and resolving by id alone reports phantom MISSING_HOOKs."""
@@ -276,8 +312,14 @@ def extract(env):
         for cn in collection_names(h):
             role = infer_role(cn, INCLUDE_NAMES)
             if role == "other:unclassified": unclassified_md += 1
-            md[role].add("imported" if pk[hid] in
-                         ("hosted_scheduled_import", "parameterized_function") else "read")
+            # An import is an import however it is packaged: a hosted import service, a custom
+            # function, and a scheduled SFTP pull all populate the same collection. Keying on
+            # packaging alone reported md_inbound_roles: [] for trees that plainly import.
+            events = " ".join(h.get("events") or [])
+            imports = (pk[hid] in ("hosted_scheduled_import", "parameterized_function")
+                       or (pk[hid] == "file_storage_transfer" and direction(h, pk[hid]) == "in")
+                       or ("invocation." in events and pk[hid] != "inline_function"))
+            md[role].add("imported" if imports else "read")
 
     # hook graph — one node per hook, edges resolved, plus grouping CANDIDATES
     nodes = []
@@ -382,7 +424,8 @@ def extract(env):
         "lifecycle_variants": {"tagged_hooks": sum(lc.values()), "tags": dict(lc),
                                "note": "non-production copies inside this environment; exclude "
                                        "them before clustering or hook counts are inflated"},
-        "topology": {"workspaces": len(glob.glob(f"{env}/workspaces/*/")), "queues": len(queues),
+        "topology": {"queue_axis": queue_axis(queues), "queue_axis_evidence": axis_evidence,
+                     "workspaces": len(glob.glob(f"{env}/workspaces/*/")), "queues": len(queues),
                      "queue_labels_sample": sorted(q.get("name", "") for q in queues)[:8],
                      "unintegrated_queues": sum(1 for q in queues if not (q.get("hooks") or []))},
         "target_profile": {"name_class_candidates": [n for n, p in TARGETS if re.search(p, blob)],
