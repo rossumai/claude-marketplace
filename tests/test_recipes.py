@@ -120,3 +120,12 @@ def test_extractor_makes_no_network_calls():
     networked = {i for i in imports
                  if i.split(".")[0] in {"urllib", "requests", "http", "socket", "httpx"}}
     assert not networked, f"shape_extract.py imports {sorted(networked)}; it must be read-only"
+
+
+def test_recipes_are_consumed_by_a_skill():
+    """A recipe layer nothing reads is documentation. Keep the consumers wired."""
+    skills = R.ROOT / "plugins" / "rossum-sa" / "skills"
+    for name in ("implement", "write-sow"):
+        text = (skills / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "recipes/" in text, (
+            f"{name}/SKILL.md does not reference recipes/ — the layer has no reader")
