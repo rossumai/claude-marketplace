@@ -1,0 +1,1054 @@
+{
+  "recipe": "ap-invoice-to-coupa",
+  "schema_version": "0.1",
+  "status": "supported",
+  "status_note": "supported, not preferred: this is the shape the corpus actually ships. The export packaging within it has a preferred form (see intent E2) but the recipe does not fork on packaging.",
+  "provenance": {
+    "mined_from": 7,
+    "plus_hand_authored_baselines": 1,
+    "corpus": "local prd2 pulls, deduplicated (second pulls of one customer and copies of a baseline counted once)",
+    "cluster": "document_domain ap_invoice x target coupa x integration_shape https_out",
+    "sibling_shapes_seen": {
+      "both": 2,
+      "file_out": 1
+    },
+    "intents_enumerated": 54,
+    "validation": "intent set cross-checked against a hand-authored baseline: 39/49 of its rules covered by mined intents, 17 intents added, 0 withdrawn",
+    "built_end_to_end": "one worked recipe from a single-country SOW: 31 objects, 8 phases, invoices created in a live target with line-level tax and tags"
+  },
+  "shape": {
+    "document_domain": "ap_invoice",
+    "queue_axis": [
+      "country"
+    ],
+    "queue_count_seen": "\u00abn_countries\u00bb processing queues + per-region inbox",
+    "target_profile": {
+      "name_class": "coupa",
+      "hop": "direct",
+      "coding_model": {
+        "model": "segmented",
+        "n_segments": "\u00abn_segments\u00bb"
+      },
+      "md_inbound_roles": [
+        "supplier",
+        "purchase_order",
+        "purchase_order_line",
+        "business_unit",
+        "tax_code",
+        "tax_registration",
+        "lookup_values",
+        "contract",
+        "unit_of_measure",
+        "account_type",
+        "payment_terms",
+        "remit_to_address"
+      ]
+    },
+    "integration_shape": "https_out",
+    "packaging": {
+      "transport": "legacy_rest_chain",
+      "payload": "custom_format_template",
+      "response": "response_extractor",
+      "matching": "store_extension"
+    },
+    "ingest": {
+      "modes": [
+        "email",
+        "upload",
+        "structured_format"
+      ]
+    },
+    "structure": {
+      "ordering": "explicit_edges",
+      "export_trigger": "annotation_content.export"
+    },
+    "extraction": {
+      "engine": "custom",
+      "status": "preferred",
+      "fallback": {
+        "engine": "generic",
+        "binding": "rir_field_names",
+        "status": "supported"
+      },
+      "why_preferred": "A custom engine extracts fields OUTSIDE the pretrained catalog and learns the customer's own layout, including line-item columns. rir_field_names can only reach the pretrained catalog, so any field the catalog lacks is left to a formula, a hook, or the operator.",
+      "constraint": "Pretrained-SEEDED engine fields extract at catalog quality from day one; fields with pre_trained_field_id: null start COLD and learn from confirmed annotations in training_queues. So a custom engine is not a quality win on day one for catalog fields - it is a coverage win for everything else, plus a training path.",
+      "evidence": "Tested, with a negative result worth recording: converting a queue from generic+rir_field_names to a custom engine with all mappable line-item columns seeded from table_column_* changed extraction NOT AT ALL on the test document - header fields identical, line items zero rows both ways. The zero rows were caused by a test PDF with no table geometry, not by the binding. So the case for a custom engine rests on COVERAGE (fields outside the pretrained catalog) and on having a training path - NOT on better extraction of fields the catalog already covers.",
+      "how": "rossum-sa:queue-engine-binding - convert | greenfield | attach | revert",
+      "anti_claim": "Do not sell a custom engine as fixing table extraction. If a document has no table structure, no engine will find one.",
+      "use_case": {
+        "field": "engine.settings.use_case",
+        "requirement": "MUST be set deliberately whenever the schema has line-item columns",
+        "known_values": {
+          "coupa_line_level": "extracts line-item tables",
+          "generic_ap": "header-only - line-item columns extract NOTHING, silently"
+        },
+        "evidence": "A/B measured: two engines with identical seeded tabular fields returned zero rows on generic_ap; patching one to coupa_line_level and re-importing the same invoice returned all three lines. This is the single setting that decides whether table extraction happens at all, and an engine created without it defaults to header-only.",
+        "failure_mode": "silent - columns are created, look right, and stay empty on every document"
+      },
+      "column_binding": {
+        "rule": "A line-item column's rir_field_names must be the TABLE-COLUMN catalog field (table_column_description), not the header one (item_description). The multivalue itself carries rir_field_names: ['line_items'].",
+        "why_it_matters": "A column bound with the header vocabulary extracts nothing on the generic engine AND seeds nothing on conversion, so the failure survives the switch to a custom engine and looks like an engine problem.",
+        "correction": "This replaces an earlier claim in this file that the CONVERTER could not seed tabular columns. It can, and does, when the schema is authored correctly - proven by the skill's live-conversion ground-truth fixture. The P1 build's schema was mis-authored; the tool was right."
+      },
+      "type_rule": "The queue flip refuses when a schema datapoint's type differs from its engine field's, so the engine field must take the SCHEMA's type. pre_trained_field_id is independent of both name and type, so the seed is kept either way."
+    }
+  },
+  "phases": [
+    {
+      "phase": "0_ingest",
+      "goal": "documents arrive from every channel the customer uses",
+      "decide": [
+        "Which channels? email / manual upload / structured e-invoice feed. A structured feed needs its own import extension and changes validation (see intent A20).",
+        "Is there a national clearance regime in scope? (adds intent A19 and a compliance gate)"
+      ],
+      "verify": "one document per channel reaches a processing queue with a populated document id",
+      "requires": []
+    },
+    {
+      "phase": "0b_extraction",
+      "goal": "every field the recipe needs is extracted by the engine, not patched up downstream",
+      "decide": [
+        "Custom engine (preferred) or generic + rir_field_names? Custom whenever the schema has fields outside the pretrained catalog - which in practice is every implementation with target-specific coding, tax or reference fields.",
+        "Which fields seed from the pretrained catalog and which start cold? Seeded fields work immediately; cold fields need a training corpus, so say who confirms documents and how many.",
+        "greenfield (new queue born engine-bound) or convert (existing generic queue)? Converting rewrites the schema: rir_field_names cleared, ui_configuration normalised to captured/enabled.",
+        "Is the schema shared by more than one queue? Conversion refuses - copy the schema first."
+      ],
+      "verify": "on 20 real documents, every engine-extracted field the export contract needs is populated, INCLUDING line-item columns - table extraction is the thing catalog-only binding gets wrong",
+      "requires": {
+        "after": [
+          "0_ingest"
+        ]
+      },
+      "snapshot": "always pass --snapshot-dir; the snapshot is the revert path"
+    },
+    {
+      "phase": "1_master_data",
+      "goal": "every collection matching depends on is present and fresh",
+      "decide": [
+        "Import mechanism: hosted scheduled import vs custom function vs file drop. Measured across 6 implementations: all three occur; the hosted import is the least code.",
+        "Refresh cadence per role \u2014 PO lines usually need the highest."
+      ],
+      "verify": "each role's collection returns a non-zero row count, and a spot-checked key resolves",
+      "gap": "no part exists for import scheduling; build from mdh-reference",
+      "requires": []
+    },
+    {
+      "phase": "2_routing",
+      "goal": "each document lands in the queue whose rules and coding apply to it",
+      "decide": [
+        "Route by country, legal entity, or document type? This choice fixes queue_axis and is expensive to change later.",
+        "Routing mechanism: native rule change_queue vs a sorting store-extension. Measured: both occur; a store extension holds routing rules for 3 of 6 implementations."
+      ],
+      "verify": "20 real documents land in the expected queue; zero in the inbox after processing",
+      "requires": {
+        "intents": [
+          "M2"
+        ]
+      }
+    },
+    {
+      "phase": "3_matching",
+      "goal": "supplier, buying entity and PO resolve, or the document is explicitly marked unmatched",
+      "decide": [
+        "Is matching gated per country? Measured: 71% of match configs carry an action_condition. If yes, the gate is part of every intent here.",
+        "Fuzzy fallback: yes/no per role. A cascade (exact -> fuzzy) was used for 44% of configs.",
+        "Memorised-alias loop: does operator confirmation feed back into matching? (adds a write-back part and a union query)",
+        "Does validation compare the service period against the PO's dates? If yes, the PO-line import must carry PO start/end dates - a collection-shape decision, not a rule decision."
+      ],
+      "verify": "match rate on 20 real documents above the agreed threshold, and every no-match visibly flagged",
+      "requires": {
+        "intents": [
+          "M1",
+          "M2",
+          "M4",
+          "M6",
+          "M8",
+          "M12"
+        ],
+        "preflight": "Atlas search index exists on every collection a fuzzy query names"
+      }
+    },
+    {
+      "phase": "4_derivation",
+      "goal": "values the target needs, and values validation needs, are computed",
+      "decide": [
+        "Normalise identifiers before matching (VAT ids, PO references, payment terms)? Strongly recommended: it collapses per-variant validation rules.",
+        "Which coding dimensions does the target require, and do segments resolve as a chain?"
+      ],
+      "verify": "for 20 documents, every derived field the export contract requires is populated",
+      "requires": {
+        "intents": [
+          "F1",
+          "F2",
+          "F3",
+          "F5",
+          "F6",
+          "F8",
+          "F9",
+          "F14"
+        ],
+        "after": [
+          "3_matching"
+        ]
+      }
+    },
+    {
+      "phase": "5_coding",
+      "goal": "a non-PO invoice carries complete, valid coding",
+      "decide": [
+        "Coding source: matched from master data, memorised from operator behaviour, or manual?",
+        "Segment chain order \u2014 one segment's match may feed the next's lookup."
+      ],
+      "verify": "a non-PO document exports with every required segment populated; a deliberately incomplete one is blocked",
+      "requires": {
+        "intents": [
+          "M3",
+          "M9",
+          "F14"
+        ],
+        "after": [
+          "3_matching"
+        ]
+      }
+    },
+    {
+      "phase": "6_validation",
+      "goal": "no document leaves with data the target will reject or a human would not sign",
+      "decide": [
+        "Tolerance for totals reconciliation: exact or absolute epsilon? Both occur; epsilon is kinder to rounding.",
+        "Which failures block versus warn? Measured split on one implementation: 92 blocking, 100 messaging.",
+        "Are diagnostics surfaced to operators as tags? (couples intent B1 to the formulas that compute them)",
+        "Declare thresholds as named constants at the top of each condition (the baseline's style) rather than inlining numbers."
+      ],
+      "verify": "each gating intent fires on a hand-built failing document and passes a clean one",
+      "requires": {
+        "intents": [
+          "A1",
+          "A3",
+          "A4",
+          "A6",
+          "A7",
+          "A9",
+          "A10",
+          "A11",
+          "A12",
+          "A16",
+          "B1",
+          "A25",
+          "A26",
+          "A27",
+          "A28",
+          "A29",
+          "A30"
+        ],
+        "after": [
+          "4_derivation",
+          "5_coding"
+        ]
+      }
+    },
+    {
+      "phase": "7_export",
+      "goal": "the target accepts the payload and its response is recorded",
+      "decide": [
+        "Packaging: single request-processor hook (preferred for new work) vs a per-call chain (widely deployed, fully valid). A chain with a mid-chain formula dependency CANNOT collapse into one hook \u2014 formulas evaluate only after a hook completes.",
+        "How many outbound legs? Measured: payload, attachment, backlink, status submit \u2014 1 to 4 legs.",
+        "Are later legs gated on an earlier response?"
+      ],
+      "verify": "one real document is accepted by the target, its identifier is written back, and a forced failure surfaces as a readable error",
+      "requires": {
+        "intents": [
+          "E1",
+          "E2",
+          "A13",
+          "A14",
+          "A24"
+        ],
+        "after": [
+          "6_validation"
+        ]
+      }
+    }
+  ],
+  "intents": {
+    "note": "Mechanism-free statements. realized_by lists what was OBSERVED first, then alternatives. constraint states what forces or forbids a mechanism. Ids match the three catalogues.",
+    "gating": [
+      {
+        "id": "A1",
+        "statement": "header totals must equal the sum of their parts",
+        "realized_by": [
+          "native_rule"
+        ],
+        "alternatives": [
+          "function"
+        ],
+        "constraint": "needs line-column aggregation; a formula can compute the delta but only a rule or function can gate",
+        "instances_seen": 21
+      },
+      {
+        "id": "A2",
+        "statement": "a PO reference must match the country's format",
+        "realized_by": [
+          "native_rule+regex"
+        ],
+        "alternatives": [
+          "formula on a normalised field"
+        ],
+        "constraint": "a rule cannot iterate field variants - 18 rules where 1 normalised field would need 1",
+        "instances_seen": 18
+      },
+      {
+        "id": "A3",
+        "statement": "a PO-backed invoice must resolve to an open PO line",
+        "realized_by": [
+          "native_rule"
+        ],
+        "constraint": "must evaluate AFTER matching",
+        "instances_seen": 6
+      },
+      {
+        "id": "A4",
+        "statement": "a non-PO invoice must carry complete coding",
+        "realized_by": [
+          "native_rule"
+        ],
+        "constraint": "reads coding written by matching; ordering dependency",
+        "instances_seen": 4
+      },
+      {
+        "id": "A6",
+        "statement": "a tax amount requires its tax code",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 3
+      },
+      {
+        "id": "A7",
+        "statement": "certain VAT groups require an extra field",
+        "realized_by": [
+          "native_rule"
+        ],
+        "constraint": "reads a VAT group resolved by matching",
+        "instances_seen": 4
+      },
+      {
+        "id": "A9",
+        "statement": "the buying entity must resolve, be active, and agree with capture",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 6
+      },
+      {
+        "id": "A10",
+        "statement": "the matched supplier must agree with the exported supplier",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 2
+      },
+      {
+        "id": "A11",
+        "statement": "a supplier flagged fraudulent blocks the document",
+        "realized_by": [
+          "native_rule"
+        ],
+        "constraint": "flag comes from a match config",
+        "instances_seen": 1
+      },
+      {
+        "id": "A12",
+        "statement": "the issue date must be plausible",
+        "realized_by": [
+          "native_rule"
+        ],
+        "alternatives": [
+          "formula tag + rule"
+        ],
+        "instances_seen": 6
+      },
+      {
+        "id": "A13",
+        "statement": "fields the target length-limits must fit",
+        "realized_by": [
+          "native_rule"
+        ],
+        "layer": "export_contract",
+        "note": "should be GENERATED from the target field spec, not authored",
+        "instances_seen": 3
+      },
+      {
+        "id": "A14",
+        "statement": "only target-supported currencies may export",
+        "realized_by": [
+          "native_rule"
+        ],
+        "layer": "export_contract",
+        "instances_seen": 1
+      },
+      {
+        "id": "A16",
+        "statement": "a document must carry a total whose sign matches its type",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 6
+      },
+      {
+        "id": "A19",
+        "statement": "a document failing e-invoicing compliance is blocked",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 2
+      },
+      {
+        "id": "A20",
+        "statement": "a structured invoice must agree with what was extracted",
+        "realized_by": [
+          "native_rule"
+        ],
+        "applies_when": "structured_format ingest",
+        "instances_seen": 1
+      },
+      {
+        "id": "A24",
+        "statement": "a document whose target status cannot be resolved is blocked",
+        "realized_by": [
+          "native_rule"
+        ],
+        "constraint": "depends on intent M10",
+        "instances_seen": 1
+      },
+      {
+        "id": "A25",
+        "statement": "the invoiced service period must fall within the PO's validity window",
+        "realized_by": [
+          "native_rule"
+        ],
+        "constraint": "requires the PO's start/end dates in the PO-line collection; import must carry them",
+        "instances_seen": 10,
+        "provenance": "baseline"
+      },
+      {
+        "id": "A26",
+        "statement": "the purchase order must still be open",
+        "realized_by": [
+          "native_rule"
+        ],
+        "note": "declare open statuses as a named constant",
+        "instances_seen": 4,
+        "provenance": "baseline"
+      },
+      {
+        "id": "A27",
+        "statement": "the invoice currency must match the purchase order's currency",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 2,
+        "provenance": "baseline"
+      },
+      {
+        "id": "A28",
+        "statement": "matched payment terms must agree with the invoice",
+        "realized_by": [
+          "native_rule"
+        ],
+        "constraint": "reads terms resolved by matching (M5)",
+        "instances_seen": 1,
+        "provenance": "baseline"
+      },
+      {
+        "id": "A29",
+        "statement": "the document identifier must be present",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 1,
+        "provenance": "baseline"
+      },
+      {
+        "id": "A30",
+        "statement": "a document without line items must carry a description",
+        "realized_by": [
+          "native_rule"
+        ],
+        "instances_seen": 1,
+        "provenance": "baseline"
+      }
+    ],
+    "operator_guidance": [
+      {
+        "id": "B1",
+        "statement": "when a diagnostic condition is detected, show the operator the fields that explain it",
+        "realized_by": [
+          "formula computes flag",
+          "native_rule surfaces it"
+        ],
+        "constraint": "ONE intent split across two mechanisms - 41 flags computed, 26 surfaced",
+        "instances_seen": 31,
+        "joined_with": "F7"
+      }
+    ],
+    "derivation": [
+      {
+        "id": "F1",
+        "statement": "normalise identifiers so they can be matched",
+        "realized_by": [
+          "formula"
+        ],
+        "constraint": "must run BEFORE matching consumes it",
+        "variants_seen": 6
+      },
+      {
+        "id": "F2",
+        "statement": "resolve one effective PO reference from captured/manual/derived variants",
+        "realized_by": [
+          "formula"
+        ],
+        "note": "collapses intent A2's rule explosion",
+        "variants_seen": 7
+      },
+      {
+        "id": "F3",
+        "statement": "derive the target's quantity and price semantics",
+        "realized_by": [
+          "formula"
+        ],
+        "constraint": "blanket-order and credit-note sign handling",
+        "variants_seen": 6
+      },
+      {
+        "id": "F5",
+        "statement": "recompute the total the way the target will, so it can be compared",
+        "realized_by": [
+          "formula"
+        ],
+        "feeds": [
+          "A1"
+        ],
+        "variants_seen": 5
+      },
+      {
+        "id": "F6",
+        "statement": "derive service period and duration",
+        "realized_by": [
+          "formula"
+        ],
+        "feeds": [
+          "A18"
+        ],
+        "variants_seen": 5
+      },
+      {
+        "id": "F7",
+        "statement": "detect a condition worth an operator's attention",
+        "realized_by": [
+          "formula"
+        ],
+        "joined_with": "B1",
+        "instances_seen": 41
+      },
+      {
+        "id": "F8",
+        "statement": "classify the tax regime that applies",
+        "realized_by": [
+          "formula"
+        ],
+        "feeds": [
+          "A7",
+          "A19"
+        ]
+      },
+      {
+        "id": "F9",
+        "statement": "derive the payment reference the target requires",
+        "realized_by": [
+          "formula"
+        ],
+        "feeds": [
+          "A7"
+        ]
+      },
+      {
+        "id": "F14",
+        "statement": "express coding segments in export form",
+        "realized_by": [
+          "formula"
+        ],
+        "feeds": [
+          "A4"
+        ]
+      },
+      {
+        "id": "F15",
+        "statement": "detect an early payment discount and compute its rate, amount and expiry",
+        "realized_by": [
+          "formula"
+        ],
+        "fields_seen": 6,
+        "feeds": [
+          "M19"
+        ],
+        "provenance": "baseline"
+      },
+      {
+        "id": "F16",
+        "statement": "derive charges (shipping, handling, misc) and their tax",
+        "realized_by": [
+          "formula"
+        ],
+        "fields_seen": 7,
+        "feeds": [
+          "A1"
+        ],
+        "provenance": "baseline"
+      },
+      {
+        "id": "F17",
+        "statement": "normalise the PO's service-period dates so they can be compared",
+        "realized_by": [
+          "formula"
+        ],
+        "fields_seen": 4,
+        "feeds": [
+          "A25"
+        ],
+        "constraint": "the PO-line import must carry these dates",
+        "provenance": "baseline"
+      },
+      {
+        "id": "F18",
+        "statement": "derive whether the document is fully tax-coded",
+        "realized_by": [
+          "formula"
+        ],
+        "feeds": [
+          "A4"
+        ],
+        "provenance": "baseline"
+      },
+      {
+        "id": "F19",
+        "statement": "normalise the contract reference",
+        "realized_by": [
+          "formula"
+        ],
+        "feeds": [
+          "M18"
+        ],
+        "provenance": "baseline"
+      },
+      {
+        "id": "F20",
+        "statement": "derive the requester",
+        "realized_by": [
+          "formula"
+        ],
+        "provenance": "baseline"
+      }
+    ],
+    "matching": [
+      {
+        "id": "M1",
+        "statement": "resolve the supplier",
+        "realized_by": [
+          "match_config cascade"
+        ],
+        "strategy": "exact -> memorised-alias union -> fuzzy -> VAT",
+        "constraint": "fuzzy stage requires a search index; a missing index returns zero rows SILENTLY",
+        "configs_seen": 10
+      },
+      {
+        "id": "M2",
+        "statement": "resolve the buying legal entity and its active status",
+        "realized_by": [
+          "match_config"
+        ],
+        "configs_seen": 14
+      },
+      {
+        "id": "M3",
+        "statement": "resolve a coding segment",
+        "realized_by": [
+          "match_config"
+        ],
+        "constraint": "segments resolve as a CHAIN - one segment's match feeds the next's lookup; all gated",
+        "configs_seen": 12
+      },
+      {
+        "id": "M4",
+        "statement": "resolve the blanket order",
+        "realized_by": [
+          "match_config cascade"
+        ],
+        "configs_seen": 8
+      },
+      {
+        "id": "M6",
+        "statement": "resolve the PO line",
+        "realized_by": [
+          "match_config cascade"
+        ],
+        "strategy": "exact then fuzzy on description/code",
+        "configs_seen": 6
+      },
+      {
+        "id": "M7",
+        "statement": "resolve the tax code from the delivery jurisdiction",
+        "realized_by": [
+          "match_config"
+        ],
+        "configs_seen": 6,
+        "alternatives": [
+          "resolve from description + country + rate via union+lookup (baseline strategy)"
+        ],
+        "note": "two observed strategies for one intent: by delivery jurisdiction (mined) or by description/country/rate (baseline)"
+      },
+      {
+        "id": "M8",
+        "statement": "resolve the PO header",
+        "realized_by": [
+          "match_config"
+        ],
+        "configs_seen": 4
+      },
+      {
+        "id": "M10",
+        "statement": "ask the target whether this invoice already exists",
+        "realized_by": [
+          "match_config calling the target API"
+        ],
+        "note": "same mechanism, different purpose",
+        "feeds": [
+          "A15",
+          "A24"
+        ],
+        "configs_seen": 4
+      },
+      {
+        "id": "M12",
+        "statement": "resolve the remit-to address",
+        "realized_by": [
+          "match_config"
+        ],
+        "configs_seen": 4
+      },
+      {
+        "id": "M15",
+        "statement": "detect a fraudulent supplier",
+        "realized_by": [
+          "match_config"
+        ],
+        "feeds": [
+          "A11"
+        ],
+        "configs_seen": 1
+      },
+      {
+        "id": "M18",
+        "statement": "resolve the contract the invoice draws on",
+        "realized_by": [
+          "match_config"
+        ],
+        "constraint": "needs a contracts collection imported",
+        "configs_seen": 1,
+        "provenance": "baseline"
+      },
+      {
+        "id": "M19",
+        "statement": "resolve payment terms, including any early-payment-discount terms",
+        "realized_by": [
+          "match_config"
+        ],
+        "feeds": [
+          "A28"
+        ],
+        "configs_seen": 2,
+        "provenance": "baseline"
+      },
+      {
+        "id": "M21",
+        "statement": "resolve the ship-to address",
+        "realized_by": [
+          "match_config"
+        ],
+        "configs_seen": 1,
+        "provenance": "baseline"
+      },
+      {
+        "id": "M22",
+        "statement": "resolve the buyer's tax registration",
+        "realized_by": [
+          "match_config"
+        ],
+        "note": "the mined tree imports this role but never matches it",
+        "configs_seen": 1,
+        "provenance": "baseline"
+      }
+    ],
+    "export_contract": [
+      {
+        "id": "E1",
+        "statement": "render the payload the target accepts",
+        "realized_by": [
+          "custom_format_template"
+        ],
+        "alternatives": [
+          "request_processor stage"
+        ],
+        "note": "46 formula fields exist ONLY to feed this; they are interface, not business logic"
+      },
+      {
+        "id": "E2",
+        "statement": "send the payload and record the target's response",
+        "realized_by": [
+          "legacy_rest_chain + response_extractor"
+        ],
+        "alternatives": [
+          "request_processor (preferred for new work)"
+        ],
+        "constraint": "a chain with a mid-chain formula dependency cannot collapse into one hook"
+      }
+    ]
+  },
+  "hook_chain": {
+    "derivation_note": "NOT hand-authored. Derived from the field-flow graph: 29 fields flow matching->formula, 64 formula->rule, 11 through all three. An edge exists wherever a downstream mechanism reads a field an upstream one writes.",
+    "annotation_content.initialize|started|updated": [
+      {
+        "stage": "route",
+        "intents": [
+          "M2"
+        ],
+        "why_here": "routing needs the buying entity before queue-specific logic applies"
+      },
+      {
+        "stage": "normalise",
+        "intents": [
+          "F1",
+          "F2"
+        ],
+        "why_here": "matching consumes normalised identifiers; running after matching reads empty"
+      },
+      {
+        "stage": "match_core",
+        "intents": [
+          "M1",
+          "M4",
+          "M6",
+          "M8",
+          "M12",
+          "M15"
+        ],
+        "why_here": "supplier and PO must resolve before anything derived from them"
+      },
+      {
+        "stage": "derive",
+        "intents": [
+          "F3",
+          "F5",
+          "F6",
+          "F8",
+          "F9"
+        ],
+        "why_here": "reads match results"
+      },
+      {
+        "stage": "match_coding",
+        "intents": [
+          "M3",
+          "M9",
+          "M7"
+        ],
+        "why_here": "gated on entity and country resolved above; internally chained"
+      },
+      {
+        "stage": "derive_coding",
+        "intents": [
+          "F14"
+        ],
+        "why_here": "reads resolved segments"
+      },
+      {
+        "stage": "flag",
+        "intents": [
+          "F7"
+        ],
+        "why_here": "diagnostics read everything above"
+      }
+    ],
+    "validation": [
+      {
+        "stage": "gate",
+        "intents": [
+          "A1",
+          "A3",
+          "A4",
+          "A6",
+          "A7",
+          "A9",
+          "A10",
+          "A11",
+          "A12",
+          "A16"
+        ],
+        "why_here": "48% of gates read formula-derived values; all must run after derivation"
+      },
+      {
+        "stage": "surface",
+        "intents": [
+          "B1"
+        ],
+        "why_here": "surfaces the flags computed in the flag stage"
+      }
+    ],
+    "annotation_content.export": [
+      {
+        "stage": "existence_check",
+        "intents": [
+          "M10"
+        ]
+      },
+      {
+        "stage": "render",
+        "intents": [
+          "E1"
+        ]
+      },
+      {
+        "stage": "transport",
+        "intents": [
+          "E2"
+        ],
+        "requires": {
+          "token_owner": true
+        }
+      }
+    ]
+  },
+  "field_flow": [
+    {
+      "from": "M1.supplier_match",
+      "to": [
+        "A10",
+        "A11",
+        "F7",
+        "M12"
+      ]
+    },
+    {
+      "from": "M2.entity_match",
+      "to": [
+        "A9",
+        "M3",
+        "M7",
+        "F7"
+      ]
+    },
+    {
+      "from": "M6.po_line_match",
+      "to": [
+        "A3",
+        "F3"
+      ]
+    },
+    {
+      "from": "M4.blanket_match",
+      "to": [
+        "A3",
+        "F3"
+      ]
+    },
+    {
+      "from": "M3.segment_match",
+      "to": [
+        "F14",
+        "A4"
+      ]
+    },
+    {
+      "from": "F5.target_total",
+      "to": [
+        "A1"
+      ]
+    },
+    {
+      "from": "F2.effective_po_reference",
+      "to": [
+        "A2",
+        "M4",
+        "M6",
+        "M8"
+      ]
+    },
+    {
+      "from": "F14.segment_export",
+      "to": [
+        "A4",
+        "E1"
+      ]
+    },
+    {
+      "from": "M10.target_status",
+      "to": [
+        "A24"
+      ]
+    },
+    {
+      "from": "F7.diagnostic_flag",
+      "to": [
+        "B1"
+      ]
+    }
+  ],
+  "gaps": [
+    "Function-code intents are NOT in this recipe. One profiled implementation keeps 97% of its logic in Python; this recipe would describe almost none of it.",
+    "No parts exist yet for: master-data import scheduling, the memorised-alias write-back loop, the response-extractor chain.",
+    "Automation outcome is absent by design - no evidence band is claimed for this shape.",
+    "n=1. Every 'measured' figure here comes from one implementation unless it says otherwise."
+  ],
+  "platform_contract": {
+    "_why": "Facts that cost a failed call each during the P1 build. None is discoverable from the intent catalogues or the reference packs, and every one of them is the kind of thing a recipe exists to carry forward.",
+    "rules": [
+      "A multi-line trigger_condition MUST be wrapped in parentheses - Python cannot continue an expression across lines. The baseline's ( ... ) wrapper is functional, not house style. 7 of 20 rules failed on this and the error does not name the failing rule.",
+      "Each action needs a client-supplied UUID `id`; the server does not generate one.",
+      "add_automation_blocker needs its own payload.content.",
+      "payload.schema_id anchors a message to a field in the UI.",
+      "Rules bind through `queues` (an array of URLs), not a single `queue`.",
+      "Declare thresholds as named constants at the top of the condition (baseline style)."
+    ],
+    "matching": [
+      "EVERY field an MDH config writes must be type: enum - additional_mappings targets included. One bad target fails the whole config and it writes nothing at all.",
+      "A fuzzy stage needs a search index or it returns zero rows SILENTLY.",
+      "A private Store extension cannot be POSTed (config.url is null and POST demands one). Duplicate an existing hook and PATCH its settings; check for hook_templates first."
+    ],
+    "formulas": [
+      "Formula fields cap at 2000 characters. Anything larger - notably a target payload - belongs in a template hook. This is WHY intent E1 is realized_by custom_format_template.",
+      "A formula cannot read page text directly; a part must park it in a field first, after which a formula CAN search it."
+    ],
+    "export_pipeline": [
+      "response_handlers use target_type + target_key + value, and the value is a context-path shorthand like {\"response.body\": {\"$jmespath\": \"id\"}}. Verify against the deployed engine's own model - the engine version is FROZEN AT CREATION and the reference may document a different build.",
+      "evaluate entries are {name, condition}, not bare condition dicts.",
+      "content_type MUST be \"json\" when the body arrives via the .@ auto-fetch: the fetch calls response.json() for an application/json document, so the body is a parsed DICT. With content_type omitted the engine form-encodes it under a JSON header and the target answers 500.",
+      "get_content raises KeyError: 0 on an empty result instead of skipping - gate every optional get_content stage on the source existing.",
+      "Hook retries amplify one failure into many log entries. Sort newest-first and confirm the latest entry is not a success before debugging the errors above it."
+    ],
+    "platform": [
+      "token_owner must be a user in the SAME organization.",
+      "Data Storage find takes `query`, not `filter`, and returns a bare array at .result.",
+      "content/operations does not fire hooks by design, so a hand-injected line item is never matched - it cannot be used to test the matched-line path.",
+      "A part registered only on annotation_content.initialize cannot be verified by a soft re-fire; budget a re-upload."
+    ],
+    "parts_library_defect": "A seam used as an ATTRIBUTE NAME must be filled with a bare identifier. capture-page-text-to-field writes t.field.\u00abfirst_page_field\u00bb, so filling with \"page_text\" yields t.field.\"page_text\" -> SyntaxError. part.json calls the param \"type\": \"string\", which invites the wrong fill.",
+    "extraction_engines": [
+      "engine.settings.use_case gates line-item extraction; omitting it yields a header-only engine that silently extracts no rows. Set it explicitly for any line-item schema.",
+      "Line-item columns bind to table_column_* rir names; the multivalue binds to ['line_items']. Header vocabulary (item_*) on a column extracts nothing and seeds nothing.",
+      "The queue flip compares schema datapoint type to engine field type and 400s on a mismatch; the engine field should take the schema's type and keep its seed.",
+      "pre_trained_field_id is independent of the engine field's name and type - no schema rename is needed to seed a differently-named field.",
+      "A custom engine is behaviour-neutral for catalog header fields; its value is coverage of non-catalog fields plus a training path. It does not improve extraction of fields the catalog already covers, and it cannot find a table that is not in the document."
+    ]
+  },
+  "preferred_alternative": null
+}
