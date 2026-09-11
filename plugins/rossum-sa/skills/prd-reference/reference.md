@@ -31,6 +31,46 @@ Reinstall: `pipx install project-rossum-deploy --force`
 
 Self-update: `prd2 update`
 
+### Invocation — always call `prd2` bare
+
+pipx, a project venv, and each framework Python install all drop their **own**
+`prd2` on disk, so a working machine routinely carries several copies. They are
+not interchangeable: each one's shebang pins the interpreter it was installed
+against, and a copy whose interpreter has since lost its site-packages (renamed,
+upgraded, or hand-built) dies **before doing any work**:
+
+```
+ModuleNotFoundError: No module named 'aiofiles'
+```
+
+That traceback appears at import time, with no request made and no credentials
+read — so it reads exactly like a broken install or expired credentials, and
+sends you to reinstall the package or re-issue a token. Neither is the problem.
+
+**Always invoke it bare — `prd2 pull`, `prd2 push`, `prd2 deploy` — and let PATH
+resolve it. Never call a copy by absolute path**, and never "fix" a broken run by
+switching to a different absolute path that happens to work; that hides the trap
+for the next person.
+
+When prd2 misbehaves, establish *which* copy ran before concluding anything:
+
+```bash
+which prd2                 # which copy PATH resolves to
+prd2 --version             # it got far enough to import
+head -1 "$(which prd2)"    # the interpreter its shebang pins
+```
+
+If `--version` prints, the install is fine and the failure is real. If it raises
+`ModuleNotFoundError`, the problem is the shebang, not prd2 — audit every copy
+and remove or repair the stale ones:
+
+```bash
+type -a prd2               # every prd2 on PATH, in resolution order
+```
+
+"prd2 is broken" is far more often an invocation problem than an install or
+credential problem. Rule it out first — it costs three commands.
+
 ## Commands
 
 ### `prd2 init [name]`
