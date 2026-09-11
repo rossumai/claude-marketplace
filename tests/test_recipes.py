@@ -45,11 +45,36 @@ def test_provenance_is_a_count_not_a_list():
     """'derived from 7 implementations', never which."""
     for path, data in _recipes():
         prov = data["provenance"]
-        assert isinstance(prov.get("mined_from"), int), (
-            f"{path.parent.name}: provenance.mined_from must be an integer count")
-        assert prov["mined_from"] >= 5, (
-            f"{path.parent.name}: mined from {prov['mined_from']} — below the n>=5 threshold, so it "
-            "is a description of specific customers rather than a pattern")
+        for key in ("cluster_size", "intents_extracted_from"):
+            assert isinstance(prov.get(key), int), (
+                f"{path.parent.name}: provenance.{key} must be an integer count, never a list")
+
+
+def test_published_shape_clears_the_deidentification_threshold():
+    """n>=5 exists so a published shape is a pattern, not a recognisable customer system.
+
+    That risk is carried by the CLUSTER — how many implementations share this shape — so the
+    threshold is checked there. How many trees the intents were extracted from is a completeness
+    question, handled by the disclosure guard below.
+    """
+    for path, data in _recipes():
+        n = data["provenance"]["cluster_size"]
+        assert n >= 5, (
+            f"{path.parent.name}: cluster of {n} — below the n>=5 threshold, so publishing it "
+            "describes specific customers rather than a pattern. Keep it as a candidate outside "
+            "recipes/ until the cluster grows")
+
+
+def test_partial_intent_mining_is_disclosed():
+    """A recipe whose intents come from fewer than 5 trees must say so in its own file."""
+    for path, data in _recipes():
+        prov = data["provenance"]
+        if prov["intents_extracted_from"] < 5:
+            statement = prov.get("honest_statement", "")
+            assert len(statement) > 80, (
+                f"{path.parent.name}: intents extracted from {prov['intents_extracted_from']} "
+                "implementation(s) — that limit must be stated in provenance.honest_statement so a "
+                "reader does not mistake the intent set for the consensus of the whole cluster")
 
 
 def test_no_worked_recipe_lands_here():

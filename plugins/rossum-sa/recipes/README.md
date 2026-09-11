@@ -43,9 +43,16 @@ desirability.
 **`provenance` is a count, never a list.** `"mined from 7 implementations"`, never which. Deduplicate
 before counting: second pulls of one customer, and copies of a baseline, are one source.
 
-**n≥5 before publishing.** A recipe built from one or two implementations is a description of that
-customer's system — recognisable to them, and to a competitor, even with every name stripped. Below
-five, it stays a candidate outside this directory.
+**n≥5 before publishing — measured on the cluster.** The threshold exists for de-identification: a
+shape shared by one or two implementations is a description of those customers' systems, recognisable
+to them even with every name stripped. That risk is carried by `cluster_size` — how many
+implementations share the shape — so that is what the guard checks.
+
+**Intent coverage is a separate, disclosed number.** `intents_extracted_from` says how many trees the
+intents were actually mined from. It is normal for it to lag the cluster: clustering is cheap,
+extraction is not. When it is below five the recipe must carry an `honest_statement` saying so, and
+the guard enforces that — a reader must never mistake a partial intent set for the consensus of the
+whole cluster.
 
 ## What must never appear here
 

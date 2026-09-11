@@ -4,16 +4,19 @@
   "status": "supported",
   "status_note": "supported, not preferred: this is the shape the corpus actually ships. The export packaging within it has a preferred form (see intent E2) but the recipe does not fork on packaging.",
   "provenance": {
-    "mined_from": 7,
-    "plus_hand_authored_baselines": 1,
-    "corpus": "local prd2 pulls, deduplicated (second pulls of one customer and copies of a baseline counted once)",
-    "cluster": "document_domain ap_invoice x target coupa x integration_shape https_out",
+    "cluster_size": 7,
+    "cluster_basis": "shape records over local prd2 pulls, deduplicated (second pulls of one customer and copies of a baseline counted once); cluster is ap_invoice x coupa x https_out",
+    "intents_extracted_from": 1,
+    "intents_cross_checked_against": 1,
+    "mined_from": 2,
+    "honest_statement": "The CLUSTER is 7 implementations - that is what justifies publishing this shape at all. The INTENTS were extracted from 1 implementation and cross-checked against 1 hand-authored baseline, which added 17 and withdrew 0. Do not read 54 intents as the consensus of 7 trees; the other 5 have been clustered, not mined.",
+    "next": "extract intents from the remaining 5 cluster members; expect the count to keep rising - the baseline alone added 17",
     "sibling_shapes_seen": {
       "both": 2,
       "file_out": 1
     },
     "intents_enumerated": 54,
-    "validation": "intent set cross-checked against a hand-authored baseline: 39/49 of its rules covered by mined intents, 17 intents added, 0 withdrawn",
+    "validation": "39/49 of the baseline's rules covered by mined intents, 17 added, 0 withdrawn",
     "built_end_to_end": "one worked recipe from a single-country SOW: 31 objects, 8 phases, invoices created in a live target with line-level tax and tags"
   },
   "shape": {
