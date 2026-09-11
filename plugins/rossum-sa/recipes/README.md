@@ -1,8 +1,17 @@
 # Recipes
 
-A **recipe** is an ordered, checkable plan for building one shape of implementation. Parts (`parts/`)
-are ingredients; a recipe is the assembly — what runs in which order, what an SA must decide, and how
-each phase is proven.
+Almost every IDP delivery is the same skeleton: a document arrives, master data is pulled in, the
+document is matched against it, values are derived, the result is validated, a payload is built and
+sent somewhere. That skeleton is the **spine** (`idp-spine/`), and it is target-agnostic.
+
+What actually varies between deliveries is narrow — the payload shape, the auth, which master-data
+roles exist, how coding works. Those live in **profiles** (`idp-spine/profiles/<target>.json`).
+
+So a target we have never integrated is not a missing recipe; it is a missing **profile**, which is
+one file. The matcher says `profile_missing`, not "unclassified", and names what the profile needs.
+
+Parts (`parts/`) are ingredients; the spine is the assembly — what runs in which order, what an SA
+must decide, and how each phase is proven.
 
 A recipe is **not** config. It carries intents, ordering, decisions and verification, and references
 parts by name. It never carries a customer's values.
@@ -11,8 +20,9 @@ parts by name. It never carries a customer's values.
 
 | path | what |
 |---|---|
-| `<name>/recipe.json` | the machine-readable recipe |
-| `<name>/README.md` | the narrative an SA reads |
+| `idp-spine/recipe.json` | the skeleton: phases, intents, ordering, platform contract |
+| `idp-spine/profiles/<target>.json` | what differs per target: payload, auth, roles, coding |
+| `idp-spine/README.md` | the narrative an SA reads |
 | `hook-ordering.md` | ordering rules that hold across recipes |
 | `tools/shape_extract.py` | read-only extractor: one pulled `prd2` tree → a shape record |
 | `tools/recipe_match.py` | the read path: shape record → nearest recipe, findings, or `unclassified` |

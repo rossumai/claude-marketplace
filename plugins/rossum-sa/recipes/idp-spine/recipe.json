@@ -1,69 +1,19 @@
 {
-  "recipe": "ap-invoice-to-coupa",
-  "schema_version": "0.1",
-  "status": "supported",
-  "status_note": "supported, not preferred: this is the shape the corpus actually ships. The export packaging within it has a preferred form (see intent E2) but the recipe does not fork on packaging.",
-  "provenance": {
-    "cluster_size": 7,
-    "cluster_basis": "shape records over local prd2 pulls, deduplicated (second pulls of one customer and copies of a baseline counted once); cluster is ap_invoice x coupa x https_out",
-    "intents_extracted_from": 1,
-    "intents_cross_checked_against": 1,
-    "mined_from": 2,
-    "honest_statement": "The CLUSTER is 7 implementations - that is what justifies publishing this shape at all. The INTENTS were extracted from 1 implementation and cross-checked against 1 hand-authored baseline, which added 17 and withdrew 0. Do not read 54 intents as the consensus of 7 trees; the other 5 have been clustered, not mined.",
-    "next": "extract intents from the remaining 5 cluster members; expect the count to keep rising - the baseline alone added 17",
-    "sibling_shapes_seen": {
-      "both": 2,
-      "file_out": 1
-    },
-    "intents_enumerated": 54,
-    "validation": "39/49 of the baseline's rules covered by mined intents, 17 added, 0 withdrawn",
-    "built_end_to_end": "one worked recipe from a single-country SOW: 31 objects, 8 phases, invoices created in a live target with line-level tax and tags"
-  },
+  "recipe": "idp-spine",
+  "schema_version": "1.0",
+  "status": "preferred",
+  "what_it_is": "The skeleton every IDP delivery shares: a document arrives, master data is pulled in, the document is matched against it, values are derived, the result is validated, a payload is built and sent. Targets differ in the payload, the auth, which master-data roles exist and how coding works - those live in profiles/, not here.",
   "shape": {
     "document_domain": "ap_invoice",
     "queue_axis": [
       "country"
     ],
-    "queue_count_seen": "\u00abn_countries\u00bb processing queues + per-region inbox",
-    "target_profile": {
-      "name_class": "coupa",
-      "hop": "direct",
-      "coding_model": {
-        "model": "segmented",
-        "n_segments": "\u00abn_segments\u00bb"
-      },
-      "md_inbound_roles": [
-        "supplier",
-        "purchase_order",
-        "purchase_order_line",
-        "business_unit",
-        "tax_code",
-        "tax_registration",
-        "lookup_values",
-        "contract",
-        "unit_of_measure",
-        "account_type",
-        "payment_terms",
-        "remit_to_address"
-      ]
-    },
-    "integration_shape": "https_out",
-    "packaging": {
-      "transport": "legacy_rest_chain",
-      "payload": "custom_format_template",
-      "response": "response_extractor",
-      "matching": "store_extension"
-    },
     "ingest": {
       "modes": [
         "email",
         "upload",
         "structured_format"
       ]
-    },
-    "structure": {
-      "ordering": "explicit_edges",
-      "export_trigger": "annotation_content.export"
     },
     "extraction": {
       "engine": "custom",
@@ -94,8 +44,16 @@
         "correction": "This replaces an earlier claim in this file that the CONVERTER could not seed tabular columns. It can, and does, when the schema is authored correctly - proven by the skill's live-conversion ground-truth fixture. The P1 build's schema was mis-authored; the tool was right."
       },
       "type_rule": "The queue flip refuses when a schema datapoint's type differs from its engine field's, so the engine field must take the SCHEMA's type. pre_trained_field_id is independent of both name and type, so the seed is kept either way."
-    }
+    },
+    "structure": {
+      "ordering": "explicit_edges",
+      "export_trigger": "annotation_content.export"
+    },
+    "target_profile": "<see profiles/>"
   },
+  "profiles": [
+    "coupa"
+  ],
   "phases": [
     {
       "phase": "0_ingest",
@@ -791,30 +749,6 @@
         "configs_seen": 1,
         "provenance": "baseline"
       }
-    ],
-    "export_contract": [
-      {
-        "id": "E1",
-        "statement": "render the payload the target accepts",
-        "realized_by": [
-          "custom_format_template"
-        ],
-        "alternatives": [
-          "request_processor stage"
-        ],
-        "note": "46 formula fields exist ONLY to feed this; they are interface, not business logic"
-      },
-      {
-        "id": "E2",
-        "statement": "send the payload and record the target's response",
-        "realized_by": [
-          "legacy_rest_chain + response_extractor"
-        ],
-        "alternatives": [
-          "request_processor (preferred for new work)"
-        ],
-        "constraint": "a chain with a mid-chain formula dependency cannot collapse into one hook"
-      }
     ]
   },
   "hook_chain": {
@@ -1006,12 +940,6 @@
       ]
     }
   ],
-  "gaps": [
-    "Function-code intents are NOT in this recipe. One profiled implementation keeps 97% of its logic in Python; this recipe would describe almost none of it.",
-    "No parts exist yet for: master-data import scheduling, the memorised-alias write-back loop, the response-extractor chain.",
-    "Automation outcome is absent by design - no evidence band is claimed for this shape.",
-    "n=1. Every 'measured' figure here comes from one implementation unless it says otherwise."
-  ],
   "platform_contract": {
     "_why": "Facts that cost a failed call each during the P1 build. None is discoverable from the intent catalogues or the reference packs, and every one of them is the kind of thing a recipe exists to carry forward.",
     "rules": [
@@ -1053,5 +981,27 @@
       "A custom engine is behaviour-neutral for catalog header fields; its value is coverage of non-catalog fields plus a training path. It does not improve extraction of fields the catalog already covers, and it cannot find a table that is not in the document."
     ]
   },
-  "preferred_alternative": null
+  "gaps": [
+    "Function-code intents are NOT in this recipe. One profiled implementation keeps 97% of its logic in Python; this recipe would describe almost none of it.",
+    "No parts exist yet for: master-data import scheduling, the memorised-alias write-back loop, the response-extractor chain.",
+    "Automation outcome is absent by design - no evidence band is claimed for this shape.",
+    "n=1. Every 'measured' figure here comes from one implementation unless it says otherwise."
+  ],
+  "provenance": {
+    "cluster_size": 7,
+    "cluster_basis": "shape records over local prd2 pulls, deduplicated (second pulls of one customer and copies of a baseline counted once); cluster is ap_invoice x coupa x https_out",
+    "intents_extracted_from": 1,
+    "intents_cross_checked_against": 1,
+    "mined_from": 2,
+    "honest_statement": "The CLUSTER is 7 implementations - that is what justifies publishing this shape at all. The INTENTS were extracted from 1 implementation and cross-checked against 1 hand-authored baseline, which added 17 and withdrew 0. Do not read 54 intents as the consensus of 7 trees; the other 5 have been clustered, not mined.",
+    "next": "extract intents from the remaining 5 cluster members; expect the count to keep rising - the baseline alone added 17",
+    "sibling_shapes_seen": {
+      "both": 2,
+      "file_out": 1
+    },
+    "intents_enumerated": 54,
+    "validation": "39/49 of the baseline's rules covered by mined intents, 17 added, 0 withdrawn",
+    "built_end_to_end": "one worked recipe from a single-country SOW: 31 objects, 8 phases, invoices created in a live target with line-level tax and tags",
+    "scope": "The SPINE is the shape of every IDP delivery and is not tied to one target. The counts below describe the cluster the intents were mined from; a new target needs a PROFILE, not a new recipe."
+  }
 }

@@ -21,9 +21,9 @@ a matching stage that runs after validation, a missing export guard, a core mast
 never imported.
 
 Two rules when reading it: a `finding` is actionable, `informational` usually is not (a recipe's role
-list is the union across its cluster, so any one tree lacks several). And `unclassified` is a real
-answer — it means this is a novel shape worth recording as a candidate, not a tree to force into the
-nearest recipe.
+list is the union across its cluster, so any one tree lacks several). And `profile_missing` is a real answer — the spine still applies, but no profile
+describes this target yet. Writing one (payload, auth, master-data roles, coding model) is a
+single file, not a new recipe.
 
 ## Phase 1: Discover Everything
 

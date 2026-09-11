@@ -14,29 +14,28 @@ sys.path.insert(0, str(R.ROOT / "plugins" / "rossum-sa" / "recipes" / "tools"))
 
 import recipe_match as M  # noqa: E402
 
-RECIPE = {
-    "shape": {
-        "integration_shape": "https_out",
-        "queue_axis": ["country"],
-        "packaging": {"transport": "legacy_rest_chain", "payload": "custom_format_template"},
-        "ingest": {"modes": ["email", "upload"]},
-        "target_profile": {
-            "name_class": "coupa",
-            "coding_model": {"model": "segmented"},
-            "md_inbound_roles": ["supplier", "purchase_order", "tax_code", "contract"],
-        },
-    },
-    "intents": {"gating": [{"id": "A1"}]},
+SPINE = {"recipe": "idp-spine", "shape": {"ingest": {"modes": ["email", "upload"]}},
+         "intents": {"gating": [{"id": "A1"}]}}
+
+PROFILE = {
+    "profile": "coupa",
+    "name_class": "coupa",
+    "integration_shape": "https_out",
+    "coding_model": {"model": "segmented"},
+    "packaging": {"transport": "legacy_rest_chain", "payload": "custom_format_template"},
+    "md_inbound_roles": ["supplier", "purchase_order", "tax_code", "contract"],
 }
+PROFILES = [("coupa", PROFILE)]
 
 
 def _record(**over):
     base = {
         "integration_shape": "https_out",
         "packaging": ["legacy_rest_chain", "custom_format_template"],
-        "topology": {"queue_axis": ["country"]},
+        "topology": {"queue_axis": ["country"], "queues": 12},
         "ingest": {"modes": ["email", "upload"]},
         "rules": {"total": 12},
+        "hook_graph": {"nodes": [{"role": "x"}]},
         "engines": {"total": 0},
         "structure": {"export_trigger": ["annotation_content.export"]},
         "source_pin": {"complete": True},
@@ -53,27 +52,35 @@ def _record(**over):
 
 
 def test_identical_shape_scores_one_and_follows():
-    result = M.match(_record(), [("ap-invoice-to-coupa", RECIPE)])
+    result = M.match(_record(), SPINE, PROFILES)
     assert result["score"] == 1.0
     assert result["verdict"] == "follows"
     assert result["findings"] == []
 
 
-def test_different_integration_shape_is_unclassified_not_forced():
+def test_unknown_target_needs_a_profile_not_a_new_recipe():
+    """The skeleton is the same for every IDP delivery; only the target varies."""
     rec = _record(integration_shape="file_out",
                   target_profile={"name_class_candidates": ["sap"],
                                   "coding_model": {"model": "named"},
-                                  "md_inbound_roles": [], "md_unclassified_refs": 0},
-                  topology={"queue_axis": ["entity"]})
-    result = M.match(rec, [("ap-invoice-to-coupa", RECIPE)])
-    assert result["verdict"] == "unclassified", "a wrong match loses the new-variant signal"
-    assert "candidate shape" in result["note"]
+                                  "md_inbound_roles": [], "md_unclassified_refs": 0})
+    result = M.match(rec, SPINE, PROFILES)
+    assert result["verdict"] == "profile_missing"
+    assert result["recipe"] == "idp-spine", "the spine still applies — this is an IDP delivery"
+    assert "one file" in result["note"]
+
+
+def test_a_tree_that_does_not_ingest_anything_is_not_idp():
+    rec = _record(ingest={"modes": []}, topology={"queues": 0})
+    result = M.match(rec, SPINE, PROFILES)
+    assert result["verdict"] == "not_idp"
+    assert "no ingest channel" in result["reasons"]
 
 
 def test_core_role_gap_is_a_finding_optional_role_is_not():
     rec = _record()
     rec["target_profile"]["md_inbound_roles"] = ["supplier", "tax_code"]   # no PO, no contract
-    result = M.match(rec, [("ap-invoice-to-coupa", RECIPE)])
+    result = M.match(rec, SPINE, PROFILES)
     kinds = {(d["kind"], d["detail"]) for d in result["findings"]}
     assert ("master_data_role_absent", "purchase_order") in kinds
     info = {d["detail"] for d in result["informational"]}
@@ -81,7 +88,7 @@ def test_core_role_gap_is_a_finding_optional_role_is_not():
 
 
 def test_missing_validation_layer_is_a_finding():
-    result = M.match(_record(rules={"total": 0}), [("ap-invoice-to-coupa", RECIPE)])
+    result = M.match(_record(rules={"total": 0}), SPINE, PROFILES)
     assert any(d["kind"] == "no_validation_layer" for d in result["findings"])
     assert result["verdict"] == "follows_with_deviations"
 
@@ -91,12 +98,12 @@ def test_unclassified_role_count_qualifies_the_finding():
     rec = _record()
     rec["target_profile"]["md_inbound_roles"] = ["supplier", "tax_code"]
     rec["target_profile"]["md_unclassified_refs"] = 9
-    result = M.match(rec, [("ap-invoice-to-coupa", RECIPE)])
+    result = M.match(rec, SPINE, PROFILES)
     why = next(d["why"] for d in result["findings"] if d["detail"] == "purchase_order")
     assert "could not be assigned a role" in why
 
 
 def test_partial_pull_is_flagged_so_the_comparison_is_not_trusted_blindly():
     result = M.match(_record(source_pin={"complete": False, "missing_objects": ["hook:1"]}),
-                     [("ap-invoice-to-coupa", RECIPE)])
+                     SPINE, PROFILES)
     assert any(d["kind"] == "incomplete_pull" for d in result["findings"])

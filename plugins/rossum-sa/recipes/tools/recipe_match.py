@@ -6,12 +6,17 @@ Read path for the recipe layer: shape record in, nearest recipe + deviations out
 
     recipe_match.py --env <pulled-env> [--recipes <dir>] [--json out.json]
 
+Every IDP delivery shares one skeleton — a document arrives, master data is pulled in, the
+document is matched against it, values are derived, the result is validated, a payload is built
+and sent. So the SPINE is expected to match; what varies is the target PROFILE (payload, auth,
+master-data roles, coding model).
+
 Verdicts:
-  follows               every scored dimension agrees
-  follows_with_deviations   the shape matches but specific things differ — the useful case
-  unclassified          nothing scores above the floor. A wrong match is worse than no match:
-                        it files a novel structure under an existing recipe and loses the signal
-                        that a new variant exists.
+  follows                   spine and profile both agree
+  follows_with_deviations   they agree but specific things differ — the useful case
+  profile_missing           it is an IDP implementation, but no profile describes this target.
+                            That is a gap of one file, not a new recipe: write a profile.
+  not_idp                   the tree does not look like an IDP delivery at all
 """
 import argparse
 import glob
@@ -22,9 +27,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shape_extract  # noqa: E402
 
-# Dimensions that decide WHICH recipe, weighted by how strongly each separates shapes.
-WEIGHTS = {"integration_shape": 3, "name_class": 2, "coding_model": 2, "queue_axis": 1}
-FLOOR = 0.5          # below this, say unclassified rather than guess
+# Dimensions that decide WHICH PROFILE fits. The spine itself is not scored on these — the
+# skeleton is the same whatever the target.
+WEIGHTS = {"integration_shape": 3, "name_class": 3, "coding_model": 2}
+FLOOR = 0.5          # below this the target is not described by any profile we have
 
 # A recipe's md_inbound_roles is the UNION across the cluster, so any single tree legitimately
 # lacks several. Only these carry a finding on their own; the rest are informational, or every
@@ -32,16 +38,29 @@ FLOOR = 0.5          # below this, say unclassified rather than guess
 CORE_ROLES = {"supplier", "purchase_order", "purchase_order_line"}
 
 
-def _recipe_shape(recipe):
-    shape = recipe.get("shape", {})
-    target = shape.get("target_profile", {})
-    coding = target.get("coding_model", {})
+def _profile_shape(profile):
     return {
-        "integration_shape": shape.get("integration_shape"),
-        "name_class": target.get("name_class"),
-        "coding_model": coding.get("model"),
-        "queue_axis": (shape.get("queue_axis") or [None])[0],
+        "integration_shape": profile.get("integration_shape"),
+        "name_class": profile.get("name_class"),
+        "coding_model": (profile.get("coding_model") or {}).get("model"),
     }
+
+
+def is_idp(record):
+    """Does this tree do the IDP job at all: documents in, something out?
+
+    Deliberately generous. The point of the spine is that almost every delivery matches it, so
+    this only rejects trees that clearly are not one - no queues, or nothing that ingests.
+    """
+    reasons = []
+    if not (record.get("topology") or {}).get("queues"):
+        reasons.append("no queues")
+    if not ((record.get("ingest") or {}).get("modes")):
+        reasons.append("no ingest channel")
+    nodes = (record.get("hook_graph") or {}).get("nodes") or []
+    if not nodes:
+        reasons.append("no hooks")
+    return (not reasons), reasons
 
 
 def _record_shape(record):
@@ -55,9 +74,9 @@ def _record_shape(record):
     }
 
 
-def score(record, recipe):
-    """Weighted agreement on the dimensions that separate shapes. 0.0 - 1.0."""
-    want, got = _recipe_shape(recipe), _record_shape(record)
+def score(record, profile):
+    """Weighted agreement on the dimensions that separate TARGETS. 0.0 - 1.0."""
+    want, got = _profile_shape(profile), _record_shape(record)
     earned = possible = 0
     detail = {}
     for key, weight in WEIGHTS.items():
@@ -66,22 +85,20 @@ def score(record, recipe):
             continue                       # the recipe does not constrain this dimension
         possible += weight
         agree = expected == actual
-        if key == "name_class" and isinstance(expected, str) and actual:
-            agree = expected == actual
         if agree:
             earned += weight
         detail[key] = {"expected": expected, "actual": actual, "agree": agree}
     return (earned / possible if possible else 0.0), detail
 
 
-def deviations(record, recipe):
+def deviations(record, spine, profile):
     """Concrete, checkable differences — each one a review finding."""
     out = []
-    shape = recipe.get("shape", {})
-    target = shape.get("target_profile", {})
+    shape = spine.get("shape", {})
+    target = profile or {}
 
-    want_pack = set((shape.get("packaging") or {}).values()) if isinstance(
-        shape.get("packaging"), dict) else set(shape.get("packaging") or [])
+    want_pack = set((profile.get("packaging") or {}).values()) if isinstance(
+        profile.get("packaging"), dict) else set(profile.get("packaging") or [])
     got_pack = set(record.get("packaging") or [])
     for missing in sorted(want_pack - got_pack):
         out.append({"kind": "packaging_absent", "severity": "finding", "detail": missing,
@@ -108,7 +125,7 @@ def deviations(record, recipe):
                     "why": "documents from this channel are not handled"})
 
     rules = record.get("rules") or {}
-    if rules.get("total", 0) == 0 and recipe.get("intents", {}).get("gating"):
+    if rules.get("total", 0) == 0 and spine.get("intents", {}).get("gating"):
         out.append({"kind": "no_validation_layer", "severity": "finding", "detail": "0 native rules",
                     "why": "the recipe gates automation on validation; nothing gates here"})
 
@@ -137,39 +154,51 @@ def deviations(record, recipe):
     return out
 
 
-def match(record, recipes):
-    """Best recipe for this record, with a verdict. `recipes` is [(name, recipe_dict)]."""
+def match(record, spine, profiles):
+    """Spine + best profile for this record. `profiles` is [(name, profile_dict)]."""
+    idp, why_not = is_idp(record)
+    if not idp:
+        return {"verdict": "not_idp", "reasons": why_not,
+                "note": "this does not look like an IDP delivery, so the spine does not apply"}
+
     scored = []
-    for name, recipe in recipes:
-        value, detail = score(record, recipe)
-        scored.append({"recipe": name, "score": round(value, 3), "dimensions": detail})
+    for name, profile in profiles:
+        value, detail = score(record, profile)
+        scored.append({"profile": name, "score": round(value, 3), "dimensions": detail})
     scored.sort(key=lambda r: -r["score"])
+
     if not scored or scored[0]["score"] < FLOOR:
-        return {"verdict": "unclassified", "candidates": scored,
-                "note": "nothing scored above the floor. Record this tree as a candidate shape "
-                        "rather than filing it under an existing recipe — a wrong match loses the "
-                        "signal that a new variant exists."}
+        return {"verdict": "profile_missing", "recipe": spine.get("recipe"),
+                "candidates": scored,
+                "note": "the spine applies — this is an IDP delivery — but no profile describes "
+                        "this target. Write one: payload shape, auth, master-data roles, coding "
+                        "model. That is one file, not a new recipe.",
+                "observed": _record_shape(record)}
+
     best = scored[0]
-    recipe = dict(recipes)[best["recipe"]]
-    devs = deviations(record, recipe)
+    profile = dict(profiles)[best["profile"]]
+    devs = deviations(record, spine, profile)
     findings = [d for d in devs if d.get("severity") == "finding"]
     return {"verdict": "follows" if best["score"] == 1.0 and not findings
                        else "follows_with_deviations",
-            "recipe": best["recipe"], "score": best["score"],
+            "recipe": spine.get("recipe"), "profile": best["profile"], "score": best["score"],
             "dimensions": best["dimensions"],
             "findings": findings,
             "informational": [d for d in devs if d.get("severity") != "finding"],
             "runners_up": scored[1:3]}
 
 
-def load_recipes(root):
-    out = []
-    for path in sorted(glob.glob(os.path.join(root, "*", "recipe.json"))):
+def load_spine(root):
+    """The spine recipe and its target profiles."""
+    spine_path = os.path.join(root, "idp-spine", "recipe.json")
+    spine = json.load(open(spine_path))
+    profiles = []
+    for path in sorted(glob.glob(os.path.join(root, "idp-spine", "profiles", "*.json"))):
         try:
-            out.append((os.path.basename(os.path.dirname(path)), json.load(open(path))))
-        except Exception as exc:               # a broken recipe must not break the read path
+            profiles.append((os.path.basename(path)[:-5], json.load(open(path))))
+        except Exception as exc:               # a broken profile must not break the read path
             print(f"warning: skipping {path}: {exc}", file=sys.stderr)
-    return out
+    return spine, profiles
 
 
 def main():
@@ -182,7 +211,8 @@ def main():
     args = ap.parse_args()
 
     record = shape_extract.extract(os.path.expanduser(args.env))
-    result = match(record, load_recipes(os.path.expanduser(args.recipes)))
+    spine, profiles = load_spine(os.path.expanduser(args.recipes))
+    result = match(record, spine, profiles)
     if args.json:
         json.dump({"match": result, "record": record}, open(args.json, "w"), indent=2)
         print("written:", args.json)

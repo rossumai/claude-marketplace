@@ -37,9 +37,11 @@ ordered build plans mined from delivered implementations: intents, phase order, 
 has to resolve, and a `verify` per phase. A recipe does not replace these phases — it tells you which
 of them apply, in what order, and what to ask.
 
-1. Read `recipes/README.md`, then pick the recipe whose `shape` matches (document domain × target ×
-   integration shape). `ap-invoice-to-coupa` covers AP invoice into a procurement platform over
-   synchronous HTTPS.
+1. Run `recipes/tools/recipe_match.py --env <pulled-env>` if a tree already exists, or read
+   `recipes/idp-spine/` if starting fresh. The spine applies to essentially every IDP delivery; the
+   target-specific half is a **profile** under `idp-spine/profiles/`. If the matcher says
+   `profile_missing`, write the profile first — payload shape, auth, master-data roles, coding
+   model. That is one file, and the rest of the spine still applies.
 2. **Read its `platform_contract` block before writing anything.** Every entry cost a failed API call
    to learn — a multi-line rule condition must be parenthesised, every MDH-written field must be
    `enum`, formula fields cap at 2000 characters, an engine without `settings.use_case` silently
@@ -50,8 +52,24 @@ of them apply, in what order, and what to ask.
    silent: a hook that runs before the field it reads is populated reads empty and writes nothing.
 5. Run each phase's `verify` before starting the next. A phase without a passing verify is not done.
 
-**If no recipe matches**, build from the phases below and record the shape — a novel shape is a
-candidate, and five of them make a recipe.
+**If the spine itself does not apply** (`not_idp`), build from the phases below and record the
+shape.
+
+## Work it as a todo list, one subagent per phase
+
+The phases are delivery chunks, and they are what makes this buildable in a session: each one has a
+`verify` that is the exit test, so a phase either passes or is not done.
+
+- **Turn every `decide[]` entry into a todo** before building that phase. An unresolved decision is
+  the single most common reason a build stalls at hour two.
+- **Dispatch one subagent per phase**, handing it the phase's intents, the parts it references, the
+  relevant `platform_contract` entries, and its `verify` as the exit test. Phases are ordered, so run
+  them in sequence and let each one's `verify` gate the next.
+- **Keep the contract in the prompt, not in the agent's memory.** The facts that cost a failed call —
+  parenthesised rule conditions, enum-only MDH targets, the 2000-char formula cap — must be in the
+  subagent's instructions or it will rediscover them one failure at a time.
+- Report per phase: what was built, what its `verify` returned, and which `decide[]` answers it
+  assumed.
 
 **Delivery order is not runtime order.** Deliver in chunks: digest the target API, import master data,
 **pin the export payload**, then matching, then validation. Pinning the export contract early stops

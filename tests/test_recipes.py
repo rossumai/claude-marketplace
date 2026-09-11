@@ -122,6 +122,25 @@ def test_extractor_makes_no_network_calls():
     assert not networked, f"shape_extract.py imports {sorted(networked)}; it must be read-only"
 
 
+def test_spine_declares_profiles_that_exist():
+    """A target is a profile, not a new recipe — so the profiles must actually be there."""
+    for path, data in _recipes():
+        declared = data.get("profiles")
+        if declared is None:
+            continue
+        available = {p.stem for p in (path.parent / "profiles").glob("*.json")}
+        missing = set(declared) - available
+        assert not missing, f"{path.parent.name}: declares profiles {sorted(missing)} with no file"
+
+
+def test_every_profile_names_its_target_and_shape():
+    for path, _ in _recipes():
+        for prof in sorted((path.parent / "profiles").glob("*.json")):
+            data = json.loads(prof.read_text(encoding="utf-8"))
+            for key in ("name_class", "integration_shape"):
+                assert data.get(key), f"{prof.name}: missing {key} — the matcher scores on it"
+
+
 def test_recipes_are_consumed_by_a_skill():
     """A recipe layer nothing reads is documentation. Keep the consumers wired."""
     skills = R.ROOT / "plugins" / "rossum-sa" / "skills"
