@@ -1,6 +1,6 @@
 ---
 name: business-rules-reference
-description: 'Rossum business-rules & validation reference — the two ways to validate extracted data and block automation: native Rossum Rules (the /v1/rules entity — trigger_condition + actions[], FIRE-vs-PASS polarity, lifecycle; the trigger_condition is written in TxScript, so for that syntax see txscript-reference) and the legacy Business Rules Validation Store extension (checks[] config, error/warning/info result types, automation blocking, queue scoping, one-rule-one-table limit, plus its own curly-brace expression engine — has_value({field}), aggregations, casting, similarity/substring/regexp — documented in full in this pack because it is specific to this extension). Use whenever the user works on business rules, validation rules, data validation, native Rules vs. the business-rules extension, blocking automation on invalid data, rule actions, the checks[] config, or gating on field values — even when they just say "add a rule" or "validate this field".'
+description: 'Rossum business-rules & validation reference — the two ways to validate extracted data and block automation: native Rossum Rules (the /v1/rules entity — trigger_condition + actions[], FIRE-vs-PASS polarity, lifecycle; the trigger_condition is written in TxScript, so for that syntax see txscript-reference) and the legacy Business Rules Validation Store extension (checks[] config, error/warning/info result types, automation blocking, queue scoping, one-rule-one-table limit, plus its own curly-brace expression engine — has_value({field}), aggregations, casting, similarity/substring/regexp — documented in full in this pack because it is specific to this extension). Use whenever the user works on business rules, validation rules, data validation, native Rules vs. the business-rules extension, blocking automation on invalid data, rule actions, the checks[] config, gating on field values, or porting/migrating legacy checks to native Rules — even when they just say "add a rule" or "validate this field".'
 user-invocable: false
 ---
 
@@ -13,7 +13,11 @@ Rossum validates extracted data and blocks automation in two ways. This pack cov
 
 See [reference.md](reference.md) for the full reference. Consult it when authoring or debugging either kind of rule, choosing between them, or reading a `checks[]` config.
 
+It also covers **porting expressions between engines** — legacy `checks[]` to native Rules, legacy calculation hooks to formulas — as a defect taxonomy plus a verification method built on real field values and predicted message counts rather than on translating expression text.
+
 Cross-references:
 
 - `txscript-reference` — the TxScript expression language for native Rule `trigger_condition`s (and hooks/formulas). Native Rules use `field.X`; the BRV extension uses a different `{field}`-brace engine documented here.
 - `rossum-reference` — the `/v1/rules` and `/v1/triggers` endpoint basics and the platform overview.
+- `upgrade` — the skill that drives deprecated-extension migrations; the porting method here is the value-level verification step for the rules and formulas it produces.
+- `test-behavioral-equivalence` — corpus-wide before/after replay across two environments, the heavier companion to the in-place count check.

@@ -587,7 +587,7 @@ Formulas run in a sandboxed expression runtime, with hard limits distinct from s
 - **Max 2000 characters** per formula — **comments and blank lines count.** The whole `formulas/<field_id>.py` file is pushed as one string, so a comment block explaining the logic consumes the same budget as the logic. Adding a reasoning header to a ~1700-char formula is enough to break it.
 - **No I/O** — a formula cannot make HTTP requests or access the document/file objects. Use a serverless function for lookups and enrichment.
 - **A formula must never reference its own field** (circular-reference error).
-- **Extensions cannot overwrite a formula field's value.** If a hook needs to write the value, use a separate `data`-type field, not a `formula` field.
+- **Extensions cannot overwrite a formula field's value.** If a hook needs to write the value, use a separate `data`-type field, not a `formula` field. The same wall applies to the API: `PATCH`ing a computed datapoint's value returns **HTTP 400 `The computed datapoint X can only be updated from UI.`** So a formula-backed field's *manual override* path cannot be exercised headlessly — report that path as untested rather than verified.
 - For operations over **200+ line-item rows**, prefer a serverless function — large formulas hit the size/compute limits.
 
 ### Diagnosing a length overrun
@@ -719,6 +719,23 @@ ds = default_to(field.po_line_description_match,
 The absorbed helper field can be deleted from the schema. The trade-off is readability vs. schema cardinality: absorb when the helper is short and used in one place; keep separate when the helper is reused or non-trivial.
 
 This pattern is named "absorb" because the consumer formula absorbs the producer's definition. It's not a Rossum-specific construct — it's a refactoring move enabled by formulas being arbitrary Python expressions.
+
+## A rule can observe a formula's pre-recompute value
+
+`POST /v1/annotations/{id}/content/validate` recomputes formula fields and evaluates native Rules in
+the same pass. A single validate *is* the normal recompute trigger and resolves the dependency graph
+— that is not in question here (the `iterate` and `test-behavioral-equivalence` skills both rely on
+it, one validate recomputing whole schemas' worth of datapoints).
+
+What was observed once, and is worth designing a test around rather than asserting as a rule: a Rule
+evaluating in that pass read the **pre-recompute** value of a formula field it gated on. The
+conditions under which the ordering goes that way were not established.
+
+**Test precaution, not a platform statement:** where a test's outcome depends on a rule seeing a
+formula's *newly computed* value — the usual shape after porting a calculation hook to a formula
+plus a rule that gates on it — fire validate twice and read the second response. The second pass
+starts from the recomputed value either way, so it costs one call and removes the ambiguity from
+the result.
 
 ## A queue move does NOT recompute formulas
 

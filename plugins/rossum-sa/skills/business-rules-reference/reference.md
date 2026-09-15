@@ -7,6 +7,7 @@ Rossum validates extracted data and blocks automation in two ways, both covered 
 - [Native Rossum Rules](#native-rossum-rules)
 - [Legacy Business Rules Validation extension](#legacy-business-rules-validation-extension)
 - [Choosing between them](#choosing-between-them)
+- [Porting expressions between engines](#porting-expressions-between-engines)
 
 ## Overview: two ways to validate
 
@@ -55,7 +56,13 @@ A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition` 
 ### Field constraints & create/link gotchas
 
 - **`name` and `description` are capped at 255 characters.** A `POST`/`PATCH /v1/rules` with a longer `description` returns **HTTP 400 `description: Ensure this field has no more than 255 characters.`** (`name` follows the same platform charfield limit). This bites repeatedly because rule descriptions naturally grow into paragraphs. Keep both short. Long *implementation rationale* does not belong in the rule at all — not in `description`, and **not** in the action `payload.content` (that is the reviewer-facing banner shown in the validation UI; keep those messages short and actionable). Put rationale in the deliverable's spec/plan or a comment on the `trigger_condition`. Sanity-check before pushing a locally-authored rule: `python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['name']), len(d.get('description','')))" rule.json`.
-- **Attaching a rule to a queue — and how it can end up unattached.** The rule↔queue link is a many-to-many relation mirrored on both sides (`rule.queues` ↔ `queue.rules`). The `POST /v1/rules` API *does* attach the rule when you pass `queues`/`queue_ids` — verified live: a rule created with `queue_ids:[<id>]` comes back with `queues:[<id>]` populated and immediately appears in `GET /v1/rules?queue=<id>`. It ends up unattached (`queues: []`, so it never evaluates on any document) in two cases: (a) you create it without passing queues; (b) a **prd2 `_[]`-placeholder push**, which creates the rule but does *not* send the rule-side `queues` — in a prd2 tree the link is declared on the queue side, so you must add the new rule's URL to `queue.json`'s `rules` array and push the queue. After any create, verify `GET /v1/rules/{id}` shows the intended `queues`; if empty, set them via `PATCH /v1/rules/{id}` (`queues`) / MCP `rossum_patch_rule` (`queue_ids`), or the prd2 `queue.json` route above.
+- **Attaching a rule to a queue — and how it can end up unattached.** The rule↔queue link is a many-to-many relation mirrored on both sides (`rule.queues` ↔ `queue.rules`). **The API field is `queues` — a list of queue URLs.** A create that sends it attaches the rule: verified live, the rule comes back with `queues` populated and immediately appears in `GET /v1/rules?queue=<id>`.
+
+  **`queue_ids` is a wrapper parameter, not an API field.** The MCP tools `rossum_create_rule` / `rossum_patch_rule` take `queue_ids` and expand them into `queues` URLs before sending. A **raw** `POST /v1/rules` carrying a literal `queue_ids` key was observed being accepted — the unknown key ignored — and creating the rule with `queues: []`: attached to nothing, evaluating on no document. The create succeeds, so nothing in the response says the link does not exist.
+
+  A rule also lands unattached when (a) you create it without passing queues at all, or (b) a **prd2 `_[]`-placeholder push** creates it — prd2 does not send the rule-side `queues`, because in a prd2 tree the link is declared on the queue side, so you must add the new rule's URL to `queue.json`'s `rules` array and push the queue.
+
+  **After any create, read `queues` back** from `GET /v1/rules/{id}`. If empty, set it via `PATCH /v1/rules/{id}` (`queues`) / MCP `rossum_patch_rule` (`queue_ids`), or the prd2 `queue.json` route above.
 
 ### Polarity: `trigger_condition` is the FIRE predicate
 
@@ -153,9 +160,16 @@ the thing you are here for.)
 Two places in that response answer "did it fire?":
 
 1. **`matched_trigger_rules`** — an array of the rules whose `trigger_condition` evaluated
-   `True` on this run. This is the cleanest fired/not-fired signal, because it is independent of
-   whether the rule has any *visible* action: a rule whose only action is
-   `add_automation_blocker`, or one whose `show_message` is `info`-level, still appears here.
+   `True` on this run. It is the most *complete* fired/not-fired signal in principle, because it
+   is independent of whether the rule has any *visible* action: a rule whose only action is
+   `add_automation_blocker`, or one whose `show_message` is `info`-level, still belongs here.
+   **One caveat, from a single observation:** it has been seen coming back empty on a run whose
+   `messages[]` did carry entries. The cause was not established, and there is an innocent
+   explanation to rule out first — `messages[]` also carries hook-emitted messages, so check
+   `detail.hook_name` (`"rules"` for a native Rule) before concluding the array disagrees with
+   itself. Until the cause is known: a populated `matched_trigger_rules` is proof the rule fired;
+   an empty one with a rule-attributed message in `messages[]` is a discrepancy to investigate, not
+   evidence the trigger failed to match.
 2. **`messages[]`** — one entry per emitted `show_message`, each carrying a `detail` block that
    names the rule that produced it:
 
@@ -170,6 +184,19 @@ Two places in that response answer "did it fire?":
 `detail.rule_id` is what disambiguates *which* rule spoke when several rules anchor messages on
 the same `schema_id` — matching on `content` text alone is unreliable once two rules share
 wording.
+
+**A message anchored on a hidden field never surfaces — not in the API response, not to the user.**
+If a rule's `show_message` payload names a `schema_id` that is hidden at validation time, the
+trigger can be firing perfectly and the message still be absent from `messages[]`. Visibility is
+**dynamic**: show/hide extensions and `show_hide_field` rule actions change it per document, so the
+schema's `hidden` flag is not the whole answer.
+
+The diagnostic that separates "not firing" from "firing but not surfacing", without needing to
+establish effective visibility at all: re-anchor the same `show_message` on a field you know is
+visible on that document and validate again. A message that appears proves the `trigger_condition`
+is fine and sends you to the anchor; one that still does not appear sends you to the condition.
+Worth reaching for early — the tag-fire + reveal pairing above anchors messages on fields that are
+hidden by default, which is exactly the population this bites.
 
 > **Two different `detail` envelopes — do not reuse a parser across them.** The shape above is the
 > one in the **validate response's** `messages[]`, where `detail` is an *object*. The
@@ -189,6 +216,10 @@ or `raw_messages` if you are going through `rossum_validate_content`:
 | data **in the problem state** | rule id present in `matched_trigger_rules`; message emitted; blocker present if the rule adds one |
 | data **in the OK state** | rule id **absent** from `matched_trigger_rules`; no message from that `rule_id` |
 
+Read both signals together in the OK row. Absence from `matched_trigger_rules` alone is the weaker
+half of the evidence (see the caveat above); "no message carrying that `rule_id`" is what makes the
+OK case convincing.
+
 Only both rows together prove the predicate, not just its true branch.
 
 **Corroborating signals**, when you need more than the validate response:
@@ -203,10 +234,14 @@ Only both rows together prove the predicate, not just its true branch.
   after-the-fact triage on a document you are not re-validating.
 - `GET /v1/automation_blockers?annotation=<id>` (readable through `rossum_get`) — the durable
   side of an `add_automation_blocker` action. Unlike the message, a blocker *does* persist on the
-  annotation, so it survives the validation call that created it.
-- A rule that appears in neither `matched_trigger_rules` nor the logs may simply not be attached
-  to the queue: check `GET /v1/rules/{id}` for a populated `queues` array (see
-  *Field constraints & create/link gotchas* above) and `enabled: true`.
+  annotation, so it survives the validation call that created it. **The blocker is not in the
+  `content/validate` response body at all** — the route to it is `GET /v1/annotations/{id}` →
+  follow its `automation_blocker` URL, and read the items under **`content`** (not `items`). Some
+  blocker kinds, including hidden-field errors, appear there and nowhere else.
+- A rule that appears in neither `matched_trigger_rules` nor the logs — of which the logs are the
+  load-bearing half — may simply not be attached to the queue: check `GET /v1/rules/{id}` for a
+  populated `queues` array (see *Field constraints & create/link gotchas* above) and
+  `enabled: true`.
 
 > **From Claude Code:** the MCP wrappers project the validate response down.
 > `rossum_validate_content` surfaces the messages as `raw_messages`, so `detail.rule_id` — the
@@ -266,8 +301,172 @@ today() + timedelta(days=2) > {due_date}
 
 **Limitation**: One rule can only work with one table.
 
+### Reading a legacy `checks[]` config
+
+Five behaviours of the legacy engine that are invisible in the config text and change how a check
+must be ported. All measured on live implementations; each is stated at the scope it was observed
+at, not generalised past it.
+
+**A check can write its message to more than one field.** A native Rule's `show_message` carries a
+single `schema_id`, so a one-to-one port silently drops the other anchors, and a faithful port needs
+**one action per field the original actually wrote to**. That set is not simply "every field the
+expression references" — one observed check referenced two fields and wrote to only the non-empty
+one. Determine it empirically, on a document where the check fires: read the emitted messages in full
+(`rossum_validate_content` passes them through unprojected as `raw_messages`) and record which field
+each one is anchored on.
+
+**`"active": "false"` written as a string does disable the check.** Observed on a live config and
+verified the direct way — removing the key from a dormant check made it start firing. The boolean
+`false` is the documented form; treat the string form as something to recognise when reading a
+config, not as a second supported spelling to emit. The trap is reading a string `"false"` as a
+truthy Python value and concluding the check is live.
+
+**`{x} == {x}` — a field compared to itself — is the engine's not-empty idiom, not a typo.** The
+engine skips empty values, so a self-comparison is false exactly when the field is empty. Port it as
+`not is_empty(field.x)`. Do not "fix" it, and do not port it as a tautology.
+
+**A `regexp()` check does not fire on an empty value**, even when the pattern would reject an empty
+string. Port such a check as `not is_empty(field.x) and <the shape test>`, never as a literal
+transcription of the regex — the literal version fires on every document with an empty field.
+
+**A hook-level `active: false` makes every check inside it dormant**, regardless of per-check flags.
+Migrating a check out of a dormant hook as an *enabled* native Rule **adds** behaviour the customer
+did not have. That is a regression, not a migration: check the hook's own `active` flag before
+porting anything out of it, and confirm with the customer if the intent is to revive the check.
+
 ---
 
 ## Choosing between them
 
 Prefer **native Rules** for new work — they're platform-native, versioned with the org config, and don't require installing a Store extension. The **Business Rules Validation extension** persists in older implementations; document and migrate it to native Rules when practical. (Confirm the current deprecation status against the official Rossum docs before asserting it to a customer.)
+
+---
+
+## Porting expressions between engines
+
+Moving an expression from one Rossum engine to another — a BRV `checks[]` entry to a native Rule
+`trigger_condition`, a legacy calculation hook to a schema formula, a hook write to a formula — is
+common modernisation work — the `upgrade` skill drives the deprecated-extension half of it and
+records the result as a `hook_to_rule` / `hook_to_formula` axis in its manifest. This section covers
+the part that goes wrong.
+
+**Evidence base.** Two independent engagements — different customers, different engineers, one
+porting BRV checks to native Rules and the other legacy calculation hooks to schema formulas —
+produced six defects between them. **Every one was a value-semantics mismatch; none was
+structural.** In both projects, gating shape, per-row vs. header context, action fan-out and
+control flow ported correctly from reading the source config alone; what broke was what the
+*values* did once the new engine evaluated them.
+
+Six defects across two engagements is not a platform law, and the taxonomy below is certainly not
+exhaustive. It is enough to say where verification effort pays off: on values, not on structure.
+
+### Never port from the expression text alone
+
+The written condition tells you what the author *intended*. Only the data tells you what the engine
+*did*. Before porting a check, read the real values of every field it names, on a document where the
+source check actually fires. Every defect below survived a careful reading of the source
+expression and was caught only by looking at the data.
+
+### The defect taxonomy
+
+Every row was observed in the field. The six defects group into these classes, with the
+type-coercion row covering two separate incidents. Field names are generic stand-ins and the
+arithmetic is illustrative.
+
+| Class | What happened | What to check before porting |
+|---|---|---|
+| **Type coercion** | `int(field.x) != field.y` where `y` holds a *string* — the comparison is always true, so the gate fired on every row. Separately, `field.item_tax_rate == 1` against a number-typed enum whose value reads back as the string `"1.00"` — always false, so that gate never fired. | Read the value back off the annotation and check its actual Python type, rather than trusting the schema's declared type. A number-typed field commonly arrives as a formatted string. |
+| **Float precision** | An exact `!=` on money. A quantity times a unit price lands on `7.3500000000000005` in binary float against a stored line total of `7.35`, so the rule fired on a correct line. The legacy engine had compared tolerantly. | Port an exact money comparison as a tolerance test — `abs(a - b) >= 0.01`, at the currency's precision. Keep an exact `==`/`!=` only where you have confirmed the source engine was exact too. |
+| **Empty sentinel** | A field carried a sentinel string (`'---'`) as a deliberate "no value" marker. The two engines disagreed about whether that counted as empty: the legacy check fired on those documents, and the port's `is_empty()` — which sees a non-empty string — did not. (The legacy engine's exact handling of that sentinel was never established; the disagreement was.) | Enumerate what "empty" means for that specific field in that corpus, from data. Empty string, sentinel string, absent and zero are four distinct states and the engines do not agree about all four. |
+| **Empty vs. zero** | `default_to(field.item_quantity, 0)` turned an intentionally-empty quantity into a real `0`, which changed a downstream total. | `default_to(x, 0)` is a value decision, not a safety wrapper. Guard the raw field with `is_empty(field.x)` where empty and zero must stay distinct — see `txscript-reference`. |
+| **Raw vs. derived input** | The gate read the raw captured field (empty on these documents) while the arithmetic it guarded read the calculated field of almost the same name (populated). The branch never ran. | Where two fields share a stem (`item_total` and `item_total_base`, `x` and `x_calculated`), confirm on data *which one* the source condition read. Name similarity is not evidence. |
+| **Condition that does not gate** | A legacy check's `condition` provably had no effect: the check fired on every row regardless of the gated field's value. The faithful port had to **drop the clause** — the author's intent had never worked in production. | Where a condition looks like it should filter but the source fires everywhere, the observed legacy behaviour is the specification. Port what runs, and raise the dead intent with the customer as a separate decision. |
+
+Two of these — the sentinel and the dead condition — mean a *faithful* port is not always a
+*literal* one. Reproducing the source's observed behaviour occasionally requires writing something
+the source text does not say, and saying so explicitly in the migration trace
+(`upgrade` → *Intentional behavior changes*).
+
+### The verification method
+
+Per check family, against real documents, with the count predicted in advance.
+
+**Where to run it: a sandbox/UAT org with a realistic corpus.** The dual run shows two identical
+banners per affected document for its duration. The sharper cost is a blocker the source did not
+have: where the ported rule carries `add_automation_blocker` but the legacy check only warned, the
+dual run stops those documents automating. (Where the legacy check already blocked, a second blocker
+changes nothing.) So give the ported rule a `show_message` action **only** while the source is still
+live, and add the blocker once the source is retired.
+
+Running the dual run against production is a customer decision, not a default and not yours to take
+— the new rule evaluates for real reviewers the moment it is attached. If the only corpus that fires
+the check is in production, say so and get explicit agreement on a window before anything is enabled
+there; in a prd2 tree the rules do not exist until the user pushes them anyway.
+
+1. **Find a document where the source check actually fires.** Sample the corpus until you have an
+   anchor. Both engines are observable per annotation: run the three calls yourself —
+   `rossum_start_annotation` → `rossum_validate_content` → `rossum_cancel_annotation` — and read
+   `messages[]`, where `detail.hook_name` attributes each message to the legacy hook or to
+   `"rules"`. **Not `rossum_refire_annotation`**: its validate branch keeps only
+   `updated_datapoints_count` and discards the response messages, which are the entire measurement
+   here. After the fact, `GET /v1/rules_execution_logs?annotation=<id>` records native-rule
+   evaluations. If nothing in the corpus fires the check, say so: the port is **unverifiable**, not
+   verified. Do not mark it done.
+2. **Read the real values** of every field the condition names, on that document — including the
+   empty case, explicitly. Empty string, sentinel, absent and zero are four different things and
+   the engines disagree about them (see the taxonomy above).
+3. **Run source and port simultaneously.** Leave the legacy check enabled, enable the new rule, and
+   re-validate the corpus. **Count by `detail.rule_id` / `detail.hook_name`, not by message text** —
+   a faithful port usually reproduces the source's wording exactly, so text alone cannot tell the
+   two apart. The count should **double on exactly the anchors you predicted** — same documents,
+   same fields. Where the port deliberately diverges from the source (a dropped dead clause, a
+   sentinel handled differently), predict *that* count instead: the expected number is whatever
+   your reading of the data says, not automatically 2×.
+4. **Write the expected count down before you read the actual one.** A delta in the right direction
+   is not evidence. In one observed run a delta of `+3` was read as success where the correct
+   answer was `+63`, and the regression shipped. The prediction is what makes the count
+   falsifiable.
+5. **Then retire the source** — `active: false` on the legacy check (or on its hook) — and confirm
+   the output matches the baseline captured *before* any change, not the doubled state.
+6. **Roll back the whole batch on any mismatch.** `enabled: false` on the batch's rules is the
+   fastest lever and keeps them available for a second attempt; deleting them loses the work. Do
+   not fix forward against a live discrepancy — a second change stacked on an unexplained one makes
+   the next count unreadable.
+
+### Batching discipline
+
+- **Port in small batches grouped by check family** (same source fields, same comparison shape). A
+  batch whose members share inputs fails in one recognisable way; a mixed batch produces a count
+  delta nobody can attribute.
+- **Capture the before-baseline first**, across the whole corpus you intend to re-measure, before
+  the first new rule exists — step 5 has nothing to compare against otherwise. Budget it: a
+  baseline is one soft re-fire per annotation, which fires the full hook chain each time and bumps
+  the annotation's timestamps. Size the corpus accordingly rather than reaching for "all documents"
+  by reflex.
+- **Never create the next batch's rules while a verification run is in flight.** A native Rule
+  starts evaluating the moment it is attached and enabled, so rules created mid-run contaminate the
+  count of the run in progress. In a prd2 tree, rule creation happens on the *user's* push — so
+  this is a handshake, not a self-imposed rule: say explicitly when a run is in flight and when it
+  is safe to push the next batch.
+
+For a corpus-wide before/after replay across two environments, with scripted snapshot capture and
+diffing, use the `test-behavioral-equivalence` skill. The two are complementary: this count check
+verifies one check family in one environment and needs no second org; the replay verifies a whole
+implementation and does.
+
+### Mechanics that bite during a port
+
+- **Read messages from the validate response, not the annotation** — see
+  [Verifying a rule actually fired](#verifying-a-rule-actually-fired). Counting messages is the
+  measurement this whole method rests on, so get the probe right before trusting any count.
+- **A message anchored on a hidden field never surfaces**, so a correctly-ported rule reads as not
+  firing. Same section, which also gives the diagnostic that separates the two cases.
+- **A rule may see a formula's pre-recompute value** when both evaluate in the same validate pass.
+  When a ported rule gates on a formula whose inputs just changed, validate twice and read the
+  second response — see `txscript-reference` → *A rule can observe a formula's pre-recompute value*.
+- **Verify any count you derive from a content walk against a table of known size** before drawing
+  a conclusion from it; see `rossum-reference` → *Annotation Content*. A miscount here reads as a
+  behavioural difference and has caused a correct migration to be abandoned.
+- **A formula-backed field cannot be written over the API**, so the manual-override path of a
+  migrated field is not testable headlessly (`txscript-reference` → *Formula constraints*). Report
+  that path as untested rather than verified.

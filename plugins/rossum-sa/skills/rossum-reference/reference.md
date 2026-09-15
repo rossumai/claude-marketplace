@@ -306,7 +306,7 @@ Schemas consist of **sections** containing **datapoints** (header fields) and **
 - `category`: "section", "datapoint", "multivalue", or "tuple"
 - `id`: Unique identifier (max 50 chars)
 - `label`: Display name
-- `hidden`: Hide from UI (default: false)
+- `hidden`: Hide from UI (default: false). **This is the schema-level default, not the effective state** — show/hide extensions and `show_hide_field` rule actions change a field's visibility per document at validation time. A field's effective visibility matters beyond the UI: a rule's `show_message` anchored on a field that is hidden *at validation time* does not surface at all — not in the UI and not in the validate response (see `business-rules-reference` → *Verifying a rule actually fired*)
 - `disable_prediction`: Disable AI extraction (default: false)
 
 ### Datapoint (Field) Types with Examples
@@ -639,6 +639,34 @@ Annotations represent extracted data from documents and track the full processin
 | POST | `/v1/annotations/{id}/content/bulk_update` | Bulk update |
 | POST | `/v1/annotations/{id}/content/replace_by_ocr` | Re-OCR |
 | POST | `/v1/annotations/{id}/content/validate` | Validate against schema |
+
+#### Sanity-check any count you derive from an ad-hoc content walk
+
+Counting by walking the content tree by hand is easy to get wrong, and the failure is silent. One
+observed ad-hoc walker reported a line-item table as having twice its real number of rows, which led
+to the false conclusion that a validation check "fires on only half the rows" — and a correct
+migration was abandoned on the strength of it. The root cause was in the walker, not the
+platform: each node appears once in the tree, so a walk that dispatches on `category` and descends
+`children` once cannot see a node twice. `_walk_compact_content` in the plugin's MCP server and the
+`test-behavioral-equivalence` content walker are both built that way and do not double-count.
+
+What the tree does have is **two multivalue shapes**, and conflating them is the other way a count
+goes wrong: a table multivalue's `children` are `tuple` rows whose own children are the cells, while
+a **simple multivalue**'s `children` are datapoints directly (see *Multivalue (Table Container)*
+above). `_walk_compact_content` skips children that are not `tuple`s, so a simple multivalue reports
+`count: 0` rather than its real length — a case to handle yourself rather than read off the compact
+projection.
+
+Practical rules when you do need a hand-rolled count:
+
+- **Count the right node kind.** Rows are `tuple` nodes; cells and header fields are `datapoint`
+  nodes. A count that mixes levels is the usual source of a too-large number.
+- **Dispatch on `category` and recurse `children` only.** Appending a node at both container and
+  leaf level is what produces duplicates.
+- **Validate the counter against a table whose size you know** before you let a count carry an
+  argument — especially one about whether an extension fires on every row.
+- Where the compact projection suffices, prefer it: `rossum_get_annotation` already returns
+  `tables[<schema_id>].count` per table.
 
 ### Annotation Object Fields
 
@@ -1290,6 +1318,8 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 
 **Rule actions**: Send email, update fields, change status, assign to user, add labels, trigger webhooks.
 
+**Queue attachment**: the create/update field is `queues` — a list of queue **URLs**. `queue_ids` is a parameter of the MCP wrappers (`rossum_create_rule` / `rossum_patch_rule`), which expand it into `queues` URLs before sending; it is not an API field. A raw `POST /v1/rules` carrying `queue_ids` was observed being accepted with the unknown key ignored, creating a rule with `queues: []` — attached to nothing. Read `queues` back after any raw create.
+
 **Rule conditions**: Field value matches/contains, numerical comparisons, date ranges, AND/OR logic.
 
 For the Rule *feature* in depth — `trigger_condition` + `actions[]`, FIRE-vs-PASS polarity, lifecycle, and the legacy Business Rules Validation extension — see the `business-rules-reference` skill. The `trigger_condition` expression language itself lives in `txscript-reference`.
@@ -1507,6 +1537,21 @@ Track reasons preventing full automation:
 |--------|----------|---------|
 | GET | `/v1/automation_blockers` | List blockers |
 | GET | `/v1/automation_blockers/{id}` | Retrieve blocker |
+
+**A blocker is not in the `content/validate` response body.** That response carries `messages[]`
+and `matched_trigger_rules`; the blocker lives on the annotation. So a validate response with no
+message is not evidence that nothing is blocking automation — hidden-field errors, among others,
+show up only on the blocker.
+
+From Claude Code, the one-call route is `rossum_get_annotation` (or `rossum_refire_annotation`),
+which resolves the blocker and projects its entries as `blocker.items`. Over raw HTTP the route is
+`GET /v1/annotations/{id}` → follow the annotation's `automation_blocker` URL → read the entries
+under **`content`**. Note the key: the blocker resource nests its entries under `content`, not under
+the `results` key that collection endpoints use and not under `items`, which is the MCP projection's
+own name for them.
+
+The per-entry `detail` envelope differs from the one in a validate response's `messages[]` — see
+`business-rules-reference` → *Verifying a rule actually fired*.
 
 ---
 
