@@ -37,6 +37,7 @@ Use the provided path (or current directory if none given). Refer to `skills/__s
 2. Identify deprecated extensions by **grepping hook files** for these patterns:
    - Names containing: `Copy`, `Paste`, `Find`, `Replace`, `Value Mapping`, `Mapping`, `Date Calculation`, `Date Calc`
    - Hook URLs containing: `copy-paste`, `find-replace`, `value-mapping`, `date-calculation`
+2b. A **Business Rules Validation** hook (a `checks[]` config) is a common port target for native Rules and is recorded by the `hook_to_rule` axis, but it is *not* deprecated and the patterns above do not find it. If one is in scope for the engagement, discover it separately (grep hook settings for `"checks"`) and port it per `business-rules-reference` → *Porting expressions between engines*; it is out of scope for this skill's automatic sweep.
 3. Identify outdated Python runtimes on function hooks by **grepping hook files** for `"runtime":` and collecting every value that is not `"python3.12"` (e.g., `python3.8`, `python3.9`, `python3.10`, `python3.11`). Only hooks of `"type": "function"` have a runtime field — webhook/connector hooks do not.
 4. For each match, read the **full hook JSON** — especially `settings` (the transformation rules) and `queues` (which queues use it). For function hooks, also read the corresponding `.py` file(s) so you can flag any code that won't run on 3.12.
 5. Find the **schema** for each affected queue (`**/schema.json` in the matching queue directory) so you know what fields exist
@@ -46,6 +47,14 @@ Do NOT produce output during this phase. Read everything first.
 ## Phase 2: Understand Each Extension
 
 For each deprecated extension found, extract the transformation logic from its `settings`:
+
+> **Read the values, not just the settings.** The settings tell you what the original author
+> *intended*; only the field values on a document where the old logic actually fires tell you the
+> *behaviour* you have to reproduce. Observed porting defects cluster entirely on value semantics —
+> type coercion, float precision, empty-vs-sentinel, empty-vs-zero, raw-vs-derived input — while
+> structure ports correctly from reading settings alone. The taxonomy and the verification method
+> are in `business-rules-reference` → *Porting expressions between engines*; read it before writing
+> the replacement formula or rule, not after the parity test fails.
 
 ### Copy & Paste Values
 
@@ -220,6 +229,7 @@ A migration is not done when the manifest is written — it is done when a repla
 
 > Want to verify these replacements against a real annotation? Paste a **sandbox/UAT** annotation ID (or say "skip").
 
+- **Migrated a check into a native Rule?** Verify it by running old and new **simultaneously** over a corpus and confirming the message count changes by exactly the amount you predicted *before* reading it — a delta in the right direction is not evidence. The dual run doubles what reviewers see, and can stop documents automating where the ported rule blocks and the legacy check only warned — so it belongs in the same sandbox/UAT org as the loop below. Full method, including the batching rules, in `business-rules-reference` → *Porting expressions between engines*.
 - Single document, tight inner loop ("did formula `F05` resolve to the same value the old hook produced?") → hand off to the `iterate` skill. Always use a **sandbox/UAT** annotation — never production; the loop re-fires (and may confirm) the document.
 - Whole population, before promoting ("did anything regress across the corpus?") → hand off to `test-behavioral-equivalence`, which uses the `# migration-trace:` breadcrumbs to attribute any diffs back to the migration that caused them.
 
@@ -299,7 +309,7 @@ datetime.strptime(field.date_issue, "%Y-%m-%d") + timedelta(days=int(field.terms
 - Only upgrade extensions and runtimes you actually find. Do not invent issues.
 - If an extension's settings are too complex for a formula (>2000 chars or requires HTTP), note it as "requires serverless function" and skip the formula generation.
 - When multiple queues share the same extension, produce one formula per queue (they may need slight variations if schemas differ).
-- Preserve the exact transformation logic — the formula must produce identical results to the extension it replaces.
+- Preserve the exact transformation logic — the formula must produce identical results to the extension it replaces. "Identical" is measured on real values, not argued from the expression text; a *faithful* port is occasionally not a *literal* one — a sentinel value the two engines disagree about, or a condition that provably never gated anything. Where the two diverge, the observed legacy behaviour is the specification, and the dead intent is a separate decision for the customer.
 - For runtime bumps, do not edit the inline `code` field or rewrite logic you don't need to rewrite. Bump the `runtime` string and only touch the `.py` source when a specific 3.12 incompatibility requires it.
 - **Disable, don't delete.** A deprecated hook whose logic has been migrated stays in the repo with `"active": false`; its forward `"//"` traces are what `test-behavioral-equivalence` uses to attribute regressions. Removing the hook deletes the trace. If a hook was genuinely never used (dead code, no migration target), that's a different axis — `hook_disable_dead_code` — and is also disable-not-delete.
 - **Every migration needs two breadcrumbs.** Forward (`"//"` on the old row) and backward (`# migration-trace:` header on the new formula, or `description:` prefix on the new rule). Missing either direction is treated by `test-behavioral-equivalence` as an untraced migration and degrades its triage to fuzzy name matching.

@@ -28,5 +28,6 @@ Use this knowledge when:
 
 Cross-references:
 - `business-rules-reference` covers the rule/validation *feature*: the native Rule entity, `actions[]`, and FIRE-vs-PASS polarity, plus the legacy Business Rules Validation extension and its own `{field}`-brace expression engine.
+  Its *Porting expressions between engines* section is the one to read before translating any legacy expression into a `trigger_condition` or a formula — the observed defects are all value-semantics mismatches invisible in the source text.
 - `rossum-reference` covers the platform overall.
 - `prd-reference` covers the local file layout and `prd2` push/pull workflow.
