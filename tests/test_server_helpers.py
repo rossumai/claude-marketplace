@@ -560,3 +560,46 @@ def test_json_integrity_type_mismatch_is_a_change():
     out = server._json_integrity({"a": [1]}, {"a": {"x": 1}}, root="settings")
     assert out["verified"] is False
     assert out["changed"] == [{"path": "settings.a", "sent": [1], "landed": {"x": 1}}]
+
+
+# --- _load_json_field: bare array or whole object, errors before any HTTP ---
+
+def _write(tmp_path, name, obj_or_text):
+    p = tmp_path / name
+    if isinstance(obj_or_text, str):
+        p.write_text(obj_or_text, encoding="utf-8")
+    else:
+        p.write_text(json.dumps(obj_or_text), encoding="utf-8")
+    return str(p)
+
+
+def test_load_json_field_bare_array(tmp_path):
+    value, ignored = server._load_json_field(_write(tmp_path, "c.json", _SENT), "content")
+    assert value == _SENT and ignored == []
+
+
+def test_load_json_field_whole_object_reports_ignored_keys(tmp_path):
+    whole = {"id": 1, "name": "S", "queues": [], "url": "u", "content": _SENT, "metadata": {}, "modified_by": "m"}
+    value, ignored = server._load_json_field(_write(tmp_path, "s.json", whole), "content")
+    assert value == _SENT
+    assert ignored == ["id", "name", "queues", "url", "metadata", "modified_by"]  # file order, key excluded
+
+
+@pytest.mark.parametrize("doc,fragment", [
+    ({"id": 1, "name": "S"}, "without a 'content' key"),
+    ({"content": {"not": "a list"}}, "must be a JSON array"),
+    ("42", "JSON array or an object"),
+    ('{"content": [', "not valid JSON"),
+])
+def test_load_json_field_rejects_wrong_shapes(tmp_path, doc, fragment):
+    path = _write(tmp_path, "bad.json", doc)
+    with pytest.raises(server._FileInputError) as exc:
+        server._load_json_field(path, "content")
+    assert fragment in str(exc.value)
+    assert path in str(exc.value)
+
+
+def test_load_json_field_missing_file(tmp_path):
+    with pytest.raises(server._FileInputError) as exc:
+        server._load_json_field(str(tmp_path / "nope.json"), "content")
+    assert "not found" in str(exc.value).lower()

@@ -3837,6 +3837,53 @@ def _json_integrity(sent, landed, *, root="content"):
     return out
 
 
+class _FileInputError(ValueError):
+    """A local-file input the caller must fix. The message is user-facing."""
+
+
+def _load_json_field(path, key, *, bare_type=list):
+    """Read `key` from a local JSON file that is either the bare value or the whole object.
+
+    Returns (value, ignored_keys). A bare `bare_type` document is the value itself. A JSON
+    object yields obj[key] — which must be a `bare_type` — plus every other top-level key
+    in file order, so the caller can report what the file carried that will NOT be sent
+    (e.g. a prd2 schema.json's id/url/queues/name/metadata). Raises _FileInputError with a
+    user-facing message; never touches the network.
+    """
+    import os
+
+    if not os.path.isfile(path):
+        raise _FileInputError(f"File not found: {path}")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise _FileInputError(f"Could not read {path!r}: {exc}") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise _FileInputError(f"{path} is not valid JSON: {exc}") from exc
+
+    if isinstance(data, bare_type):
+        return data, []
+    if isinstance(data, dict):
+        if key not in data:
+            raise _FileInputError(
+                f"{path} is a JSON object without a {key!r} key (keys found: "
+                f"{', '.join(map(repr, data))}). Pass the bare {key} value or the whole object."
+            )
+        if not isinstance(data[key], bare_type):
+            raise _FileInputError(
+                f"{path}: {key!r} must be a JSON {'array' if bare_type is list else 'object'}, "
+                f"got {type(data[key]).__name__}."
+            )
+        return data[key], [k for k in data if k != key]
+    raise _FileInputError(
+        f"{path} must contain a JSON {'array' if bare_type is list else 'object'} or an object "
+        f"with a {key!r} key, got {type(data).__name__}."
+    )
+
+
 def _resolve_hook_code(request_id, arguments):
     """Fold `code_file_path` into the hook config.
 
