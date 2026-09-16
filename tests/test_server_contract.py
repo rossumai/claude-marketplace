@@ -1313,7 +1313,7 @@ def test_validate_schema_builds_body_and_reports_valid(monkeypatch):
         "id": 42,  # schema_id maps to the API's 'id' key (enables engine checks)
     }
     out = emitted_payload(emitted)
-    assert out == {"valid": True, "errors": {}}
+    assert out == {"valid": True, "errors": {}, "source": "inline", "datapoints": 0}
 
 
 def test_validate_schema_surfaces_error_tree(monkeypatch):
@@ -2809,3 +2809,308 @@ def test_patch_annotation_null_metadata_does_not_crash(monkeypatch):
     )
     assert emitted, "handler must emit something rather than raising"
     assert _patched_body(fake)["metadata"] is None
+
+
+# --- schema content: file-path I/O ---
+# 87% of real schemas exceed 1,000 lines; the datapoint tree cannot cross a tool call
+# intact in either direction. rossum_get_schema can write the object to a file and
+# return an envelope; validate/patch can read content back from that file.
+
+SCHEMA_CONTENT = [{"category": "section", "id": "s", "label": "S", "children": [
+    {"category": "datapoint", "id": "f", "label": "F", "type": "string"}]}]
+
+
+def _schema_obj(content=SCHEMA_CONTENT, **over):
+    obj = {"id": 4, "name": "S", "queues": [f"{BASE}/api/v1/queues/7", f"{BASE}/api/v1/queues/8"],
+           "url": f"{BASE}/api/v1/schemas/4", "content": content, "metadata": {},
+           "modified_by": None, "modified_at": "2026-01-01T00:00:00.000000Z"}
+    obj.update(over)
+    return obj
+
+
+def test_get_schema_without_out_file_is_unchanged(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_get_schema", {"schema_id": 4},
+                             lambda url, method, body: _schema_obj())
+    assert emitted_payload(emitted) == _schema_obj()
+
+
+def test_get_schema_out_file_writes_object_and_returns_envelope(monkeypatch, tmp_path):
+    path = str(tmp_path / "nested" / "schema.json")
+    fake, emitted = run_handler(monkeypatch, "rossum_get_schema",
+                                {"schema_id": 4, "out_file_path": path},
+                                lambda url, method, body: _schema_obj())
+    assert fake.calls[0]["url"].endswith("/api/v1/schemas/4")
+    on_disk = json.loads(open(path, encoding="utf-8").read())
+    assert on_disk == _schema_obj()
+    assert list(on_disk) == ["id", "name", "queues", "url", "content", "metadata", "modified_by", "modified_at"]
+    out = emitted_payload(emitted)
+    assert "content" not in out, "the whole point is not to return the tree"
+    assert out == {
+        "id": 4, "name": "S", "queue_ids": [7, 8], "modified_at": "2026-01-01T00:00:00.000000Z",
+        "sections": 1, "datapoints": 1, "written_to": path,
+        "characters": len(open(path, encoding="utf-8").read()),
+        "content_sha256": server._canonical_sha256(SCHEMA_CONTENT),
+    }
+
+
+def test_get_schema_out_file_refuses_to_clobber_a_differing_file(monkeypatch, tmp_path):
+    path = tmp_path / "schema.json"
+    path.write_text('{"edited": true}', encoding="utf-8")
+    _, emitted = run_handler(monkeypatch, "rossum_get_schema",
+                             {"schema_id": 4, "out_file_path": str(path)},
+                             lambda url, method, body: _schema_obj())
+    assert emitted[-1]["result"].get("isError") is True
+    assert "Refusing to overwrite" in emitted[-1]["result"]["content"][0]["text"]
+    assert path.read_text(encoding="utf-8") == '{"edited": true}'
+
+
+def test_get_schema_out_file_write_failure_does_not_fall_back_to_inline(monkeypatch, tmp_path):
+    (tmp_path / "isafile").write_text("x", encoding="utf-8")
+    path = str(tmp_path / "isafile" / "schema.json")     # parent is a file -> OSError
+    _, emitted = run_handler(monkeypatch, "rossum_get_schema",
+                             {"schema_id": 4, "out_file_path": path},
+                             lambda url, method, body: _schema_obj())
+    assert emitted[-1]["result"].get("isError") is True
+    assert '"content"' not in emitted[-1]["result"]["content"][0]["text"]
+
+
+def test_get_schema_stays_read_only():
+    assert server.TOOLS["rossum_get_schema"]["annotations"]["readOnlyHint"] is True
+    assert "out_file_path" in server.TOOLS["rossum_get_schema"]["inputSchema"]["properties"]
+
+
+def _content_file(tmp_path, doc, name="schema.json"):
+    p = tmp_path / name
+    p.write_text(json.dumps(doc) if not isinstance(doc, str) else doc, encoding="utf-8")
+    return str(p)
+
+
+@pytest.mark.parametrize("doc", [SCHEMA_CONTENT, _schema_obj()], ids=["bare-array", "whole-object"])
+def test_validate_schema_reads_content_from_file_in_either_shape(monkeypatch, tmp_path, doc):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content_file_path": _content_file(tmp_path, doc), "schema_id": 4},
+        lambda url, method, body: {},
+    )
+    assert fake.calls[0]["body"] == {"content": SCHEMA_CONTENT, "id": 4}
+    out = emitted_payload(emitted)
+    assert out["valid"] is True and out["source"] == "file" and out["datapoints"] == 1
+
+
+def test_validate_schema_whole_object_file_reports_ignored_keys(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content_file_path": _content_file(tmp_path, _schema_obj()), "schema_id": 4},
+        lambda url, method, body: {},
+    )
+    out = emitted_payload(emitted)
+    assert out["ignored_keys"] == ["id", "name", "queues", "url", "metadata", "modified_by", "modified_at"]
+
+
+def test_validate_schema_does_not_infer_schema_id_from_the_file(monkeypatch, tmp_path):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content_file_path": _content_file(tmp_path, _schema_obj(id=999))},
+        lambda url, method, body: {},
+    )
+    assert "id" not in fake.calls[0]["body"], "a prd2 file's id belongs to ITS environment"
+
+
+@pytest.mark.parametrize("args", [
+    {},                                                    # neither
+    {"content": SCHEMA_CONTENT, "content_file_path": "x"},  # both
+], ids=["neither", "both"])
+def test_validate_schema_requires_exactly_one_content_source(monkeypatch, args):
+    fake, emitted = run_handler(monkeypatch, "rossum_validate_schema", {**args, "schema_id": 4},
+                                lambda url, method, body: {})
+    assert emitted[-1]["result"].get("isError") is True
+    assert fake.calls == [], "argument errors must be raised before any HTTP call"
+
+
+@pytest.mark.parametrize("tool,extra", [
+    ("rossum_validate_schema", {}),
+    ("rossum_patch_schema", {"schema_id": 4}),
+])
+def test_content_file_path_errors_before_any_call(monkeypatch, tmp_path, tool, extra):
+    for doc in ({"id": 1}, '{"content": [', "[]"):
+        fake, emitted = run_handler(monkeypatch, tool,
+                                    {**extra, "content_file_path": _content_file(tmp_path, doc)},
+                                    lambda url, method, body: {})
+        assert emitted[-1]["result"].get("isError") is True, doc
+        assert fake.calls == [], doc
+    fake, emitted = run_handler(monkeypatch, tool,
+                                {**extra, "content_file_path": str(tmp_path / "nope.json")},
+                                lambda url, method, body: {})
+    assert emitted[-1]["result"].get("isError") is True and fake.calls == []
+
+
+def test_empty_content_from_file_is_refused_but_inline_is_allowed(monkeypatch, tmp_path):
+    fake, emitted = run_handler(monkeypatch, "rossum_validate_schema",
+                                {"content_file_path": _content_file(tmp_path, [])},
+                                lambda url, method, body: {})
+    assert emitted[-1]["result"].get("isError") is True
+    assert "content: []" in emitted[-1]["result"]["content"][0]["text"]
+    assert fake.calls == []
+    fake, _ = run_handler(monkeypatch, "rossum_validate_schema", {"content": []},
+                          lambda url, method, body: {})
+    assert fake.calls[0]["body"] == {"content": []}, "inline [] is the deliberate escape hatch"
+
+
+def _schema_echo(landed=None, **over):
+    """Responder: PATCH returns the schema with content echoing what was sent, unless
+    `landed` forces a different tree (to simulate the API normalising or dropping keys)."""
+    def responder(url, method, body):
+        sent = (body or {}).get("content")
+        return _schema_obj(content=landed if landed is not None else sent, **over)
+    return responder
+
+
+def _landed_with_defaults(content):
+    """What the API really hands back for SCHEMA_CONTENT: the same tree plus injected defaults."""
+    landed = copy.deepcopy(content)
+    landed[0]["icon"] = None
+    landed[0]["children"][0] = {"rir_field_names": [], "default_value": None, **landed[0]["children"][0]}
+    return landed
+
+
+def test_patch_schema_reads_content_from_file_and_strips_content_from_echo(monkeypatch, tmp_path):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, SCHEMA_CONTENT)},
+        _schema_echo(),
+    )
+    assert fake.calls[0]["method"] == "PATCH"
+    assert fake.calls[0]["body"] == {"content": SCHEMA_CONTENT}
+    out = emitted_payload(emitted)
+    assert "content" not in out["schema"]
+    assert out["schema"]["id"] == 4
+    ci = out["content_integrity"]
+    assert ci["verified"] is True
+    assert ci["sent_sha256"] == ci["landed_sha256"] == server._canonical_sha256(SCHEMA_CONTENT)
+    assert ci["sent_datapoints"] == ci["landed_datapoints"] == 1
+    assert "injected_defaults" not in ci and "dropped" not in ci and "ignored_keys" not in ci
+
+
+def test_patch_schema_whole_object_file_sends_content_only_and_reports_ignored_keys(monkeypatch, tmp_path):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, _schema_obj(name="EDITED IN FILE"))},
+        _schema_echo(),
+    )
+    assert fake.calls[0]["body"] == {"content": SCHEMA_CONTENT}, "name/metadata from the file are NOT sent"
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["ignored_keys"] == ["id", "name", "queues", "url", "metadata", "modified_by", "modified_at"]
+
+
+def test_patch_schema_inline_name_travels_alongside_file_content(monkeypatch, tmp_path):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "name": "New", "content_file_path": _content_file(tmp_path, SCHEMA_CONTENT)},
+        _schema_echo(),
+    )
+    assert fake.calls[0]["body"] == {"name": "New", "content": SCHEMA_CONTENT}
+
+
+def test_patch_schema_injected_defaults_verify_with_a_note(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, SCHEMA_CONTENT)},
+        _schema_echo(landed=_landed_with_defaults(SCHEMA_CONTENT)),
+    )
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["verified"] is True
+    assert ci["injected_defaults"] == {"icon": 1, "rir_field_names": 1, "default_value": 1}
+    assert "normal" in ci["note"]
+    assert emitted[-1]["result"].get("isError") is not True
+
+
+def test_patch_schema_dropped_key_is_loud_but_not_an_error(monkeypatch, tmp_path):
+    sent = copy.deepcopy(SCHEMA_CONTENT)
+    sent[0]["children"][0]["hiden"] = True                     # typo the API will discard
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, sent)},
+        _schema_echo(landed=_landed_with_defaults(SCHEMA_CONTENT)),
+    )
+    assert emitted[-1]["result"].get("isError") is not True, "the write landed; a retry would not help"
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["verified"] is False
+    assert ci["dropped"] == ["content[0].children[0].hiden"]
+    assert "do NOT retry" in ci["note"]
+
+
+def test_patch_schema_inline_content_also_gets_the_readback(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                             {"schema_id": 4, "content": SCHEMA_CONTENT}, _schema_echo())
+    out = emitted_payload(emitted)
+    assert out["content_integrity"]["verified"] is True and "content" not in out["schema"]
+
+
+def test_patch_schema_without_content_keeps_the_bare_response(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                             {"schema_id": 4, "name": "Renamed"}, _schema_echo(name="Renamed"))
+    out = emitted_payload(emitted)
+    assert "content_integrity" not in out and out["name"] == "Renamed"
+
+
+def test_patch_schema_response_without_content_list_is_unverified(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                             {"schema_id": 4, "content": SCHEMA_CONTENT},
+                             lambda url, method, body: {"id": 4, "name": "S"})
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["verified"] is False and ci["landed_sha256"] is None
+    assert ci["sent_datapoints"] == 1
+    assert ci["landed_datapoints"] is None
+    assert emitted[-1]["result"].get("isError") is not True, "write landed; not an error"
+
+
+# --- final-review fix wave ---
+
+def test_patch_schema_explicit_null_content_is_refused_not_swallowed(monkeypatch):
+    """arguments.get('content') returns None both when content is omitted and when it is
+    explicitly null. Before content_file_path existed, an explicit null reached the API
+    and got its own clear 400. Now it must not be silently treated as 'no content' —
+    especially alongside `name`, where a silent drop would let the rename through while
+    the caller never learns their content argument was ignored."""
+    fake, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                                {"schema_id": 4, "name": "Renamed", "content": None},
+                                _schema_echo())
+    assert fake.calls == []
+    assert emitted[-1]["result"].get("isError") is True
+    assert "null" in emitted[-1]["result"]["content"][0]["text"]
+
+
+def test_patch_schema_failed_write_fabricates_no_success_payload(monkeypatch):
+    # The responder returns None: the real _http_request already emitted its own error
+    # (e.g. a non-2xx). The handler must not layer a fabricated success/content_integrity
+    # payload on top of that.
+    fake, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                                {"schema_id": 4, "content": SCHEMA_CONTENT},
+                                lambda url, method, body: None)
+    assert fake.calls[0]["url"].endswith("/api/v1/schemas/4")
+    assert emitted == []
+
+
+def test_patch_schema_file_id_mismatch_warns_in_content_integrity(monkeypatch, tmp_path):
+    # A file pulled from schema A used to patch schema B: the tree that lands is A's, but
+    # verified:true reported nothing wrong. file_id surfaces the mismatch.
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, _schema_obj(id=999))},
+        _schema_echo(),
+    )
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["file_id"] == 999
+    assert "999" in ci["note"] and "4" in ci["note"]
+    assert ci["verified"] is True    # the write landed intact; the warning is separate
+
+
+def test_patch_schema_file_id_matching_schema_id_has_no_warning(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, _schema_obj(id=4))},
+        _schema_echo(),
+    )
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert "file_id" not in ci
+    assert "note" not in ci

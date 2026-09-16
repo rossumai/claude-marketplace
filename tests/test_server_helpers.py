@@ -493,3 +493,247 @@ def test_walk_compact_default_shape_unchanged():
     assert fields["invoice_id"] == {"value": "INV-1", "src": "human"}
     assert tables["line_items"]["rows"][0]["item_desc"] == {"value": "Widget", "src": "human"}
     assert "_row_id" not in tables["line_items"]["rows"][0]
+
+
+# --- schema content file-path I/O: canonical hash + structural integrity diff ---
+# The API injects default keys on write (rir_field_names, default_value, section icon)
+# and silently DROPS keys it does not know, so a write's integrity is "everything sent
+# is present and equal in what landed" — extras are reported, not failed.
+
+_MIN_DP = {"category": "datapoint", "id": "f", "label": "F", "type": "string"}
+_SENT = [{"category": "section", "id": "s", "label": "S", "children": [dict(_MIN_DP)]}]
+
+
+def _landed_like_api(sent):
+    """What the API hands back for _SENT: same content plus the defaults it adds."""
+    import copy
+    landed = copy.deepcopy(sent)
+    landed[0]["icon"] = None
+    landed[0]["children"][0] = {"rir_field_names": [], "default_value": None, **landed[0]["children"][0]}
+    return landed
+
+
+def test_canonical_sha256_ignores_key_order_and_float_spelling():
+    a = {"b": 1.0, "a": [1, {"y": 2, "x": 3}]}
+    b = {"a": [1, {"x": 3, "y": 2}], "b": 1.0}
+    assert server._canonical_sha256(a) == server._canonical_sha256(b)
+    assert len(server._canonical_sha256(a)) == 64
+
+
+def test_json_integrity_identical_is_verified_with_no_extras():
+    out = server._json_integrity(_SENT, _SENT)
+    assert out["verified"] is True
+    assert out["sent_sha256"] == out["landed_sha256"] == server._canonical_sha256(_SENT)
+    assert "injected_defaults" not in out and "dropped" not in out and "changed" not in out
+
+
+def test_json_integrity_injected_defaults_still_verify():
+    out = server._json_integrity(_SENT, _landed_like_api(_SENT))
+    assert out["verified"] is True
+    assert out["injected_defaults"] == {"icon": 1, "rir_field_names": 1, "default_value": 1}
+    assert out["sent_sha256"] != out["landed_sha256"]
+
+
+def test_json_integrity_dropped_key_fails_with_path():
+    import copy
+    sent = copy.deepcopy(_SENT)
+    sent[0]["children"][0]["x_unknown_key"] = 1
+    out = server._json_integrity(sent, _landed_like_api(_SENT))
+    assert out["verified"] is False
+    assert out["dropped"] == ["content[0].children[0].x_unknown_key"]
+    assert "changed" not in out
+
+
+def test_json_integrity_changed_scalar_and_list_length():
+    import copy
+    landed = copy.deepcopy(_SENT)
+    landed[0]["children"][0]["label"] = "G"
+    landed[0]["children"].append(dict(_MIN_DP, id="extra"))
+    out = server._json_integrity(_SENT, landed)
+    assert out["verified"] is False
+    assert {"path": "content[0].children", "sent_length": 1, "landed_length": 2} in out["changed"]
+    # length mismatch stops recursion into that list, so the label change is NOT reported
+    assert not any(c.get("path") == "content[0].children[0].label" for c in out["changed"])
+
+
+def test_json_integrity_type_mismatch_is_a_change():
+    # A container-vs-container type mismatch (list vs dict) is summarised, not inlined —
+    # see test_json_integrity_container_mismatch_is_compact below for the reason why.
+    out = server._json_integrity({"a": [1]}, {"a": {"x": 1}}, root="settings")
+    assert out["verified"] is False
+    assert out["changed"] == [
+        {
+            "path": "settings.a",
+            "sent_type": "list",
+            "sent_size": 1,
+            "landed_type": "dict",
+            "landed_size": 1,
+        }
+    ]
+
+
+def test_json_integrity_scalar_mismatch_keeps_inline_values():
+    out = server._json_integrity({"a": 1, "b": "x"}, {"a": 2, "b": "y"}, root="settings")
+    assert out["verified"] is False
+    assert {"path": "settings.a", "sent": 1, "landed": 2} in out["changed"]
+    assert {"path": "settings.b", "sent": "x", "landed": "y"} in out["changed"]
+
+
+def test_json_integrity_container_mismatch_is_compact():
+    # A multivalue's `children` sent as a list but landed as a dict (or vice versa) used
+    # to inline both whole sub-trees into `changed` — for a large multivalue that alone
+    # can dwarf the rest of the response. The branch must instead summarise: type + size
+    # on each side, no sub-tree content.
+    big_list = [{"id": str(i), "value": i} for i in range(30)]
+    big_dict = {"category": "tuple", "children": list(big_list)}
+    out = server._json_integrity({"a": big_list}, {"a": big_dict}, root="settings")
+    assert out["verified"] is False
+    entry = out["changed"][0]
+    assert entry["path"] == "settings.a"
+    assert entry["sent_type"] == "list" and entry["sent_size"] == 30
+    assert entry["landed_type"] == "dict" and entry["landed_size"] == 2
+    assert "sent" not in entry and "landed" not in entry
+    # the whole result — not just this entry — must stay compact
+    assert len(json.dumps(out)) < 800
+
+
+# --- _load_json_field: bare array or whole object, errors before any HTTP ---
+
+def _write(tmp_path, name, obj_or_text):
+    p = tmp_path / name
+    if isinstance(obj_or_text, str):
+        p.write_text(obj_or_text, encoding="utf-8")
+    else:
+        p.write_text(json.dumps(obj_or_text), encoding="utf-8")
+    return str(p)
+
+
+def test_load_json_field_bare_array(tmp_path):
+    value, ignored, file_id = server._load_json_field(_write(tmp_path, "c.json", _SENT), "content")
+    assert value == _SENT and ignored == [] and file_id is None
+
+
+def test_load_json_field_whole_object_reports_ignored_keys(tmp_path):
+    whole = {"id": 1, "name": "S", "queues": [], "url": "u", "content": _SENT, "metadata": {}, "modified_by": "m"}
+    value, ignored, file_id = server._load_json_field(_write(tmp_path, "s.json", whole), "content")
+    assert value == _SENT
+    assert ignored == ["id", "name", "queues", "url", "metadata", "modified_by"]  # file order, key excluded
+    assert file_id == 1
+
+
+@pytest.mark.parametrize("doc,fragment", [
+    ({"id": 1, "name": "S"}, "without a 'content' key"),
+    ({"content": {"not": "a list"}}, "must be a JSON array"),
+    ("42", "JSON array or an object"),
+    ('{"content": [', "not valid JSON"),
+])
+def test_load_json_field_rejects_wrong_shapes(tmp_path, doc, fragment):
+    path = _write(tmp_path, "bad.json", doc)
+    with pytest.raises(server._FileInputError) as exc:
+        server._load_json_field(path, "content")
+    assert fragment in str(exc.value)
+    assert path in str(exc.value)
+
+
+def test_load_json_field_missing_file(tmp_path):
+    with pytest.raises(server._FileInputError) as exc:
+        server._load_json_field(str(tmp_path / "nope.json"), "content")
+    assert "not found" in str(exc.value).lower()
+
+
+def test_load_json_field_rejects_duplicate_key_in_a_nested_object(tmp_path):
+    # A copy-paste slip inside a datapoint: json.loads would silently keep only the LAST
+    # "id", so the duplicate never reaches the caller — reject it instead.
+    text = (
+        '{"content": [{"category": "section", "id": "s", "children": ['
+        '{"category": "datapoint", "id": "f", "id": "g", "type": "string"}]}]}'
+    )
+    path = _write(tmp_path, "dup.json", text)
+    with pytest.raises(server._FileInputError) as exc:
+        server._load_json_field(path, "content")
+    assert "duplicate key" in str(exc.value)
+    assert "'id'" in str(exc.value)
+
+
+def test_load_json_field_strips_utf8_bom(tmp_path):
+    path = tmp_path / "bom.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(_SENT).encode("utf-8"))
+    value, ignored, file_id = server._load_json_field(str(path), "content")
+    assert value == _SENT and ignored == [] and file_id is None
+
+
+# --- _count_datapoints + _write_json_file ---
+
+def test_count_datapoints_handles_multivalue_tuple_children():
+    content = [{"category": "section", "id": "s", "children": [
+        {"category": "datapoint", "id": "a", "type": "string"},
+        {"category": "multivalue", "id": "mv", "children": {          # a dict, not a list
+            "category": "tuple", "id": "t", "children": [
+                {"category": "datapoint", "id": "b", "type": "string"},
+                {"category": "datapoint", "id": "c", "type": "number"}]}},
+    ]}]
+    assert server._count_datapoints(content) == 3
+    assert server._count_datapoints([]) == 0
+    assert server._count_datapoints(None) == 0
+
+
+def test_count_datapoints_scalar_children_never_raises():
+    # A caller-supplied file can have malformed `children`; a scalar must contribute 0
+    # rather than raising (previously: `for node in nodes or ()` blew up with
+    # "'int' object is not iterable").
+    content = [{"category": "datapoint", "id": "f", "children": 5}]
+    assert server._count_datapoints(content) == 1  # the datapoint itself still counts
+    assert server._count_datapoints(5) == 0
+    assert server._count_datapoints(5.5) == 0
+    assert server._count_datapoints(True) == 0
+
+
+def test_count_datapoints_string_children_not_iterated_as_chars():
+    # A string is iterable in Python, so `children: "abc"` used to silently walk its
+    # characters (each skipped since a str isn't a dict) instead of being rejected as
+    # the wrong shape outright — contributes 0, and a top-level string never counts
+    # characters as nodes.
+    content = [{"category": "datapoint", "id": "f", "children": "abc"}]
+    assert server._count_datapoints(content) == 1
+    assert server._count_datapoints("abc") == 0
+    assert server._count_datapoints("") == 0
+
+
+def test_write_json_file_preserves_key_order_and_unicode(tmp_path):
+    obj = {"id": 1, "name": "Číslo ✓", "content": [{"category": "section", "id": "s"}]}
+    path = str(tmp_path / "out" / "schema.json")          # parent dir does not exist yet
+    n = server._write_json_file(path, obj)
+    text = open(path, encoding="utf-8").read()
+    assert n == len(text)
+    assert text == json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+    assert text.index('"id"') < text.index('"name"') < text.index('"content"')   # API order, not sorted
+    assert "Číslo ✓" in text                                                       # not \u-escaped
+
+
+def test_write_json_file_rewrites_identical_file(tmp_path):
+    obj = {"a": 1, "b": [1, 2]}
+    path = str(tmp_path / "s.json")
+    (tmp_path / "s.json").write_text('{"b": [1, 2], "a": 1}', encoding="utf-8")   # same object, other order
+    server._write_json_file(path, obj)
+    assert json.loads(open(path, encoding="utf-8").read()) == obj
+
+
+def test_write_json_file_bom_in_existing_file_does_not_look_different(tmp_path):
+    # A file saved by a Windows editor carries a UTF-8 BOM. Without utf-8-sig on the
+    # existing-file check, a byte-identical object reads as "different" and the write is
+    # refused — even though nothing would actually change on disk.
+    obj = {"a": 1, "b": [1, 2]}
+    path = tmp_path / "s.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(obj).encode("utf-8"))
+    server._write_json_file(str(path), obj)                # must NOT raise
+    assert json.loads(open(path, encoding="utf-8-sig").read()) == obj
+
+
+@pytest.mark.parametrize("existing", ['{"a": 2}', "not json at all"])
+def test_write_json_file_refuses_to_overwrite_a_differing_file(tmp_path, existing):
+    path = tmp_path / "s.json"
+    path.write_text(existing, encoding="utf-8")
+    with pytest.raises(server._FileInputError) as exc:
+        server._write_json_file(str(path), {"a": 1})
+    assert "Refusing to overwrite" in str(exc.value)
+    assert path.read_text(encoding="utf-8") == existing, "must not touch the file"

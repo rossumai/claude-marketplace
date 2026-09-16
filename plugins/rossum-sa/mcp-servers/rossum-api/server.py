@@ -210,7 +210,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.39.0"
+_SERVER_VERSION = "0.40.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -763,13 +763,21 @@ def _mdh_call(request_id, path, *, method="GET", body=None):
         tool_result(request_id, json.dumps(result, indent=2))
 
 
-def _rossum_get(request_id, path):
-    """GET a single Rossum API resource and return it as JSON."""
+def _rossum_get(request_id, path, *, format_result=None):
+    """GET a single Rossum API resource and return it as JSON.
+
+    `format_result` lets a caller render the response itself (e.g. write it to a file
+    and return an envelope) instead of emitting the bare object.
+    """
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
     result = _http_request(request_id, f"{base_url}{path}")
-    if result is not None:
+    if result is None:
+        return
+    if format_result is not None:
+        format_result(result)
+    else:
         tool_result(request_id, json.dumps(result, indent=2))
 
 
@@ -1002,6 +1010,27 @@ TOOLS = {}
 HANDLERS = {}
 
 
+# Tool annotations describe the effect on the Rossum ORGANISATION — the upstream
+# objects — and nothing else. They drive the host's permission prompt, so the
+# question they answer is "can calling this change the customer's configuration or
+# data?", NOT "does this touch the local disk".
+#
+#   _READ_ONLY    nothing upstream changes. A POST qualifies when it is a pure
+#                 dry-run, preview or search (rossum_validate_schema,
+#                 rossum_render_email_template, rossum_search_annotations).
+#                 Writing a LOCAL file also qualifies, and always has:
+#                 rossum_get_annotation and rossum_get_automation_insights /
+#                 _projections write .rossum-cache/ dumps, and rossum_get_schema's
+#                 out_file_path writes a caller-named file — all _READ_ONLY.
+#   _WRITE        creates or modifies an upstream object.
+#   _DESTRUCTIVE  deletes an upstream object, or changes it irreversibly.
+#
+# So do NOT re-annotate a tool because it writes locally: that is not what these
+# track, several shipped tools already rely on the distinction, and demoting a
+# read tool to _WRITE makes every ordinary fetch prompt for write permission.
+# (MCP spells readOnlyHint as "does not modify its environment"; this server has
+# always read "environment" as the Rossum org. Local files are the caller's own
+# machine, and are only ever written to a path the caller explicitly asked for.)
 _READ_ONLY = {"readOnlyHint": True}
 _WRITE = {"readOnlyHint": False, "destructiveHint": False}
 _DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
@@ -3778,6 +3807,335 @@ _CODE_FILE_PATH_DOC = (
 )
 
 
+# --- JSON object fields to/from local files (schema content; hook settings later) ---
+# A 2xx does not prove the bytes landed. For JSON fields the API normalises on write —
+# it injects default keys and silently drops unknown ones — so equality is the wrong
+# check: the right one is "everything sent is present and equal in what landed", with
+# the API's additions reported separately. Canonical JSON is used only for hashing.
+
+
+def _canonical_sha256(obj):
+    """sha256 of canonical JSON (sorted keys, no whitespace) — stable across key order."""
+    text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _json_integrity(sent, landed, *, root="content"):
+    """Structural sent-vs-landed comparison of two parsed JSON values.
+
+    dropped  — paths present in `sent` but absent in `landed` (the API discarded them)
+    changed  — paths whose value differs; a list-length mismatch is reported once at the
+               list's path and not recursed into. When the mismatch is between two
+               containers (e.g. a list vs a dict at the same path), the entry carries
+               each side's type and size instead of inlining the sub-trees — a caller
+               most needs this branch to stay small exactly when the mismatch is big.
+    injected_defaults — keys present only in `landed`, counted by key name (normal: the
+               API adds defaults such as rir_field_names / default_value)
+    verified — no dropped and no changed. Injected keys do NOT fail verification.
+    """
+    dropped, changed, injected = [], [], {}
+
+    def walk(s, l, path):
+        if isinstance(s, dict) and isinstance(l, dict):
+            for key, value in s.items():
+                if key not in l:
+                    dropped.append(f"{path}.{key}")
+                else:
+                    walk(value, l[key], f"{path}.{key}")
+            for key in l:
+                if key not in s:
+                    injected[key] = injected.get(key, 0) + 1
+        elif isinstance(s, list) and isinstance(l, list):
+            if len(s) != len(l):
+                changed.append({"path": path, "sent_length": len(s), "landed_length": len(l)})
+            else:
+                for i, (a, b) in enumerate(zip(s, l)):
+                    walk(a, b, f"{path}[{i}]")
+        elif s != l:
+            if isinstance(s, (dict, list)) or isinstance(l, (dict, list)):
+                changed.append(
+                    {
+                        "path": path,
+                        "sent_type": type(s).__name__,
+                        "sent_size": len(s) if isinstance(s, (dict, list)) else None,
+                        "landed_type": type(l).__name__,
+                        "landed_size": len(l) if isinstance(l, (dict, list)) else None,
+                    }
+                )
+            else:
+                changed.append({"path": path, "sent": s, "landed": l})
+
+    walk(sent, landed, root)
+    out = {
+        "verified": not dropped and not changed,
+        "sent_sha256": _canonical_sha256(sent),
+        "landed_sha256": _canonical_sha256(landed),
+    }
+    if injected:
+        out["injected_defaults"] = injected
+    if dropped:
+        out["dropped"] = dropped
+    if changed:
+        out["changed"] = changed
+    return out
+
+
+class _FileInputError(ValueError):
+    """A local-file input the caller must fix. The message is user-facing."""
+
+
+def _load_json_field(path, key):
+    """Read `key` from a local JSON file that is either a bare JSON array or a wrapper
+    object carrying that array under `key`.
+
+    Returns (value, ignored_keys, file_id). A bare JSON array is the value itself (file_id
+    is None). A JSON object yields obj[key] — which must be a JSON array — plus every other
+    top-level key in file order, so the caller can report what the file carried that will
+    NOT be sent (e.g. a prd2 schema.json's id/url/queues/name/metadata) — and the object's
+    own top-level 'id' (or None if it has none), so a caller can flag a file that was pulled
+    from a different object than the one being written. Reads with utf-8-sig, so a UTF-8 BOM
+    (common from Windows editors) is stripped transparently and is a no-op when absent. A key
+    repeated within one JSON object silently keeps only the LAST occurrence per the JSON
+    spec, which can hide a copy-paste slip inside a nested datapoint — that is rejected
+    instead of silently accepted. Raises _FileInputError with a user-facing message; never
+    touches the network.
+
+    List-only by design: `isinstance(data, bare_type)` is checked before the whole-object
+    branch, which is unambiguous only when the bare value is a list — a bare-object field
+    (e.g. future hook settings) would match a wrapper object on the FIRST branch and never
+    reach the key lookup, silently returning the whole wrapper with no warning. Don't
+    re-add a `bare_type=dict` flag to reuse this helper for such a field; give it its own
+    disambiguation rule (e.g. a required marker key, or a caller-supplied predicate)
+    instead.
+    """
+    import os
+
+    if not os.path.isfile(path):
+        raise _FileInputError(f"File not found: {path}")
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise _FileInputError(f"Could not read {path!r}: {exc}") from exc
+
+    def _reject_duplicate_keys(pairs):
+        seen = set()
+        for k, _v in pairs:
+            if k in seen:
+                raise _FileInputError(
+                    f"{path}: duplicate key {k!r} in a JSON object — the JSON spec keeps "
+                    "only the last occurrence silently, which can hide a copy-paste slip; "
+                    "fix the file and remove the repeat."
+                )
+            seen.add(k)
+        return dict(pairs)
+
+    try:
+        data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except _FileInputError:
+        raise
+    except ValueError as exc:
+        raise _FileInputError(f"{path} is not valid JSON: {exc}") from exc
+
+    if isinstance(data, list):
+        return data, [], None
+    if isinstance(data, dict):
+        if key not in data:
+            raise _FileInputError(
+                f"{path} is a JSON object without a {key!r} key (keys found: "
+                f"{', '.join(map(repr, data))}). Pass the bare {key} value or the whole object."
+            )
+        if not isinstance(data[key], list):
+            raise _FileInputError(
+                f"{path}: {key!r} must be a JSON array, got {type(data[key]).__name__}."
+            )
+        return data[key], [k for k in data if k != key], data.get("id")
+    raise _FileInputError(
+        f"{path} must contain a JSON array or an object with a {key!r} key, "
+        f"got {type(data).__name__}."
+    )
+
+
+def _count_datapoints(nodes):
+    """Count category=='datapoint' nodes in a schema content tree.
+
+    A multivalue's `children` is a single tuple object, not a list — normalise it.
+    `nodes` is caller-controlled (it can come straight from a local JSON file), so
+    anything that is not a list or a dict — including a string, which Python would
+    otherwise iterate character-by-character — contributes 0 rather than raising or
+    silently miscounting.
+    """
+    if isinstance(nodes, dict):
+        nodes = [nodes]
+    elif not isinstance(nodes, list):
+        return 0
+    count = 0
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("category") == "datapoint":
+            count += 1
+        count += _count_datapoints(node.get("children"))
+    return count
+
+
+def _write_json_file(path, obj):
+    """Write `obj` as editable JSON: indent=2, API key order (NOT sorted), UTF-8 as-is.
+
+    Unlike the .rossum-cache/ dumps this file is an edit buffer, so it must stay
+    readable and diffable against a prd2 schema.json — hence no sort_keys. Refuses to
+    overwrite a file whose parsed content differs (unsaved local edits, or the remote
+    moved since it was pulled — indistinguishable here); an identical file is rewritten.
+    The existing-file check reads with utf-8-sig so a UTF-8 BOM does not make an
+    identical file look different. Returns the number of characters written. Raises
+    _FileInputError on the refusal and OSError on a write failure.
+    """
+    import os
+
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                existing = json.load(fh)
+        except (OSError, ValueError):
+            existing = object()  # unparseable counts as different
+        if existing != obj:
+            raise _FileInputError(
+                f"Refusing to overwrite {path}: it exists and differs from the remote object. "
+                "Either it holds unsaved local edits, or the remote changed since it was "
+                "pulled — this tool cannot tell which. Pass another path or delete the file."
+            )
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    text = json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return len(text)
+
+
+def _resolve_schema_content(request_id, arguments, *, require):
+    """Fold `content_file_path` into a schema tool's `content`.
+
+    Returns (content, source, ignored_keys, file_id, ok). `source` is "inline" or "file"
+    (None when this call carries no content), `ignored_keys` lists top-level keys a
+    whole-object file carried that will NOT be sent, `file_id` is that whole-object file's
+    own top-level 'id' (None for a bare-array file, an inline call, or no content at all —
+    it is never inferred as the schema_id being acted on, only surfaced so a caller can
+    flag a mismatch), and ok=False means an error was already emitted. `require=True`
+    enforces exactly one of content / content_file_path. Every error here fires before any
+    HTTP call. A file resolving to [] is refused: the API accepts [] and empties the
+    schema — pass content: [] inline when that is really the intent. An explicit
+    `content: null` is also refused here rather than sent through: without this check it
+    is indistinguishable from content being omitted, so a caller's null is silently
+    dropped instead of reaching the API's own "may not be null" error.
+    """
+    if "content" in arguments and arguments["content"] is None:
+        tool_result(
+            request_id,
+            "content: null is not a valid schema tree and was not sent. Omitting content "
+            "entirely leaves the schema's content unchanged; pass content: [] (inline) if "
+            "you mean to empty the schema.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    inline = arguments.get("content")
+    path = arguments.get("content_file_path")
+    if inline is not None and path is not None:
+        tool_result(
+            request_id,
+            "Provide either content or content_file_path, not both — they set the same field "
+            "and the intended source is ambiguous.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    if path is None:
+        if inline is None and require:
+            tool_result(
+                request_id,
+                "Provide exactly one of content (inline) or content_file_path (a local file "
+                "holding the bare content array or the whole schema object).",
+                is_error=True,
+            )
+            return None, None, [], None, False
+        return inline, ("inline" if inline is not None else None), [], None, True
+    try:
+        content, ignored, file_id = _load_json_field(path, "content")
+    except _FileInputError as exc:
+        tool_result(request_id, str(exc), is_error=True)
+        return None, None, [], None, False
+    if not content:
+        tool_result(
+            request_id,
+            f"{path} resolves to an empty content list. The API accepts [] — validate passes "
+            "it and patch EMPTIES the schema — so a file is refused. Pass content: [] inline "
+            "if that is really the intent.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    return content, "file", ignored, file_id, True
+
+
+def _emit_schema_write_result(request_id, result, sent_content, *, ignored_keys,
+                               file_id=None, schema_id=None):
+    """Emit a schema PATCH response with a structural readback of the content that landed.
+
+    Measured behaviour this encodes: an already-normalised tree round-trips exactly; the
+    API injects defaults (rir_field_names, default_value, section icon) — reported, not
+    failed; unknown keys are silently DROPPED and validate does not catch them — reported
+    as verified:false. The echoed schema has `content` stripped (returning it would defeat
+    the file path). verified:false is NOT is_error: the write landed, and a retry would
+    land the same way.
+
+    `file_id` is the content file's own top-level 'id' (from a whole-object file), and
+    `schema_id` is the schema actually being patched. schema_id is NEVER inferred from
+    file_id — _resolve_schema_content already refuses that — but when file_id is an int
+    and differs from schema_id, that is surfaced here as content_integrity.file_id plus a
+    warning note: verified:true proves the sent content landed intact, not that it was the
+    right schema's content to send.
+    """
+    schema = {k: v for k, v in result.items() if k != "content"}
+    landed = result.get("content")
+    if isinstance(landed, list):
+        integrity = _json_integrity(sent_content, landed)
+        integrity["sent_datapoints"] = _count_datapoints(sent_content)
+        integrity["landed_datapoints"] = _count_datapoints(landed)
+    else:
+        integrity = {
+            "verified": False,
+            "sent_sha256": _canonical_sha256(sent_content),
+            "landed_sha256": None,
+            "sent_datapoints": _count_datapoints(sent_content),
+            "landed_datapoints": None,
+        }
+    if ignored_keys:
+        integrity["ignored_keys"] = ignored_keys
+    notes = []
+    if not integrity["verified"]:
+        notes.append(
+            "The schema WAS updated, but what landed is not what was sent — do NOT retry, the "
+            "same content would land the same way. The API silently drops keys it does not know "
+            "and rossum_validate_schema does not catch them: check 'dropped' and 'changed', fix "
+            "the content, and patch again. If landed_sha256 is null the response carried no "
+            "content list at all — re-read the schema with rossum_get_schema before assuming "
+            "anything about what is stored."
+        )
+    elif integrity.get("injected_defaults"):
+        notes.append(
+            "Content landed intact. The API added default keys (listed in injected_defaults); "
+            "this is normal."
+        )
+    if isinstance(file_id, int) and file_id != schema_id:
+        integrity["file_id"] = file_id
+        notes.append(
+            f"The content file's own id ({file_id}) differs from the schema_id being patched "
+            f"({schema_id}) — this looks like a file pulled from a different schema, so the "
+            "content sent may not be the tree you meant to send."
+        )
+    if notes:
+        integrity["note"] = " ".join(notes)
+    tool_result(request_id, json.dumps(
+        {"schema": schema, "content_integrity": integrity}, indent=2))
+
+
 def _resolve_hook_code(request_id, arguments):
     """Fold `code_file_path` into the hook config.
 
@@ -5079,8 +5437,19 @@ def handle_list_rule_execution_logs(request_id, arguments):
 
 @_tool(
     "rossum_get_schema",
-    "Retrieves the full schema definition of a queue. The schema defines all datapoints "
-    "(fields), sections, multivalue (table) structures, and their validation rules.",
+    "Retrieves the full schema definition of a queue: all datapoints (fields), sections, "
+    "multivalue (table) structures and their validation rules. Real schemas are LARGE — most "
+    "exceed 1,000 lines of JSON — so pass out_file_path to write the whole schema object to a "
+    "local file and get back only an envelope (id, name, queue_ids, modified_at, "
+    "sections/datapoints counts, written_to, characters, content_sha256). The file keeps the "
+    "API's key order, is directly usable as content_file_path for rossum_validate_schema / "
+    "rossum_patch_schema, and has the same shape as a prd2 schema.json. Edit the file "
+    "locally, then validate and patch from it. The tool REFUSES to overwrite an existing "
+    "file whose content differs (unsaved edits or remote drift — it cannot tell which): "
+    "pass another path or delete it. Without out_file_path the full object is returned "
+    "inline as before. NOTE: modified_at changes on every rossum_patch_schema write, so "
+    "re-fetching to the SAME path right after a patch will refuse as 'differs' even when "
+    "nothing else about the content changed — delete or re-point the file before re-fetching.",
     {
         "type": "object",
         "required": ["schema_id"],
@@ -5089,20 +5458,75 @@ def handle_list_rule_execution_logs(request_id, arguments):
                 "type": "integer",
                 "description": "The schema ID (found in queue.schema URL).",
             },
+            "out_file_path": {
+                "type": "string",
+                "description": "Local path to write the full schema object to (parent directories "
+                               "are created). When given, the response is an envelope instead of "
+                               "the schema; the content stays in the file.",
+            },
         },
         "additionalProperties": False,
     },
     annotations=_READ_ONLY,
 )
 def handle_get_schema(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/schemas/{arguments['schema_id']}")
+    out_file_path = arguments.get("out_file_path")
+    if out_file_path is None:
+        _rossum_get(request_id, f"/api/v1/schemas/{arguments['schema_id']}")
+        return
+
+    def emit(schema):
+        try:
+            characters = _write_json_file(out_file_path, schema)
+        except _FileInputError as exc:
+            tool_result(request_id, str(exc), is_error=True)
+            return
+        except OSError as exc:
+            tool_result(request_id, f"Could not write {out_file_path!r}: {exc}", is_error=True)
+            return
+        content = schema.get("content") or []
+        tool_result(request_id, json.dumps({
+            "id": schema.get("id"),
+            "name": schema.get("name"),
+            "queue_ids": [_url_to_id(q) for q in schema.get("queues") or []],
+            "modified_at": schema.get("modified_at"),
+            "sections": len(content),
+            "datapoints": _count_datapoints(content),
+            "written_to": out_file_path,
+            "characters": characters,
+            "content_sha256": _canonical_sha256(content),
+        }, indent=2))
+
+    _rossum_get(request_id, f"/api/v1/schemas/{arguments['schema_id']}", format_result=emit)
 
 
 @_tool(
     "rossum_patch_schema",
-    "Updates an existing schema. Only provide the fields you want to change. "
-    "Most commonly used to update the 'content' field (the datapoint tree). "
-    "This is a write operation that affects all queues using this schema.",
+    "Updates an existing schema. Only provide the fields you want to change; `content` (the "
+    "full datapoint tree) REPLACES the stored tree wholesale. Real schemas are large, so pass "
+    "content_file_path instead of inline content: a local file holding either the bare content "
+    "array or the whole schema object (what rossum_get_schema out_file_path wrote, or a prd2 "
+    "schema.json). Reading a prd2 tree's schema.json as content_file_path is fine OUTSIDE a "
+    "prd2 push flow; inside a prd2 project the change itself should go through prd2 push, not "
+    "this tool. The file supplies content ONLY — name and metadata stay inline parameters, "
+    "and any other keys in a whole-object file are reported back as ignored_keys, not sent. A "
+    "file resolving to [] is refused (the API accepts [] and empties the schema; pass "
+    "content: [] inline if intended) — that inline escape hatch really does empty the schema "
+    "and cannot be undone from this tool. Every content write returns content_integrity, a "
+    "structural comparison of what LANDED vs what was sent: verified:true with "
+    "injected_defaults is normal (the API adds rir_field_names/default_value/icon); "
+    "verified:false with dropped/changed means the API silently discarded or altered keys — "
+    "rossum_validate_schema does NOT catch unknown keys — so inspect and fix, do not retry. "
+    "verified:true means the tree you SENT is the tree now stored — it does NOT mean nobody "
+    "else's work was lost: content replaces the stored tree wholesale, so patching from a "
+    "stale copy (a file pulled earlier, or an inline tree read earlier in the conversation) "
+    "silently discards edits made in between, and the API exposes no ETag to guard against "
+    "it. Re-read the schema before patching one that others may be editing. "
+    "The echoed schema omits content. The response is nested: a content write returns "
+    "{\"schema\": {...}, \"content_integrity\": {...}}, while a write with no content returns "
+    "the bare schema object unwrapped — do not assume 'id' is always top-level. This is a "
+    "write operation that affects all queues using this schema; dry-run with "
+    "rossum_validate_schema first.",
     {
         "type": "object",
         "required": ["schema_id"],
@@ -5118,7 +5542,14 @@ def handle_get_schema(request_id, arguments):
             "content": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Updated schema content (the full datapoint tree: sections, fields, multivalues).",
+                "description": "Updated schema content (the full datapoint tree: sections, fields, "
+                               "multivalues). Mutually exclusive with content_file_path.",
+            },
+            "content_file_path": {
+                "type": "string",
+                "description": "Local JSON file holding the new content: the bare array or the "
+                               "whole schema object (its 'content' key is used; other keys are "
+                               "ignored and listed in the response). Mutually exclusive with content.",
             },
             "metadata": {
                 "type": "object",
@@ -5131,11 +5562,26 @@ def handle_get_schema(request_id, arguments):
 )
 def handle_patch_schema(request_id, arguments):
     schema_id = arguments["schema_id"]
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    content, _source, ignored_keys, file_id, ok = _resolve_schema_content(
+        request_id, arguments, require=False)
+    if not ok:
+        return
     body = {}
-    for key in ("name", "content", "metadata"):
+    for key in ("name", "metadata"):
         if key in arguments:
             body[key] = arguments[key]
-    _rossum_patch(request_id, f"/api/v1/schemas/{schema_id}", body)
+    format_result = None
+    if content is not None:
+        body["content"] = content
+
+        def format_result(result):
+            _emit_schema_write_result(request_id, result, content, ignored_keys=ignored_keys,
+                                       file_id=file_id, schema_id=schema_id)
+
+    _rossum_patch(request_id, f"/api/v1/schemas/{schema_id}", body, format_result=format_result)
 
 
 # POST endpoint, but a pure dry-run (nothing is saved) -> annotated _READ_ONLY so it
@@ -5143,26 +5589,38 @@ def handle_patch_schema(request_id, arguments):
 @_tool(
     "rossum_validate_schema",
     "Dry-run validation of schema content via POST /schemas/validate — checks a datapoint "
-    "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema to catch "
-    "problems without touching the live schema. NOTE: the underlying endpoint returns HTTP 200 "
-    "for an INVALID schema too — rejections live in the response body, so a status-code check "
-    "misses them. This tool normalizes that into valid=true/false (valid == empty body); read "
-    "'valid', never the transport status. Also returns the API's "
-    "error tree, which mirrors the content positionally: content[N] -> "
-    "{'children': {'<child index>': {'<attribute>': ['message', ...]}}}. IMPORTANT: pass "
-    "schema_id whenever validating an edit to an EXISTING schema — engine-binding checks "
-    "(e.g. \"extracted field 'x' is not present among names of engine fields\" on an "
-    "engine-bound queue) only run when the API knows which schema the content belongs to; "
-    "without schema_id those violations pass silently. Create missing engine fields with "
-    "rossum_create_engine_field before adding their captured datapoints.",
+    "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema. Pass exactly "
+    "one of content (inline) or content_file_path (a local file holding either the bare content "
+    "array or the whole schema object, e.g. what rossum_get_schema out_file_path wrote or a prd2 "
+    "schema.json). NOTE: the underlying endpoint returns HTTP 200 for an INVALID schema too — "
+    "rejections live in the response body, so a status-code check misses them. This tool "
+    "normalizes that into valid=true/false (valid == empty body); read 'valid', never the "
+    "transport status. It also returns the API's error tree, which mirrors the content "
+    "positionally: content[N] -> {'children': {'<child index>': {'<attribute>': ['message']}}}. "
+    "TRAP: validate does NOT catch unknown or misspelled keys — the API silently drops them on "
+    "write. Only rossum_patch_schema's content_integrity readback surfaces that; read it. "
+    "IMPORTANT: pass schema_id whenever validating an edit to an EXISTING schema — "
+    "engine-binding checks (e.g. \"extracted field 'x' is not present among names of engine "
+    "fields\" on an engine-bound queue) only run when the API knows which schema the content "
+    "belongs to; without schema_id those violations pass silently. schema_id is never inferred "
+    "from a file's id (a prd2 file carries ITS environment's id). Create missing engine fields "
+    "with rossum_create_engine_field before adding their captured datapoints. The response also "
+    "reports source (inline|file), datapoints (a count), and — when a whole-object file carried "
+    "keys other than content — ignored_keys, the top-level keys that were read but not sent.",
     {
         "type": "object",
-        "required": ["content"],
         "properties": {
             "content": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Schema content to validate (the full datapoint tree: sections, fields, multivalues).",
+                "description": "Schema content to validate (the full datapoint tree). Mutually "
+                               "exclusive with content_file_path.",
+            },
+            "content_file_path": {
+                "type": "string",
+                "description": "Local JSON file holding the content: either the bare array or "
+                               "the whole schema object (its 'content' key is used, other keys "
+                               "ignored). Mutually exclusive with content.",
             },
             "schema_id": {
                 "type": "integer",
@@ -5179,7 +5637,11 @@ def handle_validate_schema(request_id, arguments):
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
-    body = {"content": arguments["content"]}
+    content, source, ignored_keys, _file_id, ok = _resolve_schema_content(
+        request_id, arguments, require=True)
+    if not ok:
+        return
+    body = {"content": content}
     if "schema_id" in arguments:
         body["id"] = arguments["schema_id"]
     resp = _http_request(request_id, f"{base_url}/api/v1/schemas/validate",
@@ -5187,7 +5649,10 @@ def handle_validate_schema(request_id, arguments):
     if resp is None:
         return
     # The API returns HTTP 200 either way: {} when valid, an error tree otherwise.
-    result = {"valid": not resp, "errors": resp}
+    result = {"valid": not resp, "errors": resp, "source": source,
+              "datapoints": _count_datapoints(content)}
+    if ignored_keys:
+        result["ignored_keys"] = ignored_keys
     tool_result(request_id, json.dumps(result, indent=2))
 
 
