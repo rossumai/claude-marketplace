@@ -2809,3 +2809,71 @@ def test_patch_annotation_null_metadata_does_not_crash(monkeypatch):
     )
     assert emitted, "handler must emit something rather than raising"
     assert _patched_body(fake)["metadata"] is None
+
+
+# --- schema content: file-path I/O ---
+# 87% of real schemas exceed 1,000 lines; the datapoint tree cannot cross a tool call
+# intact in either direction. rossum_get_schema can write the object to a file and
+# return an envelope; validate/patch can read content back from that file.
+
+SCHEMA_CONTENT = [{"category": "section", "id": "s", "label": "S", "children": [
+    {"category": "datapoint", "id": "f", "label": "F", "type": "string"}]}]
+
+
+def _schema_obj(content=SCHEMA_CONTENT, **over):
+    obj = {"id": 4, "name": "S", "queues": [f"{BASE}/api/v1/queues/7", f"{BASE}/api/v1/queues/8"],
+           "url": f"{BASE}/api/v1/schemas/4", "content": content, "metadata": {},
+           "modified_by": None, "modified_at": "2026-01-01T00:00:00.000000Z"}
+    obj.update(over)
+    return obj
+
+
+def test_get_schema_without_out_file_is_unchanged(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_get_schema", {"schema_id": 4},
+                             lambda url, method, body: _schema_obj())
+    assert emitted_payload(emitted) == _schema_obj()
+
+
+def test_get_schema_out_file_writes_object_and_returns_envelope(monkeypatch, tmp_path):
+    path = str(tmp_path / "nested" / "schema.json")
+    fake, emitted = run_handler(monkeypatch, "rossum_get_schema",
+                                {"schema_id": 4, "out_file_path": path},
+                                lambda url, method, body: _schema_obj())
+    assert fake.calls[0]["url"].endswith("/api/v1/schemas/4")
+    on_disk = json.loads(open(path, encoding="utf-8").read())
+    assert on_disk == _schema_obj()
+    assert list(on_disk) == ["id", "name", "queues", "url", "content", "metadata", "modified_by", "modified_at"]
+    out = emitted_payload(emitted)
+    assert "content" not in out, "the whole point is not to return the tree"
+    assert out == {
+        "id": 4, "name": "S", "queue_ids": [7, 8], "modified_at": "2026-01-01T00:00:00.000000Z",
+        "sections": 1, "datapoints": 1, "written_to": path,
+        "characters": len(open(path, encoding="utf-8").read()),
+        "content_sha256": server._canonical_sha256(SCHEMA_CONTENT),
+    }
+
+
+def test_get_schema_out_file_refuses_to_clobber_a_differing_file(monkeypatch, tmp_path):
+    path = tmp_path / "schema.json"
+    path.write_text('{"edited": true}', encoding="utf-8")
+    _, emitted = run_handler(monkeypatch, "rossum_get_schema",
+                             {"schema_id": 4, "out_file_path": str(path)},
+                             lambda url, method, body: _schema_obj())
+    assert emitted[-1]["result"].get("isError") is True
+    assert "Refusing to overwrite" in emitted[-1]["result"]["content"][0]["text"]
+    assert path.read_text(encoding="utf-8") == '{"edited": true}'
+
+
+def test_get_schema_out_file_write_failure_does_not_fall_back_to_inline(monkeypatch, tmp_path):
+    (tmp_path / "isafile").write_text("x", encoding="utf-8")
+    path = str(tmp_path / "isafile" / "schema.json")     # parent is a file -> OSError
+    _, emitted = run_handler(monkeypatch, "rossum_get_schema",
+                             {"schema_id": 4, "out_file_path": path},
+                             lambda url, method, body: _schema_obj())
+    assert emitted[-1]["result"].get("isError") is True
+    assert '"content"' not in emitted[-1]["result"]["content"][0]["text"]
+
+
+def test_get_schema_stays_read_only():
+    assert server.TOOLS["rossum_get_schema"]["annotations"]["readOnlyHint"] is True
+    assert "out_file_path" in server.TOOLS["rossum_get_schema"]["inputSchema"]["properties"]

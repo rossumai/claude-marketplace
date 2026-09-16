@@ -763,13 +763,21 @@ def _mdh_call(request_id, path, *, method="GET", body=None):
         tool_result(request_id, json.dumps(result, indent=2))
 
 
-def _rossum_get(request_id, path):
-    """GET a single Rossum API resource and return it as JSON."""
+def _rossum_get(request_id, path, *, format_result=None):
+    """GET a single Rossum API resource and return it as JSON.
+
+    `format_result` lets a caller render the response itself (e.g. write it to a file
+    and return an envelope) instead of emitting the bare object.
+    """
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
     result = _http_request(request_id, f"{base_url}{path}")
-    if result is not None:
+    if result is None:
+        return
+    if format_result is not None:
+        format_result(result)
+    else:
         tool_result(request_id, json.dumps(result, indent=2))
 
 
@@ -5234,8 +5242,16 @@ def handle_list_rule_execution_logs(request_id, arguments):
 
 @_tool(
     "rossum_get_schema",
-    "Retrieves the full schema definition of a queue. The schema defines all datapoints "
-    "(fields), sections, multivalue (table) structures, and their validation rules.",
+    "Retrieves the full schema definition of a queue: all datapoints (fields), sections, "
+    "multivalue (table) structures and their validation rules. Real schemas are LARGE — most "
+    "exceed 1,000 lines of JSON — so pass out_file_path to write the whole schema object to a "
+    "local file and get back only an envelope (id, name, queue_ids, modified_at, "
+    "sections/datapoints counts, path, content_sha256). The file keeps the API's key order, "
+    "is directly usable as content_file_path for rossum_validate_schema / rossum_patch_schema, "
+    "and has the same shape as a prd2 schema.json. Edit the file locally, then validate and "
+    "patch from it. The tool REFUSES to overwrite an existing file whose content differs "
+    "(unsaved edits or remote drift — it cannot tell which): pass another path or delete it. "
+    "Without out_file_path the full object is returned inline as before.",
     {
         "type": "object",
         "required": ["schema_id"],
@@ -5244,13 +5260,46 @@ def handle_list_rule_execution_logs(request_id, arguments):
                 "type": "integer",
                 "description": "The schema ID (found in queue.schema URL).",
             },
+            "out_file_path": {
+                "type": "string",
+                "description": "Local path to write the full schema object to (parent directories "
+                               "are created). When given, the response is an envelope instead of "
+                               "the schema; the content stays in the file.",
+            },
         },
         "additionalProperties": False,
     },
     annotations=_READ_ONLY,
 )
 def handle_get_schema(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/schemas/{arguments['schema_id']}")
+    out_file_path = arguments.get("out_file_path")
+    if out_file_path is None:
+        _rossum_get(request_id, f"/api/v1/schemas/{arguments['schema_id']}")
+        return
+
+    def emit(schema):
+        try:
+            characters = _write_json_file(out_file_path, schema)
+        except _FileInputError as exc:
+            tool_result(request_id, str(exc), is_error=True)
+            return
+        except OSError as exc:
+            tool_result(request_id, f"Could not write {out_file_path!r}: {exc}", is_error=True)
+            return
+        content = schema.get("content") or []
+        tool_result(request_id, json.dumps({
+            "id": schema.get("id"),
+            "name": schema.get("name"),
+            "queue_ids": [_url_to_id(q) for q in schema.get("queues") or []],
+            "modified_at": schema.get("modified_at"),
+            "sections": len(content),
+            "datapoints": _count_datapoints(content),
+            "written_to": out_file_path,
+            "characters": characters,
+            "content_sha256": _canonical_sha256(content),
+        }, indent=2))
+
+    _rossum_get(request_id, f"/api/v1/schemas/{arguments['schema_id']}", format_result=emit)
 
 
 @_tool(
