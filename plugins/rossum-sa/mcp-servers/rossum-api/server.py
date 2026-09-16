@@ -210,7 +210,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.39.0"
+_SERVER_VERSION = "0.40.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -4019,7 +4019,9 @@ def _emit_schema_write_result(request_id, result, sent_content, *, ignored_keys)
             "The schema WAS updated, but what landed is not what was sent — do NOT retry, the "
             "same content would land the same way. The API silently drops keys it does not know "
             "and rossum_validate_schema does not catch them: check 'dropped' and 'changed', fix "
-            "the content, and patch again."
+            "the content, and patch again. If landed_sha256 is null the response carried no "
+            "content list at all — re-read the schema with rossum_get_schema before assuming "
+            "anything about what is stored."
         )
     elif integrity.get("injected_defaults"):
         integrity["note"] = (
@@ -5335,12 +5337,13 @@ def handle_list_rule_execution_logs(request_id, arguments):
     "multivalue (table) structures and their validation rules. Real schemas are LARGE — most "
     "exceed 1,000 lines of JSON — so pass out_file_path to write the whole schema object to a "
     "local file and get back only an envelope (id, name, queue_ids, modified_at, "
-    "sections/datapoints counts, path, content_sha256). The file keeps the API's key order, "
-    "is directly usable as content_file_path for rossum_validate_schema / rossum_patch_schema, "
-    "and has the same shape as a prd2 schema.json. Edit the file locally, then validate and "
-    "patch from it. The tool REFUSES to overwrite an existing file whose content differs "
-    "(unsaved edits or remote drift — it cannot tell which): pass another path or delete it. "
-    "Without out_file_path the full object is returned inline as before.",
+    "sections/datapoints counts, written_to, characters, content_sha256). The file keeps the "
+    "API's key order, is directly usable as content_file_path for rossum_validate_schema / "
+    "rossum_patch_schema, and has the same shape as a prd2 schema.json. Edit the file "
+    "locally, then validate and patch from it. The tool REFUSES to overwrite an existing "
+    "file whose content differs (unsaved edits or remote drift — it cannot tell which): "
+    "pass another path or delete it. Without out_file_path the full object is returned "
+    "inline as before.",
     {
         "type": "object",
         "required": ["schema_id"],
@@ -5405,8 +5408,11 @@ def handle_get_schema(request_id, arguments):
     "injected_defaults is normal (the API adds rir_field_names/default_value/icon); "
     "verified:false with dropped/changed means the API silently discarded or altered keys — "
     "rossum_validate_schema does NOT catch unknown keys — so inspect and fix, do not retry. "
-    "The echoed schema omits content. This is a write operation that affects all queues "
-    "using this schema; dry-run with rossum_validate_schema first.",
+    "The echoed schema omits content. The response is nested: a content write returns "
+    "{\"schema\": {...}, \"content_integrity\": {...}}, while a write with no content returns "
+    "the bare schema object unwrapped — do not assume 'id' is always top-level. This is a "
+    "write operation that affects all queues using this schema; dry-run with "
+    "rossum_validate_schema first.",
     {
         "type": "object",
         "required": ["schema_id"],

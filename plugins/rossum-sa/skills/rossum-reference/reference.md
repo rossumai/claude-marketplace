@@ -298,6 +298,14 @@ The `rossum_validate_schema` MCP tool already normalizes this — it returns
 `{"valid": <body is empty>, "errors": <body>}`, so read `valid`, not the transport status. The
 trap is only there when you call the endpoint directly.
 
+Two further measured traps of `PATCH /schemas/{id}`: **unknown or misspelled keys are silently
+dropped** (HTTP 200) and `validate` returns `{}` for them, so a typo passes the dry-run and
+vanishes on write — only a sent-vs-landed comparison catches it (`rossum_patch_schema`'s
+`content_integrity`, which also lists the defaults the API injects: `rir_field_names`,
+`default_value`, section `icon`); and **`content: []` is accepted and empties the schema**. Real
+schemas mostly exceed 1,000 lines of JSON — use `rossum_get_schema` `out_file_path` to pull the
+object to a file, edit it there, and pass `content_file_path` to validate and patch.
+
 ### Schema Content Structure
 
 Schemas consist of **sections** containing **datapoints** (header fields) and **multivalues** (tables/line items).

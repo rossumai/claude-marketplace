@@ -175,9 +175,9 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_delete_queue` | ⚠️ Delete a queue immediately (skips the 24h grace window), poll until gone, then cascade-delete its now-orphaned schema/inbox/engine unless shared with another queue |
 | `rossum_get_automation_insights` | Queue automation analytics: rates, blockers, per-field statistics (compact digest by default, full payload cached) |
 | `rossum_get_automation_projections` | Simulate automation at recalibrated confidence thresholds; degrades gracefully when the queue has too little reviewed data |
-| `rossum_get_schema` | Get queue schema (datapoints, sections, tables) |
-| `rossum_patch_schema` | ✏️ Update a schema (name, content, metadata) |
-| `rossum_validate_schema` | Dry-run schema content validation (`POST /schemas/validate` — non-mutating despite being a POST; pass `schema_id` to enable engine-binding checks) |
+| `rossum_get_schema` | Get queue schema (datapoints, sections, tables); `out_file_path` writes the whole object to a local file and returns an envelope instead of the tree |
+| `rossum_patch_schema` | ✏️ Update a schema (name, content, metadata); `content_file_path` reads the tree from a file (bare array or whole object) and every content write returns a `content_integrity` sent-vs-landed readback |
+| `rossum_validate_schema` | Dry-run schema content validation (`POST /schemas/validate` — non-mutating despite being a POST; pass `schema_id` to enable engine-binding checks); accepts `content_file_path`; does **not** catch unknown keys — the API drops them silently on write |
 | `rossum_list_schemas` | List all schemas |
 | `rossum_create_engine_field` | ✏️ Create an engine field on a custom extraction engine — create it BEFORE adding the matching captured datapoint to the schema |
 | `rossum_patch_engine_field` | ✏️ Update an engine field (label, type, subtype, pretrained seeding; `name` is immutable) |

@@ -170,9 +170,9 @@ Create a task list with one task per applicable phase to track progress.
 
 3. **Add fields to schema.json** locally. Use the schema field templates from `rossum-reference`.
 
-4. **Dry-run the schema before deploying.** `rossum_validate_schema` (read-only) returns `{}` for a valid schema or a positional error tree — pass the queue's `schema_id` so engine-binding checks run. Fix any errors locally first.
+4. **Dry-run the schema before deploying.** `rossum_validate_schema` (read-only) returns `{}` for a valid schema or a positional error tree — pass the queue's `schema_id` so engine-binding checks run. Pass the edited file as `content_file_path` rather than pasting the tree (a prd2 `schema.json` works as-is). Fix any errors locally first. Validate does **not** catch unknown or misspelled keys — only the patch's `content_integrity` readback does.
 
-5. **Deploy schema changes.** Either `prd2 push` (the prd2-tree path — **confirm with user before executing**) or, for a direct-API edit outside a prd2 flow, `rossum_patch_schema` (also gated). Prefer `prd2 push` when the project is a prd2 tree so the local tree stays the source of truth.
+5. **Deploy schema changes.** Either `prd2 push` (the prd2-tree path — **confirm with user before executing**) or, for a direct-API edit outside a prd2 flow, `rossum_patch_schema` with `content_file_path` (also gated); read `content_integrity` — `verified:false` means the API dropped or altered keys, so fix and re-patch, never retry blind. Prefer `prd2 push` when the project is a prd2 tree so the local tree stays the source of truth. To edit a live schema outside prd2, start with `rossum_get_schema` + `out_file_path`, edit the file, then validate and patch from it.
 
 **Artifact:** Updated schema.json files with all required fields, deployed to the environment.
 
