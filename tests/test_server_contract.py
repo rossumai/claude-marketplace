@@ -2897,6 +2897,16 @@ def test_validate_schema_reads_content_from_file_in_either_shape(monkeypatch, tm
     assert out["valid"] is True and out["source"] == "file" and out["datapoints"] == 1
 
 
+def test_validate_schema_whole_object_file_reports_ignored_keys(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content_file_path": _content_file(tmp_path, _schema_obj()), "schema_id": 4},
+        lambda url, method, body: {},
+    )
+    out = emitted_payload(emitted)
+    assert out["ignored_keys"] == ["id", "name", "queues", "url", "metadata", "modified_by", "modified_at"]
+
+
 def test_validate_schema_does_not_infer_schema_id_from_the_file(monkeypatch, tmp_path):
     fake, _ = run_handler(
         monkeypatch, "rossum_validate_schema",
@@ -3049,3 +3059,58 @@ def test_patch_schema_response_without_content_list_is_unverified(monkeypatch):
                              lambda url, method, body: {"id": 4, "name": "S"})
     ci = emitted_payload(emitted)["content_integrity"]
     assert ci["verified"] is False and ci["landed_sha256"] is None
+    assert ci["sent_datapoints"] == 1
+    assert ci["landed_datapoints"] is None
+    assert emitted[-1]["result"].get("isError") is not True, "write landed; not an error"
+
+
+# --- final-review fix wave ---
+
+def test_patch_schema_explicit_null_content_is_refused_not_swallowed(monkeypatch):
+    """arguments.get('content') returns None both when content is omitted and when it is
+    explicitly null. Before content_file_path existed, an explicit null reached the API
+    and got its own clear 400. Now it must not be silently treated as 'no content' —
+    especially alongside `name`, where a silent drop would let the rename through while
+    the caller never learns their content argument was ignored."""
+    fake, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                                {"schema_id": 4, "name": "Renamed", "content": None},
+                                _schema_echo())
+    assert fake.calls == []
+    assert emitted[-1]["result"].get("isError") is True
+    assert "null" in emitted[-1]["result"]["content"][0]["text"]
+
+
+def test_patch_schema_failed_write_fabricates_no_success_payload(monkeypatch):
+    # The responder returns None: the real _http_request already emitted its own error
+    # (e.g. a non-2xx). The handler must not layer a fabricated success/content_integrity
+    # payload on top of that.
+    fake, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                                {"schema_id": 4, "content": SCHEMA_CONTENT},
+                                lambda url, method, body: None)
+    assert fake.calls[0]["url"].endswith("/api/v1/schemas/4")
+    assert emitted == []
+
+
+def test_patch_schema_file_id_mismatch_warns_in_content_integrity(monkeypatch, tmp_path):
+    # A file pulled from schema A used to patch schema B: the tree that lands is A's, but
+    # verified:true reported nothing wrong. file_id surfaces the mismatch.
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, _schema_obj(id=999))},
+        _schema_echo(),
+    )
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["file_id"] == 999
+    assert "999" in ci["note"] and "4" in ci["note"]
+    assert ci["verified"] is True    # the write landed intact; the warning is separate
+
+
+def test_patch_schema_file_id_matching_schema_id_has_no_warning(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, _schema_obj(id=4))},
+        _schema_echo(),
+    )
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert "file_id" not in ci
+    assert "note" not in ci

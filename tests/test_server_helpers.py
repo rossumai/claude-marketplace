@@ -574,15 +574,16 @@ def _write(tmp_path, name, obj_or_text):
 
 
 def test_load_json_field_bare_array(tmp_path):
-    value, ignored = server._load_json_field(_write(tmp_path, "c.json", _SENT), "content")
-    assert value == _SENT and ignored == []
+    value, ignored, file_id = server._load_json_field(_write(tmp_path, "c.json", _SENT), "content")
+    assert value == _SENT and ignored == [] and file_id is None
 
 
 def test_load_json_field_whole_object_reports_ignored_keys(tmp_path):
     whole = {"id": 1, "name": "S", "queues": [], "url": "u", "content": _SENT, "metadata": {}, "modified_by": "m"}
-    value, ignored = server._load_json_field(_write(tmp_path, "s.json", whole), "content")
+    value, ignored, file_id = server._load_json_field(_write(tmp_path, "s.json", whole), "content")
     assert value == _SENT
     assert ignored == ["id", "name", "queues", "url", "metadata", "modified_by"]  # file order, key excluded
+    assert file_id == 1
 
 
 @pytest.mark.parametrize("doc,fragment", [
@@ -603,6 +604,27 @@ def test_load_json_field_missing_file(tmp_path):
     with pytest.raises(server._FileInputError) as exc:
         server._load_json_field(str(tmp_path / "nope.json"), "content")
     assert "not found" in str(exc.value).lower()
+
+
+def test_load_json_field_rejects_duplicate_key_in_a_nested_object(tmp_path):
+    # A copy-paste slip inside a datapoint: json.loads would silently keep only the LAST
+    # "id", so the duplicate never reaches the caller — reject it instead.
+    text = (
+        '{"content": [{"category": "section", "id": "s", "children": ['
+        '{"category": "datapoint", "id": "f", "id": "g", "type": "string"}]}]}'
+    )
+    path = _write(tmp_path, "dup.json", text)
+    with pytest.raises(server._FileInputError) as exc:
+        server._load_json_field(path, "content")
+    assert "duplicate key" in str(exc.value)
+    assert "'id'" in str(exc.value)
+
+
+def test_load_json_field_strips_utf8_bom(tmp_path):
+    path = tmp_path / "bom.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(_SENT).encode("utf-8"))
+    value, ignored, file_id = server._load_json_field(str(path), "content")
+    assert value == _SENT and ignored == [] and file_id is None
 
 
 # --- _count_datapoints + _write_json_file ---
@@ -637,6 +659,17 @@ def test_write_json_file_rewrites_identical_file(tmp_path):
     (tmp_path / "s.json").write_text('{"b": [1, 2], "a": 1}', encoding="utf-8")   # same object, other order
     server._write_json_file(path, obj)
     assert json.loads(open(path, encoding="utf-8").read()) == obj
+
+
+def test_write_json_file_bom_in_existing_file_does_not_look_different(tmp_path):
+    # A file saved by a Windows editor carries a UTF-8 BOM. Without utf-8-sig on the
+    # existing-file check, a byte-identical object reads as "different" and the write is
+    # refused — even though nothing would actually change on disk.
+    obj = {"a": 1, "b": [1, 2]}
+    path = tmp_path / "s.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(obj).encode("utf-8"))
+    server._write_json_file(str(path), obj)                # must NOT raise
+    assert json.loads(open(path, encoding="utf-8-sig").read()) == obj
 
 
 @pytest.mark.parametrize("existing", ['{"a": 2}', "not json at all"])
