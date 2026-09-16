@@ -1313,7 +1313,7 @@ def test_validate_schema_builds_body_and_reports_valid(monkeypatch):
         "id": 42,  # schema_id maps to the API's 'id' key (enables engine checks)
     }
     out = emitted_payload(emitted)
-    assert out == {"valid": True, "errors": {}}
+    assert out == {"valid": True, "errors": {}, "source": "inline", "datapoints": 0}
 
 
 def test_validate_schema_surfaces_error_tree(monkeypatch):
@@ -1926,6 +1926,11 @@ _NO_AUTH_TOOLS = {
     "rossum_set_token",                  # establishes the connection itself
     "rossum_generate_export_settings",   # pure local transform
     "data_storage_healthz",              # explicitly auth-free (live reachability probe)
+    "rossum_validate_schema",            # content/content_file_path are each optional in the
+                                          # JSON schema (exactly-one-of is enforced by the
+                                          # resolver instead); dummy args therefore supply
+                                          # neither, and the resolver's argument error fires
+                                          # before the auth check is ever reached.
 }
 
 
@@ -2877,3 +2882,69 @@ def test_get_schema_out_file_write_failure_does_not_fall_back_to_inline(monkeypa
 def test_get_schema_stays_read_only():
     assert server.TOOLS["rossum_get_schema"]["annotations"]["readOnlyHint"] is True
     assert "out_file_path" in server.TOOLS["rossum_get_schema"]["inputSchema"]["properties"]
+
+
+def _content_file(tmp_path, doc, name="schema.json"):
+    p = tmp_path / name
+    p.write_text(json.dumps(doc) if not isinstance(doc, str) else doc, encoding="utf-8")
+    return str(p)
+
+
+@pytest.mark.parametrize("doc", [SCHEMA_CONTENT, _schema_obj()], ids=["bare-array", "whole-object"])
+def test_validate_schema_reads_content_from_file_in_either_shape(monkeypatch, tmp_path, doc):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content_file_path": _content_file(tmp_path, doc), "schema_id": 4},
+        lambda url, method, body: {},
+    )
+    assert fake.calls[0]["body"] == {"content": SCHEMA_CONTENT, "id": 4}
+    out = emitted_payload(emitted)
+    assert out["valid"] is True and out["source"] == "file" and out["datapoints"] == 1
+
+
+def test_validate_schema_does_not_infer_schema_id_from_the_file(monkeypatch, tmp_path):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_validate_schema",
+        {"content_file_path": _content_file(tmp_path, _schema_obj(id=999))},
+        lambda url, method, body: {},
+    )
+    assert "id" not in fake.calls[0]["body"], "a prd2 file's id belongs to ITS environment"
+
+
+@pytest.mark.parametrize("args", [
+    {},                                                    # neither
+    {"content": SCHEMA_CONTENT, "content_file_path": "x"},  # both
+], ids=["neither", "both"])
+def test_validate_schema_requires_exactly_one_content_source(monkeypatch, args):
+    fake, emitted = run_handler(monkeypatch, "rossum_validate_schema", {**args, "schema_id": 4},
+                                lambda url, method, body: {})
+    assert emitted[-1]["result"].get("isError") is True
+    assert fake.calls == [], "argument errors must be raised before any HTTP call"
+
+
+@pytest.mark.parametrize("tool,extra", [
+    ("rossum_validate_schema", {}),
+])
+def test_content_file_path_errors_before_any_call(monkeypatch, tmp_path, tool, extra):
+    for doc in ({"id": 1}, '{"content": [', "[]"):
+        fake, emitted = run_handler(monkeypatch, tool,
+                                    {**extra, "content_file_path": _content_file(tmp_path, doc)},
+                                    lambda url, method, body: {})
+        assert emitted[-1]["result"].get("isError") is True, doc
+        assert fake.calls == [], doc
+    fake, emitted = run_handler(monkeypatch, tool,
+                                {**extra, "content_file_path": str(tmp_path / "nope.json")},
+                                lambda url, method, body: {})
+    assert emitted[-1]["result"].get("isError") is True and fake.calls == []
+
+
+def test_empty_content_from_file_is_refused_but_inline_is_allowed(monkeypatch, tmp_path):
+    fake, emitted = run_handler(monkeypatch, "rossum_validate_schema",
+                                {"content_file_path": _content_file(tmp_path, [])},
+                                lambda url, method, body: {})
+    assert emitted[-1]["result"].get("isError") is True
+    assert "content: []" in emitted[-1]["result"]["content"][0]["text"]
+    assert fake.calls == []
+    fake, _ = run_handler(monkeypatch, "rossum_validate_schema", {"content": []},
+                          lambda url, method, body: {})
+    assert fake.calls[0]["body"] == {"content": []}, "inline [] is the deliberate escape hatch"

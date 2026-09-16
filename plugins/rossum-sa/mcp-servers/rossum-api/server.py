@@ -3941,6 +3941,53 @@ def _write_json_file(path, obj):
     return len(text)
 
 
+def _resolve_schema_content(request_id, arguments, *, require):
+    """Fold `content_file_path` into a schema tool's `content`.
+
+    Returns (content, source, ignored_keys, ok). `source` is "inline" or "file" (None when
+    this call carries no content), `ignored_keys` lists top-level keys a whole-object file
+    carried that will NOT be sent, and ok=False means an error was already emitted.
+    `require=True` enforces exactly one of content / content_file_path. Every error here
+    fires before any HTTP call. A file resolving to [] is refused: the API accepts [] and
+    empties the schema — pass content: [] inline when that is really the intent.
+    """
+    inline = arguments.get("content")
+    path = arguments.get("content_file_path")
+    if inline is not None and path is not None:
+        tool_result(
+            request_id,
+            "Provide either content or content_file_path, not both — they set the same field "
+            "and the intended source is ambiguous.",
+            is_error=True,
+        )
+        return None, None, [], False
+    if path is None:
+        if inline is None and require:
+            tool_result(
+                request_id,
+                "Provide exactly one of content (inline) or content_file_path (a local file "
+                "holding the bare content array or the whole schema object).",
+                is_error=True,
+            )
+            return None, None, [], False
+        return inline, ("inline" if inline is not None else None), [], True
+    try:
+        content, ignored = _load_json_field(path, "content")
+    except _FileInputError as exc:
+        tool_result(request_id, str(exc), is_error=True)
+        return None, None, [], False
+    if not content:
+        tool_result(
+            request_id,
+            f"{path} resolves to an empty content list. The API accepts [] — validate passes "
+            "it and patch EMPTIES the schema — so a file is refused. Pass content: [] inline "
+            "if that is really the intent.",
+            is_error=True,
+        )
+        return None, None, [], False
+    return content, "file", ignored, True
+
+
 def _resolve_hook_code(request_id, arguments):
     """Fold `code_file_path` into the hook config.
 
@@ -5347,26 +5394,36 @@ def handle_patch_schema(request_id, arguments):
 @_tool(
     "rossum_validate_schema",
     "Dry-run validation of schema content via POST /schemas/validate — checks a datapoint "
-    "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema to catch "
-    "problems without touching the live schema. NOTE: the underlying endpoint returns HTTP 200 "
-    "for an INVALID schema too — rejections live in the response body, so a status-code check "
-    "misses them. This tool normalizes that into valid=true/false (valid == empty body); read "
-    "'valid', never the transport status. Also returns the API's "
-    "error tree, which mirrors the content positionally: content[N] -> "
-    "{'children': {'<child index>': {'<attribute>': ['message', ...]}}}. IMPORTANT: pass "
-    "schema_id whenever validating an edit to an EXISTING schema — engine-binding checks "
-    "(e.g. \"extracted field 'x' is not present among names of engine fields\" on an "
-    "engine-bound queue) only run when the API knows which schema the content belongs to; "
-    "without schema_id those violations pass silently. Create missing engine fields with "
-    "rossum_create_engine_field before adding their captured datapoints.",
+    "tree for errors WITHOUT saving anything. Use it before rossum_patch_schema. Pass exactly "
+    "one of content (inline) or content_file_path (a local file holding either the bare content "
+    "array or the whole schema object, e.g. what rossum_get_schema out_file_path wrote or a prd2 "
+    "schema.json). NOTE: the underlying endpoint returns HTTP 200 for an INVALID schema too — "
+    "rejections live in the response body, so a status-code check misses them. This tool "
+    "normalizes that into valid=true/false (valid == empty body); read 'valid', never the "
+    "transport status. It also returns the API's error tree, which mirrors the content "
+    "positionally: content[N] -> {'children': {'<child index>': {'<attribute>': ['message']}}}. "
+    "TRAP: validate does NOT catch unknown or misspelled keys — the API silently drops them on "
+    "write. Only rossum_patch_schema's content_integrity readback surfaces that; read it. "
+    "IMPORTANT: pass schema_id whenever validating an edit to an EXISTING schema — "
+    "engine-binding checks (e.g. \"extracted field 'x' is not present among names of engine "
+    "fields\" on an engine-bound queue) only run when the API knows which schema the content "
+    "belongs to; without schema_id those violations pass silently. schema_id is never inferred "
+    "from a file's id (a prd2 file carries ITS environment's id). Create missing engine fields "
+    "with rossum_create_engine_field before adding their captured datapoints.",
     {
         "type": "object",
-        "required": ["content"],
         "properties": {
             "content": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Schema content to validate (the full datapoint tree: sections, fields, multivalues).",
+                "description": "Schema content to validate (the full datapoint tree). Mutually "
+                               "exclusive with content_file_path.",
+            },
+            "content_file_path": {
+                "type": "string",
+                "description": "Local JSON file holding the content: either the bare array or "
+                               "the whole schema object (its 'content' key is used, other keys "
+                               "ignored). Mutually exclusive with content.",
             },
             "schema_id": {
                 "type": "integer",
@@ -5380,10 +5437,13 @@ def handle_patch_schema(request_id, arguments):
     annotations=_READ_ONLY,
 )
 def handle_validate_schema(request_id, arguments):
+    content, source, _ignored, ok = _resolve_schema_content(request_id, arguments, require=True)
+    if not ok:
+        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
-    body = {"content": arguments["content"]}
+    body = {"content": content}
     if "schema_id" in arguments:
         body["id"] = arguments["schema_id"]
     resp = _http_request(request_id, f"{base_url}/api/v1/schemas/validate",
@@ -5391,7 +5451,8 @@ def handle_validate_schema(request_id, arguments):
     if resp is None:
         return
     # The API returns HTTP 200 either way: {} when valid, an error tree otherwise.
-    result = {"valid": not resp, "errors": resp}
+    result = {"valid": not resp, "errors": resp, "source": source,
+              "datapoints": _count_datapoints(content)}
     tool_result(request_id, json.dumps(result, indent=2))
 
 
