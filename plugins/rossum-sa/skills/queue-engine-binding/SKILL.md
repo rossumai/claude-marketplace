@@ -39,6 +39,48 @@ If the schema is shared by multiple queues, `convert` stops and tells you to cop
 
 Schema cleanup normalizes every engine-extracted datapoint to `ui_configuration: {"type": "captured", "edit": "enabled"}`. A captured-but-read-only field (`edit: "disabled"`) is therefore flipped to `"enabled"`; this matches the platform's own conversion behavior. Fields with `ui_configuration.type` `formula`/`data`/`manual`/`reasoning` are left untouched.
 
+## The engine's use case decides whether line items are extracted
+
+**An engine created without `settings.use_case` gets a header-only profile.** Its line-item columns
+are created, look correct in the UI, and extract **nothing** — no error, no warning, just an empty
+table on every document. Measured: two engines with identical seeded tabular fields returned zero
+rows on `generic_ap`; patching one to `coupa_line_level` and re-importing the same invoice returned
+all three lines.
+
+So `convert` and `greenfield` **refuse to run on a schema with line-item columns unless
+`--use-case` is given**:
+
+```
+--use-case coupa_line_level   # extracts tables (known working for line-item schemas)
+--use-case generic_ap         # header-only, chosen deliberately
+```
+
+`attach` cannot set it (the engine already exists) and warns instead when the target engine's use
+case is not line-level while the schema has table columns.
+
+## Bind table columns to the catalog names
+
+A line-item column's `rir_field_names` must be the **table-column** field, not the header one:
+
+```
+multivalue line_items        rir_field_names: ["line_items"]
+  column   item_description  rir_field_names: ["table_column_description"]
+  column   item_quantity     rir_field_names: ["table_column_quantity"]
+```
+
+`item_description` and friends are **not** valid rir bindings for a table column. A column bound
+that way extracts nothing on the generic engine and seeds nothing on conversion. The script is
+lenient — it will map the header vocabulary onto the right catalog entry — but it reports every case
+under `schema_binding_warnings`, because the schema is what wants fixing.
+
+## Types: the schema wins
+
+The queue flip refuses when a schema datapoint's type differs from its engine field's
+(`extracted field 'currency' is of invalid type 'string' whereas related engine field is of type
+'enum'`). Derived fields therefore take the **schema's** type and keep the catalog seed regardless —
+`pre_trained_field_id` is independent of both the field's name and its type. Any such case is listed
+under `seed_type_overrides`.
+
 ## Interpreting failures
 
 - Queue-flip 400s list ALL remaining violations in `non_field_errors` — read them verbatim; each names a field and the exact rule.

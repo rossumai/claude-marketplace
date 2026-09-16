@@ -21,6 +21,31 @@ NON_EXTRACTED_UI_TYPES = {"formula", "data", "manual", "reasoning"}
 
 SCHEMA_TYPE_DEFAULTS = {"string": "string", "number": "number", "date": "date", "enum": "enum"}
 
+# A CORRECTLY authored schema binds line-item columns to the catalog names directly
+# (rir_field_names: ["table_column_description"]), and those seed by name equality with no help.
+# This alias map is leniency for schemas mis-authored with the header vocabulary (item_*), which
+# is NOT a valid rir binding for a table column: such a column extracts nothing on the generic
+# engine and seeds nothing on conversion. Using an alias is reported, not silent - the schema is
+# the thing that wants fixing.
+TABULAR_SEED_ALIASES = {
+    "item_description": "table_column_description",
+    "item_code": "table_column_code",
+    "item_quantity": "table_column_quantity",
+    "item_amount_base": "table_column_amount_base",
+    "item_amount_total": "table_column_amount_total",
+    "item_total_base": "table_column_amount_total_base",
+    "item_amount": "table_column_amount",
+    "item_rate": "table_column_rate",
+    "item_tax": "table_column_tax",
+    "item_uom": "table_column_uom",
+    "item_other": "table_column_other",
+    "item_order_id": "table_column_order_id",
+}
+
+# An engine created without settings.use_case defaults to a HEADER-ONLY profile, which silently
+# extracts no line items. Known working value for a line-item schema:
+LINE_LEVEL_USE_CASE = "coupa_line_level"
+
 
 # ---------- pure core (unit-tested) ----------
 
@@ -52,17 +77,66 @@ def derive_engine_fields(content, catalog):
     for dp, tabular in iter_datapoints(content):
         if not is_engine_extracted(dp):
             continue
-        seed = next((by_name[r] for r in dp.get("rir_field_names") or [] if r in by_name), None)
+        rir = dp.get("rir_field_names") or []
+        seed = next((by_name[r] for r in rir if r in by_name), None)
+        aliased_from = None
+        if seed is None and tabular:
+            for candidate in list(rir) + [dp["id"]]:
+                alias = TABULAR_SEED_ALIASES.get(candidate)
+                if alias and alias in by_name:
+                    seed, aliased_from = by_name[alias], candidate
+                    break
+        # The queue flip refuses when a schema datapoint's type differs from its engine field's,
+        # so the SCHEMA type wins and the seed is kept regardless (pre_trained_field_id is
+        # independent of both name and type - verified live with an enum seed on a string field).
+        schema_type = SCHEMA_TYPE_DEFAULTS.get(dp.get("type", "string"), "string")
         fields.append({
             "name": dp["id"],
             "label": dp.get("label", dp["id"]),
-            "type": seed["type"] if seed else SCHEMA_TYPE_DEFAULTS.get(dp.get("type", "string"), "string"),
+            "type": schema_type,
             "subtype": seed["subtype"] if seed else None,
             "pre_trained_field_id": seed["name"] if seed else None,
             "tabular": tabular,
             "multiline": seed["multiline"] if seed else "false",
+            "_seed_type": seed["type"] if seed else None,
+            "_aliased_from": aliased_from,
         })
     return fields
+
+
+def alias_warnings(fields):
+    """Tabular columns seeded only via the leniency map - their schema binding is wrong."""
+    return [f"{f['name']}: rir binding '{f['_aliased_from']}' is not a table-column field; "
+            f"the schema should bind '{f['pre_trained_field_id']}' directly"
+            for f in fields if f.get("_aliased_from")]
+
+
+def seed_type_overrides(fields):
+    """Fields where the catalog seed's type differs from the schema's - reported, not fatal."""
+    return [f"{f['name']}: schema type '{f['type']}' kept over seed type '{f['_seed_type']}'"
+            for f in fields if f.get("_seed_type") and f["_seed_type"] != f["type"]]
+
+
+def resolve_use_case(args, fields):
+    """Decide settings.use_case, refusing to guess when line items are at stake.
+
+    An engine created without a use_case gets a header-only profile: line-item columns are
+    created, look correct, and extract nothing. The failure is silent, so a schema with tabular
+    fields must state its intent explicitly.
+    """
+    if getattr(args, "use_case", None):
+        return args.use_case
+    if any(f["tabular"] for f in fields):
+        fail("this schema has line-item columns, so the engine's use case decides whether the "
+             "table is extracted at all. An engine created without one defaults to a header-only "
+             f"profile that silently returns zero rows. Re-run with --use-case {LINE_LEVEL_USE_CASE} "
+             "(known working for line-item schemas), or --use-case generic_ap to accept "
+             "header-only extraction deliberately.")
+    return None
+
+
+def strip_internal(fields):
+    return [{k: v for k, v in f.items() if not k.startswith("_")} for f in fields]
 
 
 def clean_schema(content):
@@ -193,24 +267,35 @@ def mode_convert(args, token):
     fields = derive_engine_fields(schema["content"], catalog)
     warn_multi_source(schema["content"])
     check_nonempty_plan(args, fields)
+    use_case = resolve_use_case(args, fields)
     cleaned, changes = clean_schema(schema["content"])
     plan = {
         "mode": "convert", "queue": queue["id"], "engine_name": args.engine_name or queue["name"],
-        "engine_fields": fields, "schema_changes": changes,
+        "use_case": use_case,
+        "engine_fields": strip_internal(fields), "schema_changes": changes,
+        "seed_type_overrides": seed_type_overrides(fields),
+        "schema_binding_warnings": alias_warnings(fields),
+        "seeded": sum(1 for f in fields if f["pre_trained_field_id"]),
+        "cold": sum(1 for f in fields if not f["pre_trained_field_id"]),
     }
+    for line in alias_warnings(fields):
+        print(f"warning: {line}", file=sys.stderr)
     print(json.dumps(plan, indent=2))
     if not args.execute:
         print("\nDry run. Re-run with --execute to apply.", file=sys.stderr)
         return
 
-    status, engine = api(base, token, "POST", "/api/v1/engines", {
+    engine_body = {
         "name": args.engine_name or queue["name"], "type": "extractor",
-        "learning_enabled": True, "training_queues": [queue["url"]]})
+        "learning_enabled": True, "training_queues": [queue["url"]]}
+    if use_case:
+        engine_body["settings"] = {"use_case": use_case}
+    status, engine = api(base, token, "POST", "/api/v1/engines", engine_body)
     if status != 201:
         fail(f"engine creation failed ({status}) — a 403 means the org/token lacks this "
              f"permission; escalate to Rossum support", engine)
     print(f"engine created: {engine['id']}", file=sys.stderr)
-    for field in fields:
+    for field in strip_internal(fields):
         status, created = api(base, token, "POST", "/api/v1/engine_fields",
                               {**field, "engine": engine["url"]})
         if status != 201:
@@ -249,7 +334,16 @@ def mode_attach(args, token):
     needed = derive_engine_fields(schema["content"], catalog)
     missing = [f for f in needed if f["name"] not in existing]
     cleaned, changes = clean_schema(schema["content"])
-    print(json.dumps({"mode": "attach", "missing_engine_fields": missing,
+    # attach reuses an existing engine, so its use case cannot be set here - but binding a
+    # line-item schema to a header-only engine silently extracts zero rows, so say so loudly.
+    target_use_case = (engine.get("settings") or {}).get("use_case")
+    if any(f["tabular"] for f in needed) and target_use_case not in (None, LINE_LEVEL_USE_CASE):
+        print(f"warning: this schema has line-item columns but engine {args.engine_id} has "
+              f"use_case '{target_use_case}'. A header-only profile creates the table columns "
+              f"and extracts nothing into them. Expected '{LINE_LEVEL_USE_CASE}'.",
+              file=sys.stderr)
+    print(json.dumps({"mode": "attach", "engine_use_case": target_use_case,
+                      "missing_engine_fields": missing,
                       "schema_changes": changes}, indent=2))
     if not args.execute:
         print("\nDry run. Re-run with --execute to apply.", file=sys.stderr)
@@ -283,18 +377,29 @@ def mode_greenfield(args, token):
     fields = derive_engine_fields(content, catalog)
     warn_multi_source(content)
     check_nonempty_plan(args, fields)
+    use_case = resolve_use_case(args, fields)
     cleaned, changes = clean_schema(content)
-    print(json.dumps({"mode": "greenfield", "engine_fields": fields,
-                      "schema_changes": changes}, indent=2))
+    print(json.dumps({"mode": "greenfield", "use_case": use_case,
+                      "engine_fields": strip_internal(fields),
+                      "schema_changes": changes,
+                      "seed_type_overrides": seed_type_overrides(fields),
+                      "schema_binding_warnings": alias_warnings(fields),
+                      "seeded": sum(1 for f in fields if f["pre_trained_field_id"]),
+                      "cold": sum(1 for f in fields if not f["pre_trained_field_id"])},
+                     indent=2))
+    for line in alias_warnings(fields):
+        print(f"warning: {line}", file=sys.stderr)
     if not args.execute:
         print("\nDry run. Re-run with --execute to apply.", file=sys.stderr)
         return
-    status, engine = api(base, token, "POST", "/api/v1/engines", {
-        "name": args.engine_name or args.queue_name, "type": "extractor",
-        "learning_enabled": True, "training_queues": []})
+    engine_body = {"name": args.engine_name or args.queue_name, "type": "extractor",
+                   "learning_enabled": True, "training_queues": []}
+    if use_case:
+        engine_body["settings"] = {"use_case": use_case}
+    status, engine = api(base, token, "POST", "/api/v1/engines", engine_body)
     if status != 201:
         fail(f"engine creation failed ({status})", engine)
-    for field in fields:
+    for field in strip_internal(fields):
         status, created = api(base, token, "POST", "/api/v1/engine_fields",
                               {**field, "engine": engine["url"]})
         if status != 201:
@@ -364,6 +469,10 @@ def main():
     parser.add_argument("--queue-id", type=int, help="convert/attach/revert: target queue")
     parser.add_argument("--engine-id", type=int, help="attach: existing engine id")
     parser.add_argument("--engine-name", help="convert/greenfield: engine name (default: queue name)")
+    parser.add_argument("--use-case", help=(
+        "convert/greenfield: engine settings.use_case. REQUIRED when the schema has line-item "
+        f"columns - '{LINE_LEVEL_USE_CASE}' extracts tables; omitting it yields a header-only "
+        "engine that silently returns zero rows."))
     parser.add_argument("--schema-file", help="greenfield: local JSON with {'content': [...]}")
     parser.add_argument("--queue-name", help="greenfield: new queue name")
     parser.add_argument("--workspace-url", help="greenfield: workspace URL for the new queue")
