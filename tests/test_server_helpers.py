@@ -664,8 +664,11 @@ def test_load_json_field_strips_utf8_bom(tmp_path):
 
 # --- _load_json_dict_field: bare object or whole-hook wrapper, ambiguity refused ---
 # `settings` is a dict, so both shapes are JSON objects. The wrapper is recognised by
-# structure: a file with `settings` AND another hook field is a hook; a file without
-# `settings` is the settings object; `settings` alone is refused rather than guessed.
+# structure: a file with `settings` AND another hook field is a hook; a file with
+# neither `settings` nor any hook marker is the bare settings object. The two mixed
+# cases are both refused rather than guessed: `settings` alone (no markers) could be a
+# wrapper stripped to one field or a bare object that happens to be named `settings`;
+# hook markers with no `settings` key at all is a whole hook that simply has none.
 
 _SETTINGS = {"configurations": [{"source": {"queries": [{"$match": {"a": 1}}]}}], "n": 2}
 _HOOK = {"id": 9, "type": "function", "name": "H", "settings": _SETTINGS,
@@ -691,6 +694,26 @@ def test_load_json_dict_field_wrapper_reports_ignored_keys_and_id(tmp_path):
 def test_load_json_dict_field_wrapper_needs_only_one_marker(tmp_path):
     value, ignored, file_id = _load_settings(_write(tmp_path, "h.json", {"type": "webhook", "settings": {"a": 1}}))
     assert value == {"a": 1} and ignored == ["type"] and file_id is None
+
+
+def test_load_json_dict_field_refuses_hook_without_settings_key(tmp_path):
+    # Mirror case of the ambiguity refusal below: a file that is plainly a whole hook
+    # object (it carries several _HOOK_OBJECT_KEYS markers) but has no `settings` key at
+    # all must be refused, not silently returned AS the settings object — that would
+    # send the hook's id/type/config/events wholesale as the new settings.
+    hookish = {"id": 9, "type": "function", "config": {"runtime": "python3.12", "code": "x"},
+               "events": ["invocation.manual"]}
+    with pytest.raises(server._FileInputError, match="cannot be the settings object either"):
+        _load_settings(_write(tmp_path, "hook_no_settings.json", hookish))
+
+
+def test_load_json_dict_field_bare_settings_with_no_markers_still_loads(tmp_path):
+    # Regression guard for the fix above: a genuine bare settings object that happens to
+    # carry NONE of the hook markers must still load — the new refusal is keyed off the
+    # markers actually being present, not merely off `settings` being absent.
+    bare = {"base_url": "https://example.com", "queries": [{"field": "vendor_id"}], "n": 3}
+    value, ignored, file_id = _load_settings(_write(tmp_path, "bare_settings.json", bare))
+    assert value == bare and ignored == [] and file_id is None
 
 
 def test_load_json_dict_field_refuses_settings_key_without_markers(tmp_path):

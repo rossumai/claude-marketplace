@@ -2951,6 +2951,20 @@ def test_settings_integrity_reports_dropped_and_changed_without_error(monkeypatc
     assert "do NOT retry" in si["note"]
 
 
+def test_settings_integrity_flags_injected_defaults_as_unexpected_for_settings(monkeypatch, tmp_path):
+    """Unlike schema content, hook settings is measured to be stored verbatim — an extra
+    key coming back that was never sent is a signal the API started normalising, not
+    routine noise, even though it does not fail `verified` (see _json_integrity)."""
+    landed = dict(SETTINGS, extra_key_the_api_added="surprise")
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+                             _settings_echo(landed_settings=landed))
+    si = emitted_payload(emitted)["settings_integrity"]
+    assert si["verified"] is True
+    assert si["injected_defaults"] == {"extra_key_the_api_added": 1}
+    assert "NOT expected" in si["note"]
+
+
 def test_settings_integrity_when_response_has_no_settings(monkeypatch, tmp_path):
     _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
                              {"hook_id": 9, "settings_file_path": _settings_file(tmp_path, SETTINGS)},
@@ -2970,6 +2984,19 @@ def test_settings_integrity_lists_ignored_keys_and_flags_foreign_file_id(monkeyp
     assert si["ignored_keys"] == [k for k in foreign if k != "settings"]
     assert si["file_id"] == 123
     assert "123" in si["note"] and "different hook" in si["note"]
+
+
+def test_settings_integrity_survives_a_non_dict_inline_settings(monkeypatch):
+    """Tool-argument validation only checks required/unknown keys, never types (see
+    _reject_secret_values), so `settings: 5` reaches the handler same as any other value.
+    _json_integrity degrades gracefully for a non-dict `sent`; sent_keys must too instead
+    of `len(5)` raising and turning this into a JSON-RPC -32603 Internal error."""
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "settings": 5},
+                             _settings_echo(landed_settings=SETTINGS))
+    si = emitted_payload(emitted)["settings_integrity"]
+    assert si["sent_keys"] is None
+    assert si["verified"] is False
 
 
 def test_create_hook_settings_mismatch_is_not_an_error_and_names_the_hook(monkeypatch, tmp_path):

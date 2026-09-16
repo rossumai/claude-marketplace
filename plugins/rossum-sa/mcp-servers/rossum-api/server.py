@@ -3877,11 +3877,27 @@ _SETTINGS_FILE_PATH_DOC = (
 )
 
 
+# Shared between rossum_create_hook and rossum_patch_hook: _emit_hook_write_result gives
+# both the same response shape, keyed off whether code and/or settings were sent.
+_HOOK_WRITE_RESPONSE_DOC = (
+    "Response shape depends on what was sent: a write that carries code and/or settings "
+    "returns {\"hook\": {...}, \"code_integrity\"?: {...}, \"settings_integrity\"?: {...}} — "
+    "read 'id' from inside \"hook\", not top-level; settings is stripped from that nested "
+    "hook object because settings_integrity already proves what landed. A write with "
+    "neither returns the bare hook object unwrapped, with 'id' top-level as usual."
+)
+
+
 # --- JSON object fields to/from local files (schema content and hook settings) ---
-# A 2xx does not prove the bytes landed. For JSON fields the API normalises on write —
-# it injects default keys and silently drops unknown ones — so equality is the wrong
-# check: the right one is "everything sent is present and equal in what landed", with
-# the API's additions reported separately. Canonical JSON is used only for hashing.
+# A 2xx does not prove the bytes landed, and the two fields fail differently, so
+# neither can be checked by plain equality. Schema content really does normalise on
+# write — the API injects default keys and silently drops unknown ones. Hook settings
+# does NOT: it is measured to be stored verbatim, and an invalid settings object is
+# rejected with an HTTP 400, not silently corrected — there the same machinery instead
+# licenses stripping a settings echo that can run to tens of thousands of tokens. Either
+# way the right check is the same: "everything sent is present and equal in what
+# landed", with the API's own additions (if any) reported separately. Canonical JSON is
+# used only for hashing.
 
 
 def _canonical_sha256(obj):
@@ -3899,8 +3915,10 @@ def _json_integrity(sent, landed, *, root="content"):
                containers (e.g. a list vs a dict at the same path), the entry carries
                each side's type and size instead of inlining the sub-trees — a caller
                most needs this branch to stay small exactly when the mismatch is big.
-    injected_defaults — keys present only in `landed`, counted by key name (normal: the
-               API adds defaults such as rir_field_names / default_value)
+    injected_defaults — keys present only in `landed`, counted by key name. Normal for
+               schema content (the API adds defaults such as rir_field_names /
+               default_value); NOT expected for hook settings, which the API stores
+               verbatim — there it is a signal, not noise (see _settings_integrity).
     verified — no dropped and no changed. Injected keys do NOT fail verification.
     """
     dropped, changed, injected = [], [], {}
@@ -4046,12 +4064,15 @@ def _load_json_dict_field(path, key, *, wrapper_markers):
 
     The dict-valued sibling of _load_json_field. Both shapes are JSON objects, so the
     wrapper is recognised by structure, not type: a file is a wrapper iff it has `key` AND
-    at least one `wrapper_markers` key (for hooks: id / type / events / config / …). A
-    file WITHOUT `key` is the bare value. A file WITH `key` and NO marker is refused as
-    ambiguous — it could be a wrapper stripped to one field or a bare value that happens
-    to contain `key` — rather than guessed at on a write path (a wrong guess would silently
-    send the wrong object, the failure mode that got `bare_type=dict` removed from
-    _load_json_field).
+    at least one `wrapper_markers` key (for hooks: id / type / events / config / …). The
+    rule is symmetric and refuses to guess in either direction: a file WITH `key` and NO
+    marker is refused as ambiguous — it could be a wrapper stripped to one field or a bare
+    value that happens to contain `key` — and a file WITHOUT `key` but WITH a marker is
+    refused too, because that shape is a whole object of the wrapper's kind (a hook) that
+    simply has no `key`, not the bare value. Only a file with neither `key` nor any marker
+    is accepted as the bare value. Guessing instead of refusing is the failure mode that
+    got `bare_type=dict` removed from _load_json_field: a wrong guess silently sends the
+    wrong object.
 
     Returns (value, ignored_keys, file_id) as _load_json_field does: `ignored_keys` are
     the wrapper's other top-level keys in file order (so the caller can report what will
@@ -4065,6 +4086,13 @@ def _load_json_dict_field(path, key, *, wrapper_markers):
             f"object with a {key!r} key — got {type(data).__name__}."
         )
     if key not in data:
+        if any(k in data for k in wrapper_markers):
+            examples = ", ".join(k for k in wrapper_markers if k in data)
+            raise _FileInputError(
+                f"{path} looks like a whole hook object (it has {examples}) but has no "
+                f"{key!r} key, so it cannot be the {key} object either. If the hook has no "
+                f"{key}, pass {key} inline; otherwise point at a file that carries {key!r}."
+            )
         return data, [], None
     if not any(k in data for k in wrapper_markers):
         examples = ", ".join(wrapper_markers[:4])
@@ -4436,11 +4464,18 @@ def _settings_integrity(sent, landed, *, ignored_keys=(), file_id=None, hook_id=
             "landed_sha256": None,
             "landed_keys": None,
         }
-    integrity["sent_keys"] = len(sent)
+    integrity["sent_keys"] = len(sent) if isinstance(sent, dict) else None
     if ignored_keys:
         integrity["ignored_keys"] = list(ignored_keys)
     notes = []
-    if integrity["verified"]:
+    if integrity["verified"] and integrity.get("injected_defaults"):
+        notes.append(
+            "Settings landed, but the API returned key(s) that were not sent (see "
+            "'injected_defaults') — that is NOT expected for hook settings, which are "
+            "normally stored verbatim. Re-read the hook with rossum_get_hook before relying "
+            "on this being exactly what you sent."
+        )
+    elif integrity["verified"]:
         notes.append("Settings landed intact.")
     elif created:
         notes.append(
@@ -4528,8 +4563,8 @@ def _reject_secret_values(request_id, arguments):
     "Creates a new hook (extension) in the Rossum organization. Hooks can be serverless functions "
     "(type='function') executed in Python 3.12 or webhooks (type='webhook') that POST to an external URL. "
     "Always set description, and when the hook reads payload['secrets'] also set secrets_schema so the "
-    "expected secret key names are declared up front. " + _NO_SECRET_VALUES_DOC +
-    " This is a write operation.",
+    "expected secret key names are declared up front. " + _HOOK_WRITE_RESPONSE_DOC + " " +
+    _NO_SECRET_VALUES_DOC + " This is a write operation.",
     {
         "type": "object",
         "required": ["name", "type", "events"],
@@ -4815,10 +4850,8 @@ def handle_delete_hook(request_id, arguments):
     "API's own HTTP 400, returned as-is. verified:true does NOT mean nobody else's work was lost — "
     "settings replaces the stored object wholesale and the API exposes no ETag, so patching from a "
     "stale copy silently discards edits made in between; re-read with rossum_get_hook before "
-    "patching a hook others may be editing. The response is nested: a code or settings write "
-    "returns {\"hook\": {...}, \"code_integrity\"?: {...}, \"settings_integrity\"?: {...}}, a "
-    "write with neither returns the bare hook object unwrapped — do not assume 'id' is top-level. "
-    + _NO_SECRET_VALUES_DOC + " This is a write operation.",
+    "patching a hook others may be editing. " + _HOOK_WRITE_RESPONSE_DOC + " " +
+    _NO_SECRET_VALUES_DOC + " This is a write operation.",
     {
         "type": "object",
         "required": ["hook_id"],
