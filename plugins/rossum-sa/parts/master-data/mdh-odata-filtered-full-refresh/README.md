@@ -10,7 +10,7 @@ that have left the population while a `PATCH`-merge never does.
 Measured on a one-time-vendor feed, where the real vendor exists only as a typed address on
 the purchase order and the master carries a placeholder code:
 
-- the filter (`startswith(Supplier,'ONETIME')`) cut **2.33 M rows to 5,134 (0.2 %)**, so the
+- the filter (`startswith(Supplier,'<placeholder-prefix>')`) cut **2.33 M rows to 5,134 (0.2 %)**, so the
   whole sweep ran in ~20 s over 12 pages — a cursor would have added state and failure modes
   to save nothing;
 - **259 of those rows had no change stamp at all**, so a watermark keyed on

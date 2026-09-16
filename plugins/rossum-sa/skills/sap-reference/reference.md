@@ -116,7 +116,7 @@ All three converge on the same Rossum-side design: **a two-phase importer (full 
 
 ## Shape A: OData through an API gateway
 
-SAP publishes OData v4 entity sets (`GETPurchaseOrder`, `GETPurchaseOrderItem`, …) through BTP API Management with OAuth2 client credentials. Everything below was **measured** on one such gateway, 2026-01 → 2026-09, against ~2.3 M PO items.
+SAP publishes OData v4 entity sets (purchase order, purchase-order item, …, under the customer's own proxy names) through BTP API Management with OAuth2 client credentials. Everything below was **measured** on one such gateway, 2026-01 → 2026-09, against ~2.3 M PO items.
 
 **Paging**
 - Page with **`$top` and an incrementing numeric `$skiptoken` offset**. The gateway's relative `@odata.nextLink` was not reliably reconstructible and silently truncated a windowed pull.
@@ -133,20 +133,20 @@ SAP publishes OData v4 entity sets (`GETPurchaseOrder`, `GETPurchaseOrderItem`, 
 
 **Entities**
 - A child entity (PO item) may carry **no date at all**. Window it through its parent: header `$filter` + `$expand=_PurchaseOrderItem`, then flatten and **stamp the header's dates (and key) onto every child**. Nested expands work (`_Item($expand=_AccountAssignment)`) but need `$top` 100–200; a separate feed on its own cursor was the better shape.
-- **A documented entity may simply not be deployed**: `GETPurchaseOrderAccountAssignment` returned `404 ApplicationNotFound` on the route the customer had published. Probe every entity before designing around it.
+- **A documented entity may simply not be deployed**: the standalone account-assignment entity returned `404 ApplicationNotFound` on the route the customer had published. Probe every entity before designing around it.
 - Navigation names ≠ entity names (`_PurOrdAccountAssignment` vs `PurchaseOrderAccountAssignment`); make both settings, not constants.
 - Drop `SAP__Messages` and any list/dict value before writing to MDH so columns stay scalar.
 - **Deletes never surface** through GET — a removed row stops appearing. For drift detection run a nightly full-replace companion (`mdh-odata-filtered-full-refresh` with an empty filter). Soft deletes do surface as flags (`PO_DELETION_CODE`, `ITEM_DELETION_CODE`) and must be carried, not filtered.
 
-**One-time vendors.** On an OTV purchase order SAP puts a placeholder vendor code on the PO (`ONETIME1/2/3`); the real vendor exists only as a typed address under the header's `_SupplierAddress`. The placeholder *does* exist in the supplier master — as a dummy record — so every field resolved from the master is meaningless. Carry the PO's own address into a dedicated collection (measured: 0.2 % of POs; 259 of 5,134 carried no change stamp, so a filtered daily full refresh, not a watermark). Downstream: no VAT, no due date from the placeholder's payment terms, bank details only from the page — and only for regions where that is acceptable.
+**One-time vendors.** On an OTV purchase order SAP puts a placeholder vendor code on the PO (a handful of fixed codes for the whole company); the real vendor exists only as a typed address under the header's `_SupplierAddress`. The placeholder *does* exist in the supplier master — as a dummy record — so every field resolved from the master is meaningless. Carry the PO's own address into a dedicated collection (measured: 0.2 % of POs; 259 of 5,134 carried no change stamp, so a filtered daily full refresh, not a watermark). Downstream: no VAT, no due date from the placeholder's payment terms, bank details only from the page — and only for regions where that is acceptable.
 
 ## Shape B: customer HTTPS middleware wrapping RFCs
 
-The customer's integration team exposes one REST endpoint per Z-RFC (`Rossum_GET_VENDORS`, `Rossum_GET_PURCHASE_ORDERS`, `Rossum_GET_GOODS_RECEIPT`, `Rossum_CREATE_INVOICE`, `Rossum_ATTACH_INVOICE`), behind a token endpoint. Everything below was **measured** on one such middleware, 2026-08 → 2026-09.
+The customer's integration team exposes one REST endpoint per Z-RFC (get vendors, get purchase orders, get goods receipts, create invoice, attach invoice), behind a token endpoint. Everything below was **measured** on one such middleware, 2026-08 → 2026-09.
 
 **Connectivity first — and read the two failures apart**
 - Serverless hooks may have **no outbound internet** until it is enabled; and the networking is applied **when the function is deployed**, so an existing hook only picks it up after a config change forces a redeploy. Symptom: `ConnectTimeout` with no TCP handshake — looks exactly like a firewall drop at the customer.
-- The customer **whitelists Rossum's egress IPs** (four per region). A request that *reaches* the application and is rejected comes back with an error code (`E101`). A laptop is not on that list — testing from a workstation will keep failing after the whitelist works, and the office proxy's egress rotates inside a /24. Verify through the deployed hook, or get the whole /24 whitelisted.
+- The customer **whitelists Rossum's egress IPs** (four per region). A request that *reaches* the application and is rejected comes back with an application error code. A laptop is not on that list — testing from a workstation will keep failing after the whitelist works, and the office proxy's egress rotates inside a /24. Verify through the deployed hook, or get the whole /24 whitelisted.
 
 **The envelope**
 - `{"DATA": {...}, "RESULT_FLAG": "S"}`. `RESULT_FLAG` is the *transport* status. **Validation failures arrive as HTTP 200 with `RESULT_FLAG: "S"`** and the reason as localized prose in `DATA.EV_MSG`. `EV_MSG` is `null` (not `""`) on success and is the only reliable error channel — match it loosely; it is not a stable code.
@@ -228,7 +228,7 @@ Raw UBL 2.1 (`CustomizationID urn:oasis:names:specification:ubl:xsd:Invoice-2`) 
 
 - **The gateway's SQL threat-protection policy scans the whole request** and 403s on any standalone SQL keyword. Three carriers, each hit once: `drop`/`/or+` inside the **base64 PDF**; `" or "` in an **attachment filename**; `or` in an **XML developer comment**. Neutralise base64 by inserting a newline mid-keyword (legal whitespace, byte-identical decode), clean the filename stem, strip comments from the bytes, and preflight-report anything left. Never rewrite invoice data to dodge a WAF.
 - **VIM's inbound mapping reads paths**: an element it maps must always be present, so withhold values by shipping the element **empty** — except `xsd:decimal` / `xsd:date` (`cbc:Percent`, `cbc:DueDate`), where empty is schema-invalid and omission is the only option.
-- `BuyerReference` = company code (BUKRS) from the *document* (queue prefix / `coa`), so one hook serves every SAP queue. Supplier `PartyIdentification schemeID="SAP-LIFNR"`, customer `schemeID="SAP-BUKRS"`. Payment terms as `cac:PaymentTerms/cbc:Note` `ZTERM=<code>` from the matched PO header; SAP computes the due date itself — do not send a competing one. Header `cbc:Note` carries the Rossum annotation id, AP's traceback.
+- `BuyerReference` = company code (BUKRS) from the *document* (a per-queue default field), so one hook serves every SAP queue. Supplier `PartyIdentification schemeID="SAP-LIFNR"`, customer `schemeID="SAP-BUKRS"`. Payment terms as `cac:PaymentTerms/cbc:Note` `ZTERM=<code>` from the matched PO header; SAP computes the due date itself — do not send a competing one. Header `cbc:Note` carries the Rossum annotation id, AP's traceback.
 - `PriceAmount × InvoicedQuantity` must equal `LineExtensionAmount` within 2 cents (EN 16931); derive the price from the authoritative line net when the PO price does not reconcile. `LineExtensionAmount` must equal the sum of emitted lines (BR-CO-10) — flag a gap, never infer a freight line.
 - Declare the `mimeCode` from the bytes (magic number first; Rossum's `mime_type` can be the literal string `"empty"`). TIFF is legal under plain UBL 2.1; VIM accepted it.
 - Response: `{"id": <guid>, "status": "COMPLETED", "documents": [{"regid": <n>, "status": "REGISTERED"}]}`. **The DP number is not in it.**

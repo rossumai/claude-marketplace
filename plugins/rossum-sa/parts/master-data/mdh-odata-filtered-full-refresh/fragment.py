@@ -37,7 +37,7 @@ import requests
 # ---- part parameters --------------------------------------------------------------------
 DATASET = "«dataset»"
 ID_KEYS = "«id_keys»"                    # comma-separated
-ODATA_FILTER = "«odata_filter»"          # e.g. startswith(Supplier,'ONETIME'); "" = whole entity
+ODATA_FILTER = "«odata_filter»"          # e.g. startswith(Supplier,'<prefix>'); "" = whole entity
 EXPAND_NAV = "«expand_nav»"              # single navigation property to flatten; "" = none
 SELECT_FIELDS = "«select_fields»"        # comma-separated header fields; "" = no $select
 ORDER_BY = "«order_by»"                  # the entity key
