@@ -3884,29 +3884,13 @@ class _FileInputError(ValueError):
     """A local-file input the caller must fix. The message is user-facing."""
 
 
-def _load_json_field(path, key):
-    """Read `key` from a local JSON file that is either a bare JSON array or a wrapper
-    object carrying that array under `key`.
+def _read_json_file_strict(path):
+    """Read and parse a local JSON file for a field loader.
 
-    Returns (value, ignored_keys, file_id). A bare JSON array is the value itself (file_id
-    is None). A JSON object yields obj[key] — which must be a JSON array — plus every other
-    top-level key in file order, so the caller can report what the file carried that will
-    NOT be sent (e.g. a prd2 schema.json's id/url/queues/name/metadata) — and the object's
-    own top-level 'id' (or None if it has none), so a caller can flag a file that was pulled
-    from a different object than the one being written. Reads with utf-8-sig, so a UTF-8 BOM
-    (common from Windows editors) is stripped transparently and is a no-op when absent. A key
-    repeated within one JSON object silently keeps only the LAST occurrence per the JSON
-    spec, which can hide a copy-paste slip inside a nested datapoint — that is rejected
-    instead of silently accepted. Raises _FileInputError with a user-facing message; never
-    touches the network.
-
-    List-only by design: `isinstance(data, bare_type)` is checked before the whole-object
-    branch, which is unambiguous only when the bare value is a list — a bare-object field
-    (e.g. future hook settings) would match a wrapper object on the FIRST branch and never
-    reach the key lookup, silently returning the whole wrapper with no warning. Don't
-    re-add a `bare_type=dict` flag to reuse this helper for such a field; give it its own
-    disambiguation rule (e.g. a required marker key, or a caller-supplied predicate)
-    instead.
+    utf-8-sig so a UTF-8 BOM (common from Windows editors) is stripped transparently; a
+    key repeated within one JSON object is rejected instead of silently keeping the last
+    occurrence per the JSON spec. Raises _FileInputError with a user-facing message;
+    never touches the network.
     """
     import os
 
@@ -3931,11 +3915,34 @@ def _load_json_field(path, key):
         return dict(pairs)
 
     try:
-        data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     except _FileInputError:
         raise
     except ValueError as exc:
         raise _FileInputError(f"{path} is not valid JSON: {exc}") from exc
+
+
+def _load_json_field(path, key):
+    """Read `key` from a local JSON file that is either a bare JSON array or a wrapper
+    object carrying that array under `key`.
+
+    Returns (value, ignored_keys, file_id). A bare JSON array is the value itself (file_id
+    is None). A JSON object yields obj[key] — which must be a JSON array — plus every other
+    top-level key in file order, so the caller can report what the file carried that will
+    NOT be sent (e.g. a prd2 schema.json's id/url/queues/name/metadata) — and the object's
+    own top-level 'id' (or None if it has none), so a caller can flag a file that was pulled
+    from a different object than the one being written. Raises _FileInputError with a
+    user-facing message; never touches the network.
+
+    List-only by design: `isinstance(data, bare_type)` is checked before the whole-object
+    branch, which is unambiguous only when the bare value is a list — a bare-object field
+    (e.g. future hook settings) would match a wrapper object on the FIRST branch and never
+    reach the key lookup, silently returning the whole wrapper with no warning. Don't
+    re-add a `bare_type=dict` flag to reuse this helper for such a field; give it its own
+    disambiguation rule (e.g. a required marker key, or a caller-supplied predicate)
+    instead.
+    """
+    data = _read_json_file_strict(path)
 
     if isinstance(data, list):
         return data, [], None
@@ -3954,6 +3961,55 @@ def _load_json_field(path, key):
         f"{path} must contain a JSON array or an object with a {key!r} key, "
         f"got {type(data).__name__}."
     )
+
+
+# Top-level keys a hook object carries and a settings object does not (measured across
+# 833 real non-empty settings objects: none contained any of them). Tuple, not set, so the
+# first four double as the examples quoted in the refusal message.
+_HOOK_OBJECT_KEYS = ("id", "type", "events", "config", "name", "url", "queues", "active",
+                     "description", "sideload", "settings_schema", "secrets_schema", "metadata")
+
+
+def _load_json_dict_field(path, key, *, wrapper_markers):
+    """Read `key` — a JSON OBJECT — from a local file that is either that object itself
+    or a wrapper object carrying it under `key`.
+
+    The dict-valued sibling of _load_json_field. Both shapes are JSON objects, so the
+    wrapper is recognised by structure, not type: a file is a wrapper iff it has `key` AND
+    at least one `wrapper_markers` key (for hooks: id / type / events / config / …). A
+    file WITHOUT `key` is the bare value. A file WITH `key` and NO marker is refused as
+    ambiguous — it could be a wrapper stripped to one field or a bare value that happens
+    to contain `key` — rather than guessed at on a write path (a wrong guess would silently
+    send the wrong object, the failure mode that got `bare_type=dict` removed from
+    _load_json_field).
+
+    Returns (value, ignored_keys, file_id) as _load_json_field does: `ignored_keys` are
+    the wrapper's other top-level keys in file order (so the caller can report what will
+    NOT be sent), `file_id` the wrapper's own 'id' or None. Raises _FileInputError; never
+    touches the network.
+    """
+    data = _read_json_file_strict(path)
+    if not isinstance(data, dict):
+        raise _FileInputError(
+            f"{path} must contain a JSON object — the {key} object itself, or a whole hook "
+            f"object with a {key!r} key — got {type(data).__name__}."
+        )
+    if key not in data:
+        return data, [], None
+    if not any(k in data for k in wrapper_markers):
+        examples = ", ".join(wrapper_markers[:4])
+        raise _FileInputError(
+            f"{path} has a top-level {key!r} key but none of the other hook fields "
+            f"({examples}, …), so it cannot be told apart from a {key} object that happens to "
+            f"contain a {key!r} key. If it is a whole hook, keep its other fields; if it is the "
+            f"{key} object itself, either pass it inline or wrap it as "
+            f'{{"type": "function", "{key}": {{...}}}} so the wrapper is unambiguous.'
+        )
+    if not isinstance(data[key], dict):
+        raise _FileInputError(
+            f"{path}: {key!r} must be a JSON object, got {type(data[key]).__name__}."
+        )
+    return data[key], [k for k in data if k != key], data.get("id")
 
 
 def _count_datapoints(nodes):

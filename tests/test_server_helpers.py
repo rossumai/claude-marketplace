@@ -662,6 +662,73 @@ def test_load_json_field_strips_utf8_bom(tmp_path):
     assert value == _SENT and ignored == [] and file_id is None
 
 
+# --- _load_json_dict_field: bare object or whole-hook wrapper, ambiguity refused ---
+# `settings` is a dict, so both shapes are JSON objects. The wrapper is recognised by
+# structure: a file with `settings` AND another hook field is a hook; a file without
+# `settings` is the settings object; `settings` alone is refused rather than guessed.
+
+_SETTINGS = {"configurations": [{"source": {"queries": [{"$match": {"a": 1}}]}}], "n": 2}
+_HOOK = {"id": 9, "type": "function", "name": "H", "settings": _SETTINGS,
+         "config": {"runtime": "python3.12", "code": "x"}, "events": ["invocation.manual"]}
+
+
+def _load_settings(path):
+    return server._load_json_dict_field(path, "settings", wrapper_markers=server._HOOK_OBJECT_KEYS)
+
+
+def test_load_json_dict_field_bare_object(tmp_path):
+    value, ignored, file_id = _load_settings(_write(tmp_path, "s.json", _SETTINGS))
+    assert value == _SETTINGS and ignored == [] and file_id is None
+
+
+def test_load_json_dict_field_wrapper_reports_ignored_keys_and_id(tmp_path):
+    value, ignored, file_id = _load_settings(_write(tmp_path, "h.json", _HOOK))
+    assert value == _SETTINGS
+    assert ignored == ["id", "type", "name", "config", "events"]   # file order, minus settings
+    assert file_id == 9
+
+
+def test_load_json_dict_field_wrapper_needs_only_one_marker(tmp_path):
+    value, ignored, file_id = _load_settings(_write(tmp_path, "h.json", {"type": "webhook", "settings": {"a": 1}}))
+    assert value == {"a": 1} and ignored == ["type"] and file_id is None
+
+
+def test_load_json_dict_field_refuses_settings_key_without_markers(tmp_path):
+    with pytest.raises(server._FileInputError, match="cannot be told apart"):
+        _load_settings(_write(tmp_path, "amb.json", {"settings": {"a": 1}}))
+    # a settings object that itself carries a 'settings' key looks identical — same refusal
+    with pytest.raises(server._FileInputError, match="cannot be told apart"):
+        _load_settings(_write(tmp_path, "amb2.json", {"settings": {"nested": True}, "other": 1}))
+
+
+@pytest.mark.parametrize("doc,fragment", [
+    ([1, 2], "must contain a JSON object"),
+    ("\"just a string\"", "must contain a JSON object"),
+    ({"id": 9, "settings": [1, 2]}, "'settings' must be a JSON object"),
+    ({"id": 9, "settings": None}, "'settings' must be a JSON object"),
+], ids=["array", "string", "settings-is-list", "settings-is-null"])
+def test_load_json_dict_field_rejects_wrong_shapes(tmp_path, doc, fragment):
+    with pytest.raises(server._FileInputError, match=fragment):
+        _load_settings(_write(tmp_path, "bad.json", doc))
+
+
+def test_load_json_dict_field_shares_the_strict_reader(tmp_path):
+    with pytest.raises(server._FileInputError, match="File not found"):
+        _load_settings(str(tmp_path / "nope.json"))
+    with pytest.raises(server._FileInputError, match="not valid JSON"):
+        _load_settings(_write(tmp_path, "bad.json", "{not json"))
+    with pytest.raises(server._FileInputError, match="duplicate key 'a'"):
+        _load_settings(_write(tmp_path, "dup.json", '{"x": {"a": 1, "a": 2}}'))
+    bom = tmp_path / "bom.json"
+    bom.write_bytes(b"\xef\xbb\xbf" + json.dumps(_SETTINGS).encode("utf-8"))
+    assert _load_settings(str(bom))[0] == _SETTINGS
+
+
+def test_load_json_dict_field_empty_object_is_returned_not_refused(tmp_path):
+    # The {} guard belongs to the resolver (it knows {} wipes the field); the loader is shape-only.
+    assert _load_settings(_write(tmp_path, "e.json", {})) == ({}, [], None)
+
+
 # --- _count_datapoints + _write_json_file ---
 
 def test_count_datapoints_handles_multivalue_tuple_children():
