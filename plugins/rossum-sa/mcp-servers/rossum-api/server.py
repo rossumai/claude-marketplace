@@ -4311,23 +4311,16 @@ def _code_digest(code):
     }
 
 
-def _emit_hook_write_result(request_id, result, sent_code, *, created=False,
-                            sent_settings=None, settings_ignored_keys=(),
-                            settings_file_id=None, hook_id=None):
-    """Emit a hook create/patch response, verifying the code that actually landed.
+def _code_integrity(result, sent_code, *, created):
+    """code_integrity block for a hook write that carried code; returns (block, is_error).
 
-    A 2xx does not prove the bytes landed, so when the write carried code the response's
-    config.code is compared with what was sent. The API strips surrounding whitespace from
-    hook code, so the comparison is on stripped text — a raw comparison would flag every
-    source file that ends in a newline and drown a genuine corruption in false alarms.
-
-    `created` marks the non-idempotent create path: a mismatch there is reported WITHOUT
-    is_error, because the hook exists and a caller that retries on error mints duplicates.
-    Writes that do not touch code keep the bare hook object as the response shape.
+    A 2xx does not prove the bytes landed, so the response's config.code is compared with
+    what was sent. The API strips surrounding whitespace from hook code, so the comparison
+    is on stripped text — a raw comparison would flag every source file that ends in a
+    newline and drown a genuine corruption in false alarms. A mismatch is is_error only on
+    patch: on create the hook exists and retry-on-error mints duplicates, so the note names
+    the id and says not to retry.
     """
-    if sent_code is None:
-        tool_result(request_id, json.dumps(result, indent=2))
-        return
     landed = (result.get("config") or {}).get("code")
     landed_text = landed if isinstance(landed, str) else None
     integrity = {
@@ -4346,10 +4339,7 @@ def _emit_hook_write_result(request_id, result, sent_code, *, created=False,
                 "Code landed intact. The stored copy differs only in surrounding whitespace, "
                 "which the API strips."
             )
-        tool_result(request_id, json.dumps(
-            {"hook": result, "code_integrity": integrity}, indent=2))
-        return
-
+        return integrity, False
     hook_id = result.get("id")
     if created:
         integrity["note"] = (
@@ -4357,21 +4347,109 @@ def _emit_hook_write_result(request_id, result, sent_code, *, created=False,
             f"second hook. But the code it came back with is not what was sent. Inspect it with "
             f"rossum_get_hook({hook_id}) and fix it with rossum_patch_hook before relying on it."
         )
-        # Not an error result: the object exists, and retry-on-error is the harmful response.
-        tool_result(request_id, json.dumps(
-            {"hook": result, "code_integrity": integrity}, indent=2))
-        return
-
+        return integrity, False
     integrity["note"] = (
         "The hook returned by the API does not carry the code that was sent (difference is not "
         "just surrounding whitespace). The write reported success but the bytes did not land "
         "intact — re-read the hook with rossum_get_hook before relying on it."
     )
-    tool_result(
-        request_id,
-        json.dumps({"hook": result, "code_integrity": integrity}, indent=2),
-        is_error=True,
-    )
+    return integrity, True
+
+
+def _settings_integrity(sent, landed, *, ignored_keys=(), file_id=None, hook_id=None,
+                        created=False):
+    """settings_integrity block: structural readback of the settings that landed.
+
+    Measured live on a throwaway hook: settings is stored as an opaque JSON object — it
+    round-trips deep-equal with no injected keys and no silent drops, is validated
+    server-side against the hook's settings_schema (a violation is a 400, never a silent
+    change), and comes back key-REORDERED on later reads (Postgres jsonb: length, then
+    bytes) — so the comparison is structural and the hashes canonical. Its job is
+    therefore not to catch silent corruption, which the API does not do here, but to
+    license stripping a settings echo that can run to tens of thousands of tokens from
+    the response, and to stay honest if the API ever starts normalising.
+
+    Never is_error: the write landed and a retry would land identically. `file_id` (a
+    whole-hook file's own id) is flagged only on patch, when it differs from the hook
+    being written — on create, building a hook from another hook's file is a clone.
+    """
+    if isinstance(landed, dict):
+        integrity = _json_integrity(sent, landed, root="settings")
+        integrity["landed_keys"] = len(landed)
+    else:
+        integrity = {
+            "verified": False,
+            "sent_sha256": _canonical_sha256(sent),
+            "landed_sha256": None,
+            "landed_keys": None,
+        }
+    integrity["sent_keys"] = len(sent)
+    if ignored_keys:
+        integrity["ignored_keys"] = list(ignored_keys)
+    notes = []
+    if integrity["verified"]:
+        notes.append("Settings landed intact.")
+    elif created:
+        notes.append(
+            f"The hook WAS created (id {hook_id}) — do NOT retry this call, that would create a "
+            "second hook. But the settings it came back with are not what was sent: check "
+            "'dropped' and 'changed', inspect with rossum_get_hook and fix with rossum_patch_hook."
+        )
+    else:
+        notes.append(
+            "The hook WAS updated, but the settings that landed are not what was sent — do NOT "
+            "retry, the same object would land the same way. Check 'dropped' and 'changed', fix "
+            "the settings, and patch again."
+        )
+    if integrity["landed_sha256"] is None:
+        notes.append(
+            "landed_sha256 is null because the response carried no settings object at all — "
+            "re-read the hook with rossum_get_hook before assuming anything about what is stored."
+        )
+    if not created and isinstance(file_id, int) and file_id != hook_id:
+        integrity["file_id"] = file_id
+        notes.append(
+            f"The settings file's own id ({file_id}) differs from the hook being patched "
+            f"({hook_id}) — this looks like a file pulled from a different hook, so the settings "
+            "sent may not be the object you meant to send."
+        )
+    integrity["note"] = " ".join(notes)
+    return integrity
+
+
+def _emit_hook_write_result(request_id, result, sent_code, *, created=False,
+                            sent_settings=None, settings_ignored_keys=(),
+                            settings_file_id=None, hook_id=None):
+    """Emit a hook create/patch response, verifying what actually landed.
+
+    Two independent readbacks — measured: a settings write never disturbs config.code and
+    vice versa, so the blocks never disagree about the same bytes:
+      code_integrity      when the write carried code (see _code_integrity);
+      settings_integrity  when the write carried settings (see _settings_integrity) — the
+                          echoed hook then has `settings` STRIPPED, because returning it
+                          would defeat settings_file_path and the readback proves what landed.
+    A write that carried neither returns the bare hook object, unchanged from before. A
+    write that did not carry settings keeps them in the echo: stripping is licensed by
+    the readback, and there is none.
+
+    `created` marks the non-idempotent create path: a mismatch there is never is_error,
+    because the hook exists and a caller that retries on error mints duplicates. Only a
+    code mismatch on patch is is_error (unchanged behaviour).
+    """
+    if sent_code is None and sent_settings is None:
+        tool_result(request_id, json.dumps(result, indent=2))
+        return
+    out = {"hook": result}
+    is_error = False
+    if sent_code is not None:
+        out["code_integrity"], is_error = _code_integrity(result, sent_code, created=created)
+    if sent_settings is not None:
+        out["hook"] = {k: v for k, v in result.items() if k != "settings"}
+        out["settings_integrity"] = _settings_integrity(
+            sent_settings, result.get("settings"),
+            ignored_keys=settings_ignored_keys, file_id=settings_file_id,
+            hook_id=result.get("id") if created else hook_id, created=created)
+    tool_result(request_id, json.dumps(out, indent=2), is_error=is_error)
 
 
 def _reject_secret_values(request_id, arguments):

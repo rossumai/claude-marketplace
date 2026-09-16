@@ -2911,6 +2911,132 @@ def test_test_hook_fills_the_runtime_from_the_hook_under_test(monkeypatch, tmp_p
     assert test_call["body"]["config"] == {"runtime": "python3.12", "code": CODE}
 
 
+def test_patch_hook_settings_write_strips_echo_and_reports_integrity(monkeypatch, tmp_path):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+                             _settings_echo())
+    out = emitted_payload(emitted)
+    assert set(out) == {"hook", "settings_integrity"}
+    assert "settings" not in out["hook"], "the echo would defeat the file path"
+    assert out["hook"]["id"] == 9 and out["hook"]["config"]["code"] == CODE
+    si = out["settings_integrity"]
+    assert si["verified"] is True
+    assert si["sent_sha256"] == si["landed_sha256"] == server._canonical_sha256(SETTINGS)
+    assert si["sent_keys"] == si["landed_keys"] == 2
+    assert "intact" in si["note"]
+    assert "injected_defaults" not in si and "ignored_keys" not in si
+    assert emitted[-1]["result"].get("isError") is not True
+
+
+def test_settings_integrity_is_structural_not_bytewise(monkeypatch, tmp_path):
+    """The API stores settings as jsonb and returns keys reordered (length, then bytes).
+    Same object, different key order, must verify."""
+    reordered = {"threshold": 0.8, "configurations": SETTINGS["configurations"]}
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+                             _settings_echo(landed_settings=reordered))
+    assert emitted_payload(emitted)["settings_integrity"]["verified"] is True
+
+
+def test_settings_integrity_reports_dropped_and_changed_without_error(monkeypatch, tmp_path):
+    landed = {"threshold": 0.9}     # 'configurations' gone, threshold altered
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+                             _settings_echo(landed_settings=landed))
+    assert emitted[-1]["result"].get("isError") is not True, "the write landed; a retry lands the same"
+    si = emitted_payload(emitted)["settings_integrity"]
+    assert si["verified"] is False
+    assert si["dropped"] == ["settings.configurations"]
+    assert si["changed"] == [{"path": "settings.threshold", "sent": 0.8, "landed": 0.9}]
+    assert "do NOT retry" in si["note"]
+
+
+def test_settings_integrity_when_response_has_no_settings(monkeypatch, tmp_path):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+                             lambda url, method, body: {"id": 9, "name": "H"})
+    si = emitted_payload(emitted)["settings_integrity"]
+    assert si["verified"] is False and si["landed_sha256"] is None and si["landed_keys"] is None
+    assert "rossum_get_hook" in si["note"]
+
+
+def test_settings_integrity_lists_ignored_keys_and_flags_foreign_file_id(monkeypatch, tmp_path):
+    foreign = _hook_obj(id=123, name="Other hook")
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "settings_file_path": _settings_file(tmp_path, foreign)},
+                             _settings_echo())
+    si = emitted_payload(emitted)["settings_integrity"]
+    assert si["verified"] is True
+    assert si["ignored_keys"] == [k for k in foreign if k != "settings"]
+    assert si["file_id"] == 123
+    assert "123" in si["note"] and "different hook" in si["note"]
+
+
+def test_create_hook_settings_mismatch_is_not_an_error_and_names_the_hook(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "webhook", "events": ["invocation.manual"],
+         "config": {"url": "https://example.com/wh"},
+         "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+        _settings_echo(landed_settings={"threshold": 0.8}),
+    )
+    assert emitted[-1]["result"].get("isError") is not True
+    si = emitted_payload(emitted)["settings_integrity"]
+    assert si["verified"] is False
+    assert "9" in si["note"] and "retry" in si["note"].lower()
+    assert "file_id" not in si, "a create from another hook's file is a legitimate clone"
+
+
+def test_create_hook_from_foreign_file_does_not_flag_file_id(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "webhook", "events": ["invocation.manual"],
+         "config": {"url": "https://example.com/wh"},
+         "settings_file_path": _settings_file(tmp_path, _hook_obj(id=123))},
+        _settings_echo(),
+    )
+    si = emitted_payload(emitted)["settings_integrity"]
+    assert si["verified"] is True and "file_id" not in si
+
+
+def test_hook_write_with_code_and_settings_reports_both_blocks(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook",
+        {"hook_id": 9, "code_file_path": _code_file(tmp_path),
+         "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+        lambda url, method, body: _hook_obj(settings=body["settings"],
+                                            config={"runtime": "python3.12", "code": body["config"]["code"]}),
+    )
+    out = emitted_payload(emitted)
+    assert set(out) == {"hook", "code_integrity", "settings_integrity"}
+    assert out["code_integrity"]["verified"] is True and out["settings_integrity"]["verified"] is True
+    assert "settings" not in out["hook"]
+
+
+def test_hook_write_with_code_only_keeps_settings_in_the_echo(monkeypatch, tmp_path):
+    """Stripping is licensed by the readback; a write that did not carry settings has none."""
+    _, emitted = run_handler(monkeypatch, "rossum_patch_hook",
+                             {"hook_id": 9, "code_file_path": _code_file(tmp_path)},
+                             lambda url, method, body: _hook_obj(config={"runtime": "python3.12",
+                                                                         "code": body["config"]["code"]}))
+    out = emitted_payload(emitted)
+    assert set(out) == {"hook", "code_integrity"}
+    assert out["hook"]["settings"] == SETTINGS
+
+
+def test_code_mismatch_on_patch_stays_an_error_even_with_settings(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook",
+        {"hook_id": 9, "code_file_path": _code_file(tmp_path),
+         "settings_file_path": _settings_file(tmp_path, SETTINGS)},
+        lambda url, method, body: _hook_obj(settings=body["settings"],
+                                            config={"runtime": "python3.12", "code": "corrupted"}),
+    )
+    assert emitted[-1]["result"].get("isError") is True
+    out = emitted_payload(emitted)
+    assert out["code_integrity"]["verified"] is False and out["settings_integrity"]["verified"] is True
+
+
 def test_patch_annotation_explicit_null_merge_does_not_replace(monkeypatch):
     """`arguments.get("merge", True)` only defaults on an ABSENT key — an explicit null is
     falsy and silently took the destructive replace branch."""
