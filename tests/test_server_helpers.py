@@ -603,3 +603,47 @@ def test_load_json_field_missing_file(tmp_path):
     with pytest.raises(server._FileInputError) as exc:
         server._load_json_field(str(tmp_path / "nope.json"), "content")
     assert "not found" in str(exc.value).lower()
+
+
+# --- _count_datapoints + _write_json_file ---
+
+def test_count_datapoints_handles_multivalue_tuple_children():
+    content = [{"category": "section", "id": "s", "children": [
+        {"category": "datapoint", "id": "a", "type": "string"},
+        {"category": "multivalue", "id": "mv", "children": {          # a dict, not a list
+            "category": "tuple", "id": "t", "children": [
+                {"category": "datapoint", "id": "b", "type": "string"},
+                {"category": "datapoint", "id": "c", "type": "number"}]}},
+    ]}]
+    assert server._count_datapoints(content) == 3
+    assert server._count_datapoints([]) == 0
+    assert server._count_datapoints(None) == 0
+
+
+def test_write_json_file_preserves_key_order_and_unicode(tmp_path):
+    obj = {"id": 1, "name": "Číslo ✓", "content": [{"category": "section", "id": "s"}]}
+    path = str(tmp_path / "out" / "schema.json")          # parent dir does not exist yet
+    n = server._write_json_file(path, obj)
+    text = open(path, encoding="utf-8").read()
+    assert n == len(text)
+    assert text == json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+    assert text.index('"id"') < text.index('"name"') < text.index('"content"')   # API order, not sorted
+    assert "Číslo ✓" in text                                                       # not \u-escaped
+
+
+def test_write_json_file_rewrites_identical_file(tmp_path):
+    obj = {"a": 1, "b": [1, 2]}
+    path = str(tmp_path / "s.json")
+    (tmp_path / "s.json").write_text('{"b": [1, 2], "a": 1}', encoding="utf-8")   # same object, other order
+    server._write_json_file(path, obj)
+    assert json.loads(open(path, encoding="utf-8").read()) == obj
+
+
+@pytest.mark.parametrize("existing", ['{"a": 2}', "not json at all"])
+def test_write_json_file_refuses_to_overwrite_a_differing_file(tmp_path, existing):
+    path = tmp_path / "s.json"
+    path.write_text(existing, encoding="utf-8")
+    with pytest.raises(server._FileInputError) as exc:
+        server._write_json_file(str(path), {"a": 1})
+    assert "Refusing to overwrite" in str(exc.value)
+    assert path.read_text(encoding="utf-8") == existing, "must not touch the file"

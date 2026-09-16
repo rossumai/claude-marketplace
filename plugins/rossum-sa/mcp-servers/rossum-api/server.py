@@ -3884,6 +3884,55 @@ def _load_json_field(path, key, *, bare_type=list):
     )
 
 
+def _count_datapoints(nodes):
+    """Count category=='datapoint' nodes in a schema content tree.
+
+    A multivalue's `children` is a single tuple object, not a list — normalise it.
+    """
+    if isinstance(nodes, dict):
+        nodes = [nodes]
+    count = 0
+    for node in nodes or ():
+        if not isinstance(node, dict):
+            continue
+        if node.get("category") == "datapoint":
+            count += 1
+        count += _count_datapoints(node.get("children"))
+    return count
+
+
+def _write_json_file(path, obj):
+    """Write `obj` as editable JSON: indent=2, API key order (NOT sorted), UTF-8 as-is.
+
+    Unlike the .rossum-cache/ dumps this file is an edit buffer, so it must stay
+    readable and diffable against a prd2 schema.json — hence no sort_keys. Refuses to
+    overwrite a file whose parsed content differs (unsaved local edits, or the remote
+    moved since it was pulled — indistinguishable here); an identical file is rewritten.
+    Returns the number of characters written. Raises _FileInputError on the refusal and
+    OSError on a write failure.
+    """
+    import os
+
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                existing = json.load(fh)
+        except (OSError, ValueError):
+            existing = object()  # unparseable counts as different
+        if existing != obj:
+            raise _FileInputError(
+                f"Refusing to overwrite {path}: it exists and differs from the remote object. "
+                "Either it holds unsaved local edits, or the remote changed since it was "
+                "pulled — this tool cannot tell which. Pass another path or delete the file."
+            )
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    text = json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return len(text)
+
+
 def _resolve_hook_code(request_id, arguments):
     """Fold `code_file_path` into the hook config.
 
