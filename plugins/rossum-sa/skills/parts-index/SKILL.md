@@ -61,7 +61,7 @@ A `candidate` belongs in this section and only here: it is believed-good but **u
 generalized form**, so offer it to a human for review and never wire it in automatically.
 Promotion to `standard` requires running the filled fragment against a live target.
 
-The five below were **lifted from production hooks that run today** (two SAP integrations,
+The five SAP-derived parts below were **lifted from production hooks that run today** (two SAP integrations,
 2026-01 → 2026-09; see `sap-reference`) — the mechanisms are proven, the generalized fragments
 are not yet. Read each part's `provenance` for what was measured and what was left out.
 
@@ -75,6 +75,16 @@ MDH datasets, not schema fields, so `produces`/`consumes` are legitimately empty
 | `mdh-import-watermark-sync` | the two-phase engine: resumable full load, then semi-open incremental windows on a persisted watermark with a clock-skew safety lag; state in its own Data Storage collection; one adaptable `SourceApi` class | any paged HTTPS API (default: token-endpoint + `RESULT_FLAG`/`DATA` envelope) |
 | `mdh-odata-import-skiptoken-sync` | the same engine with the OData-via-gateway dialect built in: creation-date full load, change-date incremental, numeric `$skiptoken`, only-empty-page-ends, optional `$expand` flatten with header-date stamping | OData v4 behind BTP / API Management |
 | `mdh-odata-filtered-full-refresh` | filtered population swept and PUT-replaced once per run; propagates deletions, refuses an empty or truncated sweep | OData v4 behind BTP / API Management |
+
+### Diagnostics (`parts/diagnostics/`)
+
+SA tools, not flow components: run by hand against a live environment to answer a question the
+config cannot. They never auto-compose, and one of them can write to a customer system — read the
+part README before proposing it.
+
+| part | summary | why it exists |
+|--------|---------|-------------|
+| `sftp-folder-probe` | manual-invocation hook that maps an SFTP from Rossum's own egress: tree with a node budget, per-directory `.CSV`/`.csv` tally, file read-back, plus opt-in staging and quarantine of files | the customer host is IP-allowlisted, so a laptop cannot connect at all — **ask the user before deploying it; it can write and move files** |
 
 ### Export (`parts/export/`)
 

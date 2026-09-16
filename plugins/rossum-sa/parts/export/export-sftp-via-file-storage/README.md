@@ -23,3 +23,10 @@ The static pass-through fields (`request_id`, `timestamp`, `hook`, `base_url`, `
 Declare a **closed** `secrets_schema` (`additionalProperties: false`) with the `«auth_secret»` key under `properties` (`minLength: 1` + a description) — nothing writes secrets back at runtime here, and the Secrets editor prefills the declared key as `__change_me__` so whoever pastes the SFTP password or SSH key sees exactly what to provide.
 
 See `export-pipeline-reference` for the Request Processor stage model.
+
+## Cannot reach the SFTP to verify?
+
+A local connect that hangs or dies during banner exchange, while this export keeps working, means
+the host is IP-allowlisted rather than the credentials being wrong. `diagnostics/sftp-folder-probe`
+lists the tree and reads a delivered file back from Rossum's own egress — which is how you prove
+this export produced the right FORMAT, not just that it ran.

@@ -1598,6 +1598,11 @@ un-attempted, so keep `get_content` queries simple and validate them before rely
 
 ## SFTP Export Pattern
 
+> Verifying the far side: if a local `sftp` connect hangs or dies during banner exchange while
+> the Rossum extensions keep working, the host is IP-allowlisted — see the
+> `diagnostics/sftp-folder-probe` part, which lists the tree and reads files back from Rossum's
+> own egress. It reports that egress IP first, which is the address the customer must allowlist.
+
 Export files to SFTP using Rossum's `file-storage-export` service:
 
 ```json

@@ -24,7 +24,12 @@ parts/<axis>/<part-name>/
   README.md      # what it does, gotchas, how to adapt
 ```
 
-Axes: `capture`, `master-data`, `matching`, `validation`, `export`, `formula`.
+Axes: `capture`, `master-data`, `matching`, `validation`, `export`, `formula`,
+`diagnostics`.
+
+`diagnostics` is the odd one out: those parts are not composed into a document flow, they are
+SA tools run by hand against a live environment to answer a question the config cannot. They
+still carry the same contract, and they never auto-compose.
 
 `master-data` holds the feeds that fill the collections matching reads — scheduled importers
 from an external system into MDH datasets. Their fragments are whole function hooks; they
