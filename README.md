@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-18 skills · 15 reference packs · 92 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+18 skills · 15 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -184,17 +184,17 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_delete_engine_field` | ⚠️ Delete an engine field — remove the matching schema datapoint first (the API 409s while referenced; the tool reports which schemas to edit) |
 | `rossum_list_hooks` | List hooks/extensions (filter by queue, active) |
 | `rossum_get_hook` | Get full hook details including code and config |
-| `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) incl. description, settings, and `secrets_schema` (declares secret key names — values are entered by a human in the UI) |
+| `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) incl. description, settings, and `secrets_schema` (declares secret key names — values are entered by a human in the UI). Pass hook source via `code_file_path` instead of inlining it; the response carries the sha256 of the code that landed |
 | `rossum_create_hook_from_template` | ✏️ Create a hook from a hook template (catalog) — template supplies the base, you supply name/queues/settings |
 | `rossum_duplicate_hook` | ✏️ Clone an existing hook (created inactive; queues/secrets/dependencies copied only on request) |
 | `rossum_delete_hook` | ⚠️ Delete a hook |
-| `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues, settings, description, `secrets_schema` — never secret values) |
+| `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues, settings, description, `secrets_schema` — never secret values). Pass hook source via `code_file_path`; the response verifies the landed code's sha256 against what was sent |
 | `rossum_extract_export_template` | Pull a Custom Format Templating export template out of a hook's `export_configs` into editable text |
 | `rossum_generate_export_settings` | Turn a local Jinja2 template into the `export_configs` settings block to push back |
 | `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |
 | `rossum_generate_hook_payload` | Show the payload the platform would send a hook for any event/action, without executing it (credentials redacted) — answers "is field X actually in the payload?" instead of guessing |
 | `rossum_list_hook_logs` | List hook execution logs (filter by hook, annotation, queue, status); `include_output=true` adds the hook's `print()` output and failure tracebacks, which are absent from `message` |
-| `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override). Returns the payload alongside the result, whose `log` is the proof the code ran |
+| `rossum_test_hook` | ✏️ Test a hook in isolation: auto-generate a payload (event/action) and execute it (dry-run; optional config override, which may come from `code_file_path`). Returns the payload alongside the result, whose `log` is the proof the code ran |
 | `rossum_invoke_hook` | ⚠️ Invoke a hook for REAL with a custom payload (live execution — irreversible external side effects; not a dry-run like test) |
 | `rossum_list_rules` | List business rules (filter by queue) |
 | `rossum_get_rule` | Get full rule details (trigger_condition, actions, queues) |
@@ -208,7 +208,8 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_annotation` | Compact merged view: metadata + extracted fields + tables + resolved automation_blocker items + recent hook logs in one call. Caches raw payload to `.rossum-cache/annotations/<id>.json`. |
 | `rossum_get_annotation_meta` | Raw annotation metadata only (status, timestamps, URLs) — use when you want the unprojected resource |
 | `rossum_get_annotation_content` | Raw content tree (extracted data) — use when you need the unprojected nested structure |
-| `rossum_patch_annotation` | ✏️ Update annotation status or metadata (confirm, reject, export) |
+| `rossum_patch_annotation` | ✏️ Update annotation status or metadata (confirm, reject, export). `metadata` is read-modify-write merged at the top level by default (the API itself replaces the whole dict) — pass `merge=false` for a raw replace |
+| `rossum_copy_annotation` | ✏️ Copy an annotation (`POST /copy`) into a queue (`target_queue` required) — training copies, throwaway probes, duplicate handling. Carries metadata, content, positions, image and `confirmed_at`/`confirmed_by`; drops relations, document_relations and labels. Cross-queue you get the target schema (`target_status=importing`, which re-extracts) or the original content, not both — warns when it detects the hybrid |
 | `rossum_start_annotation` | ✏️ Start a review session (transitions to `reviewing`, locks to caller) |
 | `rossum_cancel_annotation` | ✏️ Cancel a review session (releases the lock) |
 | `rossum_confirm_annotation` | ⚠️ Confirm an annotation (`POST /confirm`) — transitions to exported/exporting/confirmed and FIRES THE EXPORT |

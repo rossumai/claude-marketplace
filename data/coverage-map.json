@@ -67,8 +67,10 @@
     "decision": "covered",
     "summary": "Retrieve annotation",
     "tools": [
+      "rossum_copy_annotation",
       "rossum_get_annotation",
       "rossum_get_annotation_meta",
+      "rossum_patch_annotation",
       "rossum_refire_annotation"
     ]
   },
@@ -159,7 +161,8 @@
     "tools": [
       "rossum_extract_export_template",
       "rossum_generate_export_payload",
-      "rossum_get_hook"
+      "rossum_get_hook",
+      "rossum_test_hook"
     ]
   },
   "GET /queues": {
@@ -426,9 +429,11 @@
     "summary": "Convert grid to table data"
   },
   "POST /annotations/{annotationID}/copy": {
-    "decision": "not_planned",
-    "reason": "operator/validation-UI",
-    "summary": "Copy annotation"
+    "decision": "covered",
+    "summary": "Copy annotation",
+    "tools": [
+      "rossum_copy_annotation"
+    ]
   },
   "POST /annotations/{annotationID}/create_embedded_url": {
     "decision": "not_planned",

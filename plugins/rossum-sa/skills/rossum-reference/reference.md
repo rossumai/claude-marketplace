@@ -719,7 +719,7 @@ filtering gives no signal that anything went wrong.
 
 ### Annotation Operations Detail
 
-**Copy**: `POST /v1/annotations/{id}/copy` — Body: `{"target_queue": "URL", "target_status": "to_review"}`
+**Copy**: `POST /v1/annotations/{id}/copy` — Body: `{"target_queue": "URL", "target_status": "to_review"}`. Wrapped by `rossum_copy_annotation` (use the tool rather than a raw request). Carries metadata, the full content tree (values, `validation_sources` human marks, datapoint positions), the page image, and `confirmed_at`/`confirmed_by` — so a copy *looks* confirmed although it never was. Does **not** carry relations (including the `edit` relation from document splitting), `document_relations`, or labels. `target_queue` is **required** (the API 400s without it — pass the source's own queue to park a copy alongside it), and `target_status` defaults to `to_review`. Only `target_status: "importing"` retargets the copy to the target queue's schema; at any other status it keeps the **source** schema, which is a broken hybrid when copying across queues — and that is the default. But `importing` re-runs the import chain, re-extracting the document and discarding human corrections, so cross-queue you get the target schema **or** the original content, never both. The call also mints a `duplicate` relation listing source and copy, so the *source* gains a relation it did not have (its `modified_at` does not move); purging the copy removes it again.
 
 **Search**: `POST /v1/annotations/search` — Max page size 500 (1000 for CSV export)
 
