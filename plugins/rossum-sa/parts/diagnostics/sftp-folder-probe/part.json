@@ -1,0 +1,18 @@
+{
+  "name": "sftp-folder-probe",
+  "axis": "diagnostics",
+  "summary": "Manual-invocation hook that maps an IP-allowlisted SFTP from Rossum's own egress — tree, extension casing, read-back, staging, quarantine.",
+  "maturity": "candidate",
+  "params": {
+    "entity_marker": {
+      "required": true,
+      "type": "string",
+      "description": "case-insensitive filename token marking the files under investigation (e.g. a per-entity prefix); every other file is reported as the incumbent's"
+    }
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "Built during an AP entity onboarding against an IP-allowlisted customer SFTP (2026-09), then rebuilt from scratch when it was needed again — which is why it is here. Run against two live accounts; this generalized form has not been re-run.",
+  "reference": "export-pipeline-reference#sftp-export-pattern",
+  "notes": "ASK THE USER BEFORE DEPLOYING IT — it can write and move files on a customer SFTP. Never attach it to a queue (queues: []), and delete it when the investigation ends. Writes no schema field, so produces/consumes are legitimately empty."
+}

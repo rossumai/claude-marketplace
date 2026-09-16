@@ -296,6 +296,10 @@ See `business-rules-reference` for the full picture — it owns both validation 
    - **SAP** → `sap-reference` for IDOC generation patterns, middleware requirements, and master data considerations.
    - **Workday** → `workday-reference` for the Rossum-hosted SOAP connector (`svc/workday`): export/import hook wiring + secrets, the mapping template DSL, and MDH master-data import with differential sync.
    - **SFTP** → `export-pipeline-reference` (file-storage-export) for outbound file delivery.
+     Cannot reach the customer's SFTP from your laptop? It is almost certainly IP-allowlisted
+     — Rossum's egress usually is not blocked. Use the `diagnostics/sftp-folder-probe` part to
+     map the tree, prove an export landed and read a file back from inside Rossum (ask the
+     user before deploying it — it can write and move files).
 
 **Artifact:** Export hook config + Jinja2 mapping template, response parsing hooks if needed.
 
