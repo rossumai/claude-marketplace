@@ -3770,8 +3770,11 @@ _CODE_FILE_PATH_DOC = (
     "Path (absolute, or relative to the server's CWD) to a local file holding the hook's Python "
     "source. Use INSTEAD of config.code: a real function hook runs to tens of KB, and reproducing "
     "that source verbatim into a tool call is both expensive and unverifiable — one dropped line "
-    "silently corrupts a live hook. The file is read server-side and sent byte-for-byte. Supplying "
-    "both this and config.code is an error; the other config keys you pass are preserved."
+    "silently corrupts a live hook. The file is read server-side as UTF-8 text (so CRLF is "
+    "normalised to LF, and the reported digest covers that decoded text, not the file's raw "
+    "bytes). Supplying both this and config.code is an error; the other config keys you pass are "
+    "preserved. Note the API strips surrounding whitespace from stored hook code, so a trailing "
+    "newline is expected not to survive — that is not a failed write."
 )
 
 
@@ -3824,38 +3827,60 @@ def _code_digest(code):
     }
 
 
-def _emit_hook_write_result(request_id, result, sent_code):
+def _emit_hook_write_result(request_id, result, sent_code, *, created=False):
     """Emit a hook create/patch response, verifying the code that actually landed.
 
-    A 2xx does not prove the bytes landed, so when the write carried code the
-    response's config.code is hashed and compared with what was sent. A mismatch is
-    reported as an error rather than as a successful write. Writes that do not touch
-    code keep the bare hook object as the response shape.
+    A 2xx does not prove the bytes landed, so when the write carried code the response's
+    config.code is compared with what was sent. The API strips surrounding whitespace from
+    hook code, so the comparison is on stripped text — a raw comparison would flag every
+    source file that ends in a newline and drown a genuine corruption in false alarms.
+
+    `created` marks the non-idempotent create path: a mismatch there is reported WITHOUT
+    is_error, because the hook exists and a caller that retries on error mints duplicates.
+    Writes that do not touch code keep the bare hook object as the response shape.
     """
     if sent_code is None:
         tool_result(request_id, json.dumps(result, indent=2))
         return
     landed = (result.get("config") or {}).get("code")
-    if landed == sent_code:
-        tool_result(request_id, json.dumps(
-            {"hook": result, "code_integrity": {**_code_digest(sent_code), "verified": True}},
-            indent=2))
-        return
+    landed_text = landed if isinstance(landed, str) else None
     integrity = {
-        "verified": False,
+        "verified": landed_text is not None and landed_text.strip() == sent_code.strip(),
         "sent_sha256": _code_digest(sent_code)["sha256"],
         "sent_characters": len(sent_code),
         "landed_sha256": (
-            hashlib.sha256(landed.encode("utf-8")).hexdigest()
-            if isinstance(landed, str) else None
+            hashlib.sha256(landed_text.encode("utf-8")).hexdigest()
+            if landed_text is not None else None
         ),
-        "landed_characters": len(landed) if isinstance(landed, str) else None,
-        "note": (
-            "The hook returned by the API does not carry the code that was sent. The write "
-            "reported success but the bytes did not land intact — re-read the hook with "
-            "rossum_get_hook before relying on it."
-        ),
+        "landed_characters": len(landed_text) if landed_text is not None else None,
     }
+    if integrity["verified"]:
+        if landed_text != sent_code:
+            integrity["note"] = (
+                "Code landed intact. The stored copy differs only in surrounding whitespace, "
+                "which the API strips."
+            )
+        tool_result(request_id, json.dumps(
+            {"hook": result, "code_integrity": integrity}, indent=2))
+        return
+
+    hook_id = result.get("id")
+    if created:
+        integrity["note"] = (
+            f"The hook WAS created (id {hook_id}) — do NOT retry this call, that would create a "
+            f"second hook. But the code it came back with is not what was sent. Inspect it with "
+            f"rossum_get_hook({hook_id}) and fix it with rossum_patch_hook before relying on it."
+        )
+        # Not an error result: the object exists, and retry-on-error is the harmful response.
+        tool_result(request_id, json.dumps(
+            {"hook": result, "code_integrity": integrity}, indent=2))
+        return
+
+    integrity["note"] = (
+        "The hook returned by the API does not carry the code that was sent (difference is not "
+        "just surrounding whitespace). The write reported success but the bytes did not land "
+        "intact — re-read the hook with rossum_get_hook before relying on it."
+    )
     tool_result(
         request_id,
         json.dumps({"hook": result, "code_integrity": integrity}, indent=2),
@@ -3985,6 +4010,10 @@ def handle_create_hook(request_id, arguments):
     if config is None:
         tool_result(request_id, "config is required (or supply code_file_path).", is_error=True)
         return
+    # A function hook's config must carry a runtime or the API 400s. code_file_path makes
+    # a config-less call schema-valid, so supply the default rather than bouncing it back.
+    if arguments["type"] == "function" and "runtime" not in config:
+        config = {"runtime": "python3.12", **config}
     body = {
         "name": arguments["name"],
         "type": arguments["type"],
@@ -4001,7 +4030,8 @@ def handle_create_hook(request_id, arguments):
         if key in arguments:
             body[key] = arguments[key]
     _rossum_post(request_id, "/api/v1/hooks", body,
-                 format_result=lambda r: _emit_hook_write_result(request_id, r, code))
+                 format_result=lambda r: _emit_hook_write_result(
+                     request_id, r, code, created=True))
 
 
 @_tool(
@@ -4723,6 +4753,15 @@ def handle_test_hook(request_id, arguments):
 
     test_body = {"payload": payload}
     if config is not None:
+        if "runtime" not in config:
+            # POST /hooks/{id}/test rejects a config without a runtime. The hook id is
+            # already known, so read its runtime instead of making the caller pass it.
+            hook = _http_request(request_id, f"{base_url}/api/v1/hooks/{hook_id}")
+            if hook is None:
+                return
+            runtime = (hook.get("config") or {}).get("runtime")
+            if runtime:
+                config = {"runtime": runtime, **config}
         test_body["config"] = config
     result = _http_request(
         request_id, f"{base_url}/api/v1/hooks/{hook_id}/test",
@@ -5671,7 +5710,10 @@ def handle_patch_annotation(request_id, arguments):
 
     if "metadata" in arguments:
         metadata = arguments["metadata"]
-        if arguments.get("merge", True):
+        # `is not False` (not a truthiness test): an explicit null must not silently select
+        # the destructive replace branch. A null metadata is passed through untouched so the
+        # API's own "may not be null" error reaches the caller instead of a TypeError.
+        if isinstance(metadata, dict) and arguments.get("merge") is not False:
             # The API replaces metadata wholesale, so preserving unrelated keys means
             # reading them first. A failed read must abort: PATCHing regardless is
             # exactly the silent data loss this merge exists to prevent.
@@ -5692,23 +5734,29 @@ def handle_patch_annotation(request_id, arguments):
 
 @_tool(
     "rossum_copy_annotation",
-    "Copies an annotation (POST /annotations/{id}/copy), optionally into another queue and at a "
-    "chosen starting status. The core primitive for training copies, throwaway probes, and "
-    "duplicate handling — the annotation analog of rossum_duplicate_hook / rossum_duplicate_queue. "
-    "PROPAGATES: metadata; the full content tree including values, validation_sources (human marks "
-    "included) and datapoint positions to the float; and a page image with an identical sha256. "
-    "Also confirmed_at and confirmed_by — so a copy LOOKS confirmed although it never was; do not "
-    "read those as evidence of review on a copy. DOES NOT PROPAGATE: relations (including the "
-    "'edit' relation document splitting creates), document_relations, or labels — reapply labels "
-    "with rossum_apply_labels if the copy needs them. SCHEMA TRAP: only target_status='importing' "
-    "retargets the copy to the target queue's schema; at any other status the copy carries the "
-    "SOURCE schema, which is fine within one queue but a broken hybrid across queues. The call "
-    "also mints a 'duplicate' relation listing source and copy, so the SOURCE gains a relation it "
-    "did not have (its modified_at does not move); purging the copy deletes that relation and "
-    "restores the source exactly. This is a write operation.",
+    "Copies an annotation (POST /annotations/{id}/copy) into a queue, at a chosen starting "
+    "status. The core primitive for training copies, throwaway probes, and duplicate handling — "
+    "the annotation analog of rossum_duplicate_hook / rossum_duplicate_queue. To park a copy in "
+    "the SAME queue, pass that queue's id as target_queue: it is required either way. "
+    "PROPAGATES: metadata; the full content tree including values, validation_sources (human "
+    "marks included) and datapoint positions to the float; and a page image with an identical "
+    "sha256. Also confirmed_at and confirmed_by — so a copy LOOKS confirmed although it never "
+    "was; do not read those as evidence of review on a copy. DOES NOT PROPAGATE: relations "
+    "(including the 'edit' relation document splitting creates), document_relations, or labels — "
+    "reapply labels with rossum_apply_labels if the copy needs them. SCHEMA TRAP, and it is the "
+    "DEFAULT case: only target_status='importing' retargets the copy to the target queue's "
+    "schema, and target_status defaults to 'to_review' — so a cross-queue copy that does not ask "
+    "for 'importing' carries the SOURCE schema, a hybrid whose fields will not match the queue "
+    "it sits in. But 'importing' re-runs the import chain, which RE-EXTRACTS the document: "
+    "values are recomputed from OCR and human corrections on the source are lost. Cross-queue "
+    "you therefore get the target schema or the original content, never both — copy within the "
+    "source queue when the content is what matters. The call also mints a 'duplicate' relation "
+    "listing source and copy, so the SOURCE gains a relation it did not have (its modified_at "
+    "does not move); purging the copy deletes that relation and restores the source exactly. "
+    "This is a write operation.",
     {
         "type": "object",
-        "required": ["annotation_id"],
+        "required": ["annotation_id", "target_queue"],
         "properties": {
             "annotation_id": {
                 "type": "integer",
@@ -5717,17 +5765,19 @@ def handle_patch_annotation(request_id, arguments):
             "target_queue": {
                 "type": "integer",
                 "description": (
-                    "Queue ID to place the copy in. Omit to copy within the source queue. When "
-                    "set, pair it with target_status='importing' so the copy picks up the target "
-                    "queue's schema."
+                    "Queue ID to place the copy in. REQUIRED — the API rejects a copy without it. "
+                    "Pass the source annotation's own queue to park a copy alongside it; pass a "
+                    "different queue only together with target_status='importing', and only when "
+                    "a re-extract is acceptable (see the schema trap in the tool description)."
                 ),
             },
             "target_status": {
                 "type": "string",
                 "description": (
-                    "Status the copy starts in. Accepts terminal values too ('exported' returns "
-                    "200), not just 'importing' / 'to_review'. 'importing' is the only value that "
-                    "retargets the schema — and it re-runs the import chain on the copy."
+                    "Status the copy starts in. Defaults API-side to 'to_review'. Accepts terminal "
+                    "values too ('exported' returns 200), not just 'importing' / 'to_review'. "
+                    "'importing' is the only value that retargets the schema — and it re-runs the "
+                    "import chain, re-extracting the document and discarding human corrections."
                 ),
             },
         },
@@ -5740,12 +5790,20 @@ def handle_copy_annotation(request_id, arguments):
     if not base_url:
         return
     annotation_id = arguments["annotation_id"]
-    target_queue = arguments.get("target_queue")
+    target_queue = arguments["target_queue"]
     target_status = arguments.get("target_status")
 
-    body = {}
-    if target_queue is not None:
-        body["target_queue"] = _resource_url(base_url, "queues", target_queue)
+    # Only a non-'importing' copy into a DIFFERENT queue produces the schema hybrid, so the
+    # source's queue is only worth a round-trip when a warning could actually fire. A failed
+    # read costs the warning, not the copy.
+    source_queue = None
+    if target_status != "importing":
+        source = _http_request(
+            request_id, f"{base_url}/api/v1/annotations/{annotation_id}")
+        if source is not None:
+            source_queue = _url_to_id(source.get("queue"))
+
+    body = {"target_queue": _resource_url(base_url, "queues", target_queue)}
     if target_status is not None:
         body["target_status"] = target_status
 
@@ -5756,14 +5814,19 @@ def handle_copy_annotation(request_id, arguments):
     if result is None:
         return
 
-    out = {"copy": result}
-    if target_queue is not None and target_status != "importing":
+    # The API returns only the new annotation's URL; every follow-up call wants the bare id.
+    out = {"annotation_id": _url_to_id(result.get("annotation")), "copy": result}
+    if target_status != "importing" and source_queue is not None and source_queue != target_queue:
+        effective_status = target_status if target_status is not None else "to_review"
+        defaulted = "" if target_status is not None else " (defaulted API-side)"
         out["warning"] = (
-            f"Cross-queue copy at target_status={target_status!r}: only 'importing' retargets the "
+            f"Cross-queue copy from queue {source_queue} to queue {target_queue} at "
+            f"target_status={effective_status!r}{defaulted}: only 'importing' retargets the "
             f"schema, so this copy carries the SOURCE annotation's schema while sitting in queue "
-            f"{target_queue} — a hybrid whose fields will not match the target queue's. Re-copy "
-            f"with target_status='importing' if the copy is meant to behave like a document of "
-            f"the target queue."
+            f"{target_queue} — a hybrid whose fields will not match the target queue's. Copying "
+            f"with target_status='importing' fixes the schema but re-extracts the document, "
+            f"discarding human corrections; if the content matters, copy within queue "
+            f"{source_queue} instead."
         )
     tool_result(request_id, json.dumps(out, indent=2))
 

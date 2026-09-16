@@ -67,6 +67,7 @@
     "decision": "covered",
     "summary": "Retrieve annotation",
     "tools": [
+      "rossum_copy_annotation",
       "rossum_get_annotation",
       "rossum_get_annotation_meta",
       "rossum_patch_annotation",
@@ -160,7 +161,8 @@
     "tools": [
       "rossum_extract_export_template",
       "rossum_generate_export_payload",
-      "rossum_get_hook"
+      "rossum_get_hook",
+      "rossum_test_hook"
     ]
   },
   "GET /queues": {

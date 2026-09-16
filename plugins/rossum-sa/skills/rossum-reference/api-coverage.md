@@ -18,7 +18,7 @@ _**This table is about tool coverage, not about what the Rossum API supports.** 
 | `POST /annotations/purge_deleted` | ✅ covered | rossum_delete_annotation |
 | `POST /annotations/search` | ✅ covered | rossum_search_annotations_advanced |
 | `POST /annotations/suggested_recipients` | 🚫 not_planned |  |
-| `GET /annotations/{annotationID}` | ✅ covered | rossum_get_annotation, rossum_get_annotation_meta, rossum_patch_annotation, rossum_refire_annotation |
+| `GET /annotations/{annotationID}` | ✅ covered | rossum_copy_annotation, rossum_get_annotation, rossum_get_annotation_meta, rossum_patch_annotation, rossum_refire_annotation |
 | `PATCH /annotations/{annotationID}` | ✅ covered | rossum_patch_annotation, rossum_refire_annotation |
 | `PUT /annotations/{annotationID}` | 🚫 not_planned |  |
 | `POST /annotations/{annotationID}/approve` | 🚫 not_planned |  |
@@ -234,7 +234,7 @@ _**This table is about tool coverage, not about what the Rossum API supports.** 
 | `POST /hooks` | ✅ covered | rossum_create_hook |
 | `POST /hooks/create` | ✅ covered | rossum_create_hook_from_template |
 | `DELETE /hooks/{hookID}` | ✅ covered | rossum_delete_hook |
-| `GET /hooks/{hookID}` | ✅ covered | rossum_extract_export_template, rossum_generate_export_payload, rossum_get_hook |
+| `GET /hooks/{hookID}` | ✅ covered | rossum_extract_export_template, rossum_generate_export_payload, rossum_get_hook, rossum_test_hook |
 | `PATCH /hooks/{hookID}` | ✅ covered | rossum_patch_hook |
 | `PUT /hooks/{hookID}` | 🚫 not_planned |  |
 | `POST /hooks/{hookID}/duplicate` | ✅ covered | rossum_duplicate_hook |

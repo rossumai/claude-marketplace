@@ -2391,7 +2391,14 @@ def test_patch_annotation_aborts_when_existing_metadata_cannot_be_read(monkeypat
         {"annotation_id": 55, "metadata": {"probe_only": True}}, responder,
     )
     assert not [c for c in fake.calls if c["method"] == "PATCH"]
-    assert emitted == [] or emitted[-1]["result"].get("isError")
+    # In production _http_request emits the HTTP error itself before returning None;
+    # FakeHTTP does not, so the handler must simply not emit a success here. Asserting
+    # `emitted == [] or isError` would short-circuit on the empty list and prove nothing.
+    assert [c["method"] for c in fake.calls] == ["GET"]
+    assert not any(
+        m["result"]["content"][0]["text"].startswith("{") and not m["result"].get("isError")
+        for m in emitted
+    ), "must not report a successful patch when the pre-read failed"
 
 
 # --- hook code: file-path input + landed-code integrity digest ---
@@ -2464,8 +2471,9 @@ def test_patch_hook_reports_sha256_of_landed_code(monkeypatch, tmp_path):
         _hook_echo(),
     )
     out = emitted_payload(emitted)
-    assert out["code_integrity"]["sha256"] == CODE_SHA
-    assert out["code_integrity"]["characters"] == len(CODE)
+    assert out["code_integrity"]["sent_sha256"] == CODE_SHA
+    assert out["code_integrity"]["sent_characters"] == len(CODE)
+    assert out["code_integrity"]["landed_sha256"] == CODE_SHA
     assert out["code_integrity"]["verified"] is True
     assert out["hook"]["id"] == 9
 
@@ -2492,7 +2500,7 @@ def test_inline_code_is_also_digested(monkeypatch):
         {"hook_id": 9, "config": {"code": CODE}},
         _hook_echo(),
     )
-    assert emitted_payload(emitted)["code_integrity"]["sha256"] == CODE_SHA
+    assert emitted_payload(emitted)["code_integrity"]["sent_sha256"] == CODE_SHA
 
 
 def test_hook_write_without_code_keeps_the_bare_hook_shape(monkeypatch):
@@ -2541,8 +2549,16 @@ def test_code_file_path_missing_file_errors_before_any_call(monkeypatch, tmp_pat
 
 # --- rossum_copy_annotation ---
 
-def _copy_responder(url, method, body):
-    return {"id": 77, "url": f"{BASE}/api/v1/annotations/77", "status": "to_review"}
+def _copy_responder(url, method, body, source_queue=7):
+    """GET the source annotation (to learn its queue); POST /copy returns the API's real
+    shape — an object carrying only the new annotation's URL."""
+    if method == "GET":
+        return {"id": 55, "queue": f"{BASE}/api/v1/queues/{source_queue}"}
+    return {"annotation": f"{BASE}/api/v1/annotations/77"}
+
+
+def _copy_from_queue(source_queue):
+    return lambda url, method, body: _copy_responder(url, method, body, source_queue)
 
 
 def test_copy_annotation_posts_target_queue_as_url_and_status(monkeypatch):
@@ -2551,28 +2567,106 @@ def test_copy_annotation_posts_target_queue_as_url_and_status(monkeypatch):
         {"annotation_id": 55, "target_queue": 12, "target_status": "importing"},
         _copy_responder,
     )
-    assert fake.calls[0]["url"] == f"{BASE}/api/v1/annotations/55/copy"
-    assert fake.calls[0]["method"] == "POST"
-    assert fake.calls[0]["body"] == {
+    post = [c for c in fake.calls if c["method"] == "POST"][0]
+    assert post["url"] == f"{BASE}/api/v1/annotations/55/copy"
+    assert post["body"] == {
         "target_queue": f"{BASE}/api/v1/queues/12",
         "target_status": "importing",
     }
 
 
-def test_copy_annotation_omits_unspecified_targets(monkeypatch):
+def test_copy_annotation_omits_only_unspecified_status(monkeypatch):
+    """target_queue is mandatory (the API 400s without it); target_status is not."""
     fake, _ = run_handler(
-        monkeypatch, "rossum_copy_annotation", {"annotation_id": 55}, _copy_responder)
-    assert fake.calls[0]["body"] == {}
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12}, _copy_responder)
+    post = [c for c in fake.calls if c["method"] == "POST"][0]
+    assert post["body"] == {"target_queue": f"{BASE}/api/v1/queues/12"}
 
 
-def test_copy_annotation_returns_the_new_annotation(monkeypatch):
+def test_copy_annotation_surfaces_the_new_annotation_id(monkeypatch):
+    """The API returns only a URL; a caller needs the bare id for every follow-up call."""
     _, emitted = run_handler(
         monkeypatch, "rossum_copy_annotation",
         {"annotation_id": 55, "target_queue": 12, "target_status": "importing"},
         _copy_responder,
     )
     out = emitted_payload(emitted)
-    assert out["copy"]["id"] == 77
+    assert out["annotation_id"] == 77
+    assert out["copy"]["annotation"] == f"{BASE}/api/v1/annotations/77"
+
+
+def test_copy_annotation_warns_on_cross_queue_copy_that_keeps_the_source_schema(monkeypatch):
+    """Only target_status='importing' retargets the schema. Any other status leaves the
+    copy on the SOURCE schema — harmless within one queue, a broken hybrid across queues."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "to_review"},
+        _copy_from_queue(7),
+    )
+    out = emitted_payload(emitted)
+    assert "schema" in out["warning"].lower()
+    assert "importing" in out["warning"]
+
+
+def test_copy_annotation_does_not_warn_for_a_same_queue_copy(monkeypatch):
+    """target_queue is mandatory, so the ordinary park-a-copy pattern passes the SOURCE
+    queue explicitly. That is not a cross-queue copy and must not warn."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 7, "target_status": "to_review"},
+        _copy_from_queue(7),
+    )
+    assert "warning" not in emitted_payload(emitted)
+
+
+def test_copy_annotation_names_the_defaulted_status_in_the_warning(monkeypatch):
+    """Omitted target_status defaults to 'to_review' API-side — so the omitted case IS the
+    broken-hybrid case. The message must not render a bare None."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12}, _copy_from_queue(7),
+    )
+    warning = emitted_payload(emitted)["warning"]
+    assert "None" not in warning
+    assert "to_review" in warning
+
+
+def test_copy_annotation_does_not_warn_when_importing_retargets_the_schema(monkeypatch):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "importing"},
+        _copy_responder,
+    )
+    assert "warning" not in emitted_payload(emitted)
+
+
+def test_copy_annotation_skips_the_source_read_when_no_warning_is_possible(monkeypatch):
+    """target_status='importing' can never warn, so do not spend a round-trip on it."""
+    fake, _ = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "importing"},
+        _copy_responder,
+    )
+    assert [c["method"] for c in fake.calls] == ["POST"]
+
+
+def test_copy_annotation_still_copies_when_the_source_queue_cannot_be_read(monkeypatch):
+    """The warning is advisory — a failed pre-read must not block the copy itself."""
+    def responder(url, method, body):
+        return None if method == "GET" else {"annotation": f"{BASE}/api/v1/annotations/77"}
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "to_review"}, responder)
+    assert [c["method"] for c in fake.calls] == ["GET", "POST"]
+    assert emitted_payload(emitted)["annotation_id"] == 77
+
+
+def test_copy_annotation_requires_target_queue():
+    """Pinned against the schema, since the API rejects a copy without it."""
+    schema = server.TOOLS["rossum_copy_annotation"]["inputSchema"]
+    assert set(schema["required"]) == {"annotation_id", "target_queue"}
 
 
 def test_copy_annotation_warns_on_cross_queue_copy_that_keeps_the_source_schema(monkeypatch):
@@ -2597,9 +2691,121 @@ def test_copy_annotation_does_not_warn_when_importing_retargets_the_schema(monke
     assert "warning" not in emitted_payload(emitted)
 
 
-def test_copy_annotation_does_not_warn_for_same_queue_copy(monkeypatch):
-    """No target_queue means the copy stays put, where the source schema is the right one."""
+
+
+# --- regression tests for defects found by live review of the first cut ---
+
+def test_code_integrity_tolerates_the_api_stripping_surrounding_whitespace(monkeypatch, tmp_path):
+    """The Rossum API .strip()s hook code. Comparing raw bytes marks every POSIX-conformant
+    source file (trailing newline) as a failed write. Compare on stripped text instead."""
+    path = tmp_path / "hook.py"
+    path.write_text("\n" + CODE + "\n\n  ", encoding="utf-8")
+
     _, emitted = run_handler(
-        monkeypatch, "rossum_copy_annotation",
-        {"annotation_id": 55, "target_status": "to_review"}, _copy_responder)
-    assert "warning" not in emitted_payload(emitted)
+        monkeypatch, "rossum_patch_hook", {"hook_id": 9, "code_file_path": str(path)},
+        lambda url, method, body: {"id": 9, "config": {
+            "code": ((body or {}).get("config") or {}).get("code", "").strip()}},
+    )
+    assert emitted[-1]["result"].get("isError") is not True
+    integrity = emitted_payload(emitted)["code_integrity"]
+    assert integrity["verified"] is True
+    assert integrity["landed_sha256"] == hashlib.sha256(
+        (("\n" + CODE + "\n\n  ").strip()).encode("utf-8")).hexdigest()
+
+
+def test_code_integrity_still_flags_a_genuine_corruption(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook", {"hook_id": 9, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(landed_code="def rossum_hook_request_handler(payload):\n    pass\n"),
+    )
+    assert emitted[-1]["result"].get("isError") is True
+    assert emitted_payload(emitted)["code_integrity"]["verified"] is False
+
+
+def test_create_hook_mismatch_is_not_an_error_and_names_the_created_hook(monkeypatch, tmp_path):
+    """create is NOT idempotent: reporting isError on a hook that WAS created makes a model
+    retry and mint duplicates. Report the id and say not to retry instead."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "function", "events": ["annotation_content.export"],
+         "config": {"runtime": "python3.12"}, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(landed_code="something else entirely"),
+    )
+    assert emitted[-1]["result"].get("isError") is not True
+    integrity = emitted_payload(emitted)["code_integrity"]
+    assert integrity["verified"] is False
+    assert "9" in integrity["note"] and "retry" in integrity["note"].lower()
+
+
+def test_create_hook_supplies_a_runtime_for_a_function_hook(monkeypatch, tmp_path):
+    """code_file_path with no config is schema-valid; without runtime the API 400s."""
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "function", "events": ["annotation_content.export"],
+         "code_file_path": _code_file(tmp_path)},
+        _hook_echo(),
+    )
+    assert fake.calls[0]["body"]["config"] == {"runtime": "python3.12", "code": CODE}
+
+
+def test_create_hook_does_not_override_an_explicit_runtime(monkeypatch, tmp_path):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "function", "events": ["annotation_content.export"],
+         "config": {"runtime": "python3.8"}, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(),
+    )
+    assert fake.calls[0]["body"]["config"]["runtime"] == "python3.8"
+
+
+def test_create_hook_does_not_invent_a_runtime_for_a_webhook(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "webhook", "events": ["annotation_content.export"],
+         "config": {"url": "https://example.com/h"}},
+        _hook_echo(),
+    )
+    assert "runtime" not in fake.calls[0]["body"]["config"]
+
+
+def test_test_hook_fills_the_runtime_from_the_hook_under_test(monkeypatch, tmp_path):
+    """POST /hooks/{id}/test requires config.runtime whenever config is sent. The server
+    knows the hook id, so it must not make the caller supply it."""
+    def responder(url, method, body):
+        if url.endswith("/hooks/9"):
+            return {"id": 9, "config": {"runtime": "python3.12", "code": "old"}}
+        if url.endswith("/generate_payload"):
+            return {"payload": 1}
+        return {"result": "ok"}
+
+    fake, _ = run_handler(
+        monkeypatch, "rossum_test_hook",
+        {"hook_id": 9, "event": "annotation_content", "action": "export",
+         "annotation_id": 55, "code_file_path": _code_file(tmp_path)},
+        responder,
+    )
+    test_call = [c for c in fake.calls if c["url"].endswith("/test")][0]
+    assert test_call["body"]["config"] == {"runtime": "python3.12", "code": CODE}
+
+
+def test_patch_annotation_explicit_null_merge_does_not_replace(monkeypatch):
+    """`arguments.get("merge", True)` only defaults on an ABSENT key — an explicit null is
+    falsy and silently took the destructive replace branch."""
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "metadata": {"probe": True}, "merge": None},
+        _annotation_with_metadata({"idem": {"sent": True}}),
+    )
+    assert _patched_body(fake)["metadata"] == {"idem": {"sent": True}, "probe": True}
+
+
+def test_patch_annotation_null_metadata_does_not_crash(monkeypatch):
+    """merged.update(None) raised TypeError and surfaced as JSON-RPC -32603. Let the value
+    through so the API's own clear 'may not be null' error reaches the caller."""
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "metadata": None},
+        _annotation_with_metadata({"idem": {"sent": True}}),
+    )
+    assert emitted, "handler must emit something rather than raising"
+    assert _patched_body(fake)["metadata"] is None

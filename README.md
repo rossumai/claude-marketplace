@@ -200,7 +200,7 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_get_annotation_meta` | Raw annotation metadata only (status, timestamps, URLs) — use when you want the unprojected resource |
 | `rossum_get_annotation_content` | Raw content tree (extracted data) — use when you need the unprojected nested structure |
 | `rossum_patch_annotation` | ✏️ Update annotation status or metadata (confirm, reject, export). `metadata` is read-modify-write merged at the top level by default (the API itself replaces the whole dict) — pass `merge=false` for a raw replace |
-| `rossum_copy_annotation` | ✏️ Copy an annotation (`POST /copy`), optionally into another queue/status — training copies, throwaway probes, duplicate handling. Carries metadata, content, positions, image and `confirmed_at`/`confirmed_by`; drops relations, document_relations and labels. Only `target_status=importing` retargets the schema |
+| `rossum_copy_annotation` | ✏️ Copy an annotation (`POST /copy`) into a queue (`target_queue` required) — training copies, throwaway probes, duplicate handling. Carries metadata, content, positions, image and `confirmed_at`/`confirmed_by`; drops relations, document_relations and labels. Cross-queue you get the target schema (`target_status=importing`, which re-extracts) or the original content, not both — warns when it detects the hybrid |
 | `rossum_start_annotation` | ✏️ Start a review session (transitions to `reviewing`, locks to caller) |
 | `rossum_cancel_annotation` | ✏️ Cancel a review session (releases the lock) |
 | `rossum_confirm_annotation` | ⚠️ Confirm an annotation (`POST /confirm`) — transitions to exported/exporting/confirmed and FIRES THE EXPORT |
