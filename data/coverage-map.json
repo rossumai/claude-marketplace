@@ -69,6 +69,7 @@
     "tools": [
       "rossum_get_annotation",
       "rossum_get_annotation_meta",
+      "rossum_patch_annotation",
       "rossum_refire_annotation"
     ]
   },
@@ -426,9 +427,11 @@
     "summary": "Convert grid to table data"
   },
   "POST /annotations/{annotationID}/copy": {
-    "decision": "not_planned",
-    "reason": "operator/validation-UI",
-    "summary": "Copy annotation"
+    "decision": "covered",
+    "summary": "Copy annotation",
+    "tools": [
+      "rossum_copy_annotation"
+    ]
   },
   "POST /annotations/{annotationID}/create_embedded_url": {
     "decision": "not_planned",

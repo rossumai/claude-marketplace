@@ -15,8 +15,11 @@ adding more (handler, args, responder, assertions) cases.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sys
+
+import pytest
 
 import repo_lib as R
 
@@ -2303,3 +2306,300 @@ def test_configuration_changelog_falsy_max_results_does_not_disable_the_cap(monk
         assert len(payload["results"]) == 1, args
         assert len(fake.calls) == 1, args
         assert "page_size=1" in fake.calls[0]["url"], args
+
+
+# --- rossum_patch_annotation: metadata merge semantics ---
+# The Rossum API REPLACES annotation.metadata on PATCH. The tool's contract is to
+# read-modify-write so callers do not silently destroy unrelated keys (idempotency
+# records, classification flags) that other parts of a pipeline own.
+
+
+def _annotation_with_metadata(metadata):
+    """Responder: GET returns an annotation carrying `metadata`, PATCH echoes its body."""
+    def responder(url, method, body):
+        if method == "GET":
+            return {"id": 55, "status": "to_review", "metadata": copy.deepcopy(metadata)}
+        return {"id": 55, "status": "to_review", "metadata": (body or {}).get("metadata", {})}
+    return responder
+
+
+def _patched_body(fake):
+    """The body of the single PATCH the handler issued."""
+    patches = [c for c in fake.calls if c["method"] == "PATCH"]
+    assert len(patches) == 1, f"expected exactly one PATCH, got {patches}"
+    return patches[0]["body"]
+
+
+def test_patch_annotation_merges_metadata_with_existing_keys(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "metadata": {"probe_only": True}},
+        _annotation_with_metadata(
+            {"routing": {"role": "training_copy"}, "vde_dispatch": {"outcome": "recovered"}}),
+    )
+    assert _patched_body(fake)["metadata"] == {
+        "routing": {"role": "training_copy"},
+        "vde_dispatch": {"outcome": "recovered"},
+        "probe_only": True,
+    }
+
+
+def test_patch_annotation_merge_false_replaces_whole_metadata(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "metadata": {"probe_only": True}, "merge": False},
+        _annotation_with_metadata({"routing": {"role": "training_copy"}}),
+    )
+    assert _patched_body(fake)["metadata"] == {"probe_only": True}
+    assert not [c for c in fake.calls if c["method"] == "GET"], (
+        "merge=False must not read the annotation first"
+    )
+
+
+def test_patch_annotation_merge_is_top_level_not_deep(monkeypatch):
+    """A colliding top-level key is replaced wholesale — nested keys under it are NOT merged."""
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "metadata": {"routing": {"role": "probe"}}},
+        _annotation_with_metadata(
+            {"routing": {"role": "training_copy", "source": 12}, "keep_me": "yes"}),
+    )
+    assert _patched_body(fake)["metadata"] == {
+        "routing": {"role": "probe"},   # "source" is gone: replaced, not deep-merged
+        "keep_me": "yes",               # untouched sibling survives
+    }
+
+
+def test_patch_annotation_without_metadata_does_not_read_the_annotation(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "status": "to_review"},
+        _annotation_with_metadata({"routing": {"role": "training_copy"}}),
+    )
+    assert not [c for c in fake.calls if c["method"] == "GET"]
+    assert _patched_body(fake) == {"status": "to_review"}
+
+
+def test_patch_annotation_aborts_when_existing_metadata_cannot_be_read(monkeypatch):
+    """If the pre-read fails, PATCHing anyway would replace — the destructive outcome the
+    merge exists to prevent. Abort instead."""
+    def responder(url, method, body):
+        return None if method == "GET" else {"id": 55}
+
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "metadata": {"probe_only": True}}, responder,
+    )
+    assert not [c for c in fake.calls if c["method"] == "PATCH"]
+    assert emitted == [] or emitted[-1]["result"].get("isError")
+
+
+# --- hook code: file-path input + landed-code integrity digest ---
+# Real function hooks run to tens of KB. Reproducing that source verbatim into a tool
+# call is expensive and unverifiable, so the code may come from a local file instead,
+# and every write reports the sha256 of the code that actually LANDED.
+
+CODE = "def rossum_hook_request_handler(payload):\n    return {'messages': []}\n"
+CODE_SHA = hashlib.sha256(CODE.encode("utf-8")).hexdigest()
+
+
+def _code_file(tmp_path, text=CODE):
+    path = tmp_path / "hook.py"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def _hook_echo(landed_code=None):
+    """Responder: POST/PATCH return a hook whose config.code echoes what was sent,
+    unless `landed_code` forces a different value (to simulate a corrupted write)."""
+    def responder(url, method, body):
+        sent = ((body or {}).get("config") or {}).get("code")
+        return {"id": 9, "name": "H", "config": {
+            "runtime": "python3.12",
+            "code": landed_code if landed_code is not None else sent,
+        }}
+    return responder
+
+
+def test_create_hook_reads_code_from_file(monkeypatch, tmp_path):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "function", "events": ["annotation_content.export"],
+         "config": {"runtime": "python3.12"}, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(),
+    )
+    body = fake.calls[0]["body"]
+    assert body["config"]["code"] == CODE
+    assert body["config"]["runtime"] == "python3.12", "other config keys must survive"
+
+
+def test_patch_hook_reads_code_from_file(monkeypatch, tmp_path):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_hook",
+        {"hook_id": 9, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(),
+    )
+    assert fake.calls[0]["method"] == "PATCH"
+    assert fake.calls[0]["body"]["config"]["code"] == CODE
+
+
+def test_test_hook_reads_code_from_file(monkeypatch, tmp_path):
+    def responder(url, method, body):
+        return {"payload": 1} if url.endswith("/generate_payload") else {"result": "ok"}
+
+    fake, _ = run_handler(
+        monkeypatch, "rossum_test_hook",
+        {"hook_id": 9, "event": "annotation_content", "action": "export",
+         "annotation_id": 55, "code_file_path": _code_file(tmp_path)},
+        responder,
+    )
+    test_call = [c for c in fake.calls if c["url"].endswith("/test")][0]
+    assert test_call["body"]["config"]["code"] == CODE
+
+
+def test_patch_hook_reports_sha256_of_landed_code(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook",
+        {"hook_id": 9, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(),
+    )
+    out = emitted_payload(emitted)
+    assert out["code_integrity"]["sha256"] == CODE_SHA
+    assert out["code_integrity"]["characters"] == len(CODE)
+    assert out["code_integrity"]["verified"] is True
+    assert out["hook"]["id"] == 9
+
+
+def test_patch_hook_flags_code_that_did_not_land_intact(monkeypatch, tmp_path):
+    """A 2xx does not mean the bytes landed. If the returned hook's code differs from
+    what was sent, say so loudly rather than reporting success."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook",
+        {"hook_id": 9, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(landed_code="def rossum_hook_request_handler(payload):\n    pass\n"),
+    )
+    assert emitted[-1]["result"].get("isError") is True
+    out = emitted_payload(emitted)
+    assert out["code_integrity"]["verified"] is False
+    assert out["code_integrity"]["sent_sha256"] == CODE_SHA
+    assert out["code_integrity"]["landed_sha256"] != CODE_SHA
+
+
+def test_inline_code_is_also_digested(monkeypatch):
+    """The integrity readback is not a file-path feature — the inline path gets it too."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook",
+        {"hook_id": 9, "config": {"code": CODE}},
+        _hook_echo(),
+    )
+    assert emitted_payload(emitted)["code_integrity"]["sha256"] == CODE_SHA
+
+
+def test_hook_write_without_code_keeps_the_bare_hook_shape(monkeypatch):
+    """No code in play → no integrity block, and the raw hook object is returned unwrapped."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_hook", {"hook_id": 9, "active": False},
+        lambda url, method, body: {"id": 9, "active": False},
+    )
+    out = emitted_payload(emitted)
+    assert out == {"id": 9, "active": False}
+
+
+@pytest.mark.parametrize("tool,extra", [
+    ("rossum_patch_hook", {"hook_id": 9}),
+    ("rossum_create_hook", {"name": "H", "type": "function",
+                            "events": ["annotation_content.export"]}),
+    ("rossum_test_hook", {"hook_id": 9, "event": "annotation_content",
+                          "action": "export", "annotation_id": 55}),
+])
+def test_code_file_path_conflicts_with_inline_code(monkeypatch, tmp_path, tool, extra):
+    fake, emitted = run_handler(
+        monkeypatch, tool,
+        {**extra, "config": {"code": CODE}, "code_file_path": _code_file(tmp_path)},
+        _hook_echo(),
+    )
+    assert emitted[-1]["result"].get("isError") is True
+    assert fake.calls == [], "must not touch the API when the inputs conflict"
+
+
+@pytest.mark.parametrize("tool,extra", [
+    ("rossum_patch_hook", {"hook_id": 9}),
+    ("rossum_create_hook", {"name": "H", "type": "function",
+                            "events": ["annotation_content.export"], "config": {}}),
+    ("rossum_test_hook", {"hook_id": 9, "event": "annotation_content",
+                          "action": "export", "annotation_id": 55}),
+])
+def test_code_file_path_missing_file_errors_before_any_call(monkeypatch, tmp_path, tool, extra):
+    fake, emitted = run_handler(
+        monkeypatch, tool,
+        {**extra, "code_file_path": str(tmp_path / "nope.py")},
+        _hook_echo(),
+    )
+    assert emitted[-1]["result"].get("isError") is True
+    assert fake.calls == []
+
+
+# --- rossum_copy_annotation ---
+
+def _copy_responder(url, method, body):
+    return {"id": 77, "url": f"{BASE}/api/v1/annotations/77", "status": "to_review"}
+
+
+def test_copy_annotation_posts_target_queue_as_url_and_status(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "importing"},
+        _copy_responder,
+    )
+    assert fake.calls[0]["url"] == f"{BASE}/api/v1/annotations/55/copy"
+    assert fake.calls[0]["method"] == "POST"
+    assert fake.calls[0]["body"] == {
+        "target_queue": f"{BASE}/api/v1/queues/12",
+        "target_status": "importing",
+    }
+
+
+def test_copy_annotation_omits_unspecified_targets(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_copy_annotation", {"annotation_id": 55}, _copy_responder)
+    assert fake.calls[0]["body"] == {}
+
+
+def test_copy_annotation_returns_the_new_annotation(monkeypatch):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "importing"},
+        _copy_responder,
+    )
+    out = emitted_payload(emitted)
+    assert out["copy"]["id"] == 77
+
+
+def test_copy_annotation_warns_on_cross_queue_copy_that_keeps_the_source_schema(monkeypatch):
+    """Only target_status='importing' retargets the schema. Any other status leaves the
+    copy on the SOURCE schema — harmless within one queue, a broken hybrid across queues."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "to_review"},
+        _copy_responder,
+    )
+    out = emitted_payload(emitted)
+    assert "schema" in out["warning"].lower()
+    assert "importing" in out["warning"]
+
+
+def test_copy_annotation_does_not_warn_when_importing_retargets_the_schema(monkeypatch):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_queue": 12, "target_status": "importing"},
+        _copy_responder,
+    )
+    assert "warning" not in emitted_payload(emitted)
+
+
+def test_copy_annotation_does_not_warn_for_same_queue_copy(monkeypatch):
+    """No target_queue means the copy stays put, where the source schema is the right one."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_copy_annotation",
+        {"annotation_id": 55, "target_status": "to_review"}, _copy_responder)
+    assert "warning" not in emitted_payload(emitted)

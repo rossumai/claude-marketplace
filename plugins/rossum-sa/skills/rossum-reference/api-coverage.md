@@ -4,7 +4,7 @@ _Auto-generated — do not edit by hand. Tracks which Rossum API operations the 
 
 _**This table is about tool coverage, not about what the Rossum API supports.** Every status below describes *this MCP server*; whether **your token** may call a given endpoint is a separate question. ✅ covered = a dedicated tool wraps it. ✅ via rossum_get = readable through the generic `rossum_get` tool (no dedicated tool). ⬜ pending = uncovered write, no MCP tool yet. 🚫 not_planned = deliberately not wrapped (deemed too destructive, too niche, or out of an SA's remit) — **it does not mean the operation does not exist**, so never tell a user the platform cannot do it; but there is no path to it from here either, so hand off rather than open-coding a request around the gap. ⚠️ deprecated = deprecated by Rossum._
 
-**64 covered · 85 via rossum_get · 4 pending · 129 not planned · 282 total operations**
+**65 covered · 85 via rossum_get · 4 pending · 128 not planned · 282 total operations**
 
 ## Annotation
 
@@ -18,13 +18,13 @@ _**This table is about tool coverage, not about what the Rossum API supports.** 
 | `POST /annotations/purge_deleted` | ✅ covered | rossum_delete_annotation |
 | `POST /annotations/search` | ✅ covered | rossum_search_annotations_advanced |
 | `POST /annotations/suggested_recipients` | 🚫 not_planned |  |
-| `GET /annotations/{annotationID}` | ✅ covered | rossum_get_annotation, rossum_get_annotation_meta, rossum_refire_annotation |
+| `GET /annotations/{annotationID}` | ✅ covered | rossum_get_annotation, rossum_get_annotation_meta, rossum_patch_annotation, rossum_refire_annotation |
 | `PATCH /annotations/{annotationID}` | ✅ covered | rossum_patch_annotation, rossum_refire_annotation |
 | `PUT /annotations/{annotationID}` | 🚫 not_planned |  |
 | `POST /annotations/{annotationID}/approve` | 🚫 not_planned |  |
 | `POST /annotations/{annotationID}/cancel` | ✅ covered | rossum_cancel_annotation, rossum_refire_annotation |
 | `POST /annotations/{annotationID}/confirm` | ✅ covered | rossum_confirm_annotation |
-| `POST /annotations/{annotationID}/copy` | 🚫 not_planned |  |
+| `POST /annotations/{annotationID}/copy` | ✅ covered | rossum_copy_annotation |
 | `POST /annotations/{annotationID}/create_embedded_url` | 🚫 not_planned |  |
 | `POST /annotations/{annotationID}/delete` | ✅ covered | rossum_delete_annotation |
 | `POST /annotations/{annotationID}/edit` | 🚫 not_planned |  |
