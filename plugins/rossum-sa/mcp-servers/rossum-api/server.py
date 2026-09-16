@@ -5437,11 +5437,11 @@ def handle_patch_schema(request_id, arguments):
     annotations=_READ_ONLY,
 )
 def handle_validate_schema(request_id, arguments):
-    content, source, _ignored, ok = _resolve_schema_content(request_id, arguments, require=True)
-    if not ok:
-        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    content, source, _ignored, ok = _resolve_schema_content(request_id, arguments, require=True)
+    if not ok:
         return
     body = {"content": content}
     if "schema_id" in arguments:

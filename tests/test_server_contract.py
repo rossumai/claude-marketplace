@@ -1926,11 +1926,6 @@ _NO_AUTH_TOOLS = {
     "rossum_set_token",                  # establishes the connection itself
     "rossum_generate_export_settings",   # pure local transform
     "data_storage_healthz",              # explicitly auth-free (live reachability probe)
-    "rossum_validate_schema",            # content/content_file_path are each optional in the
-                                          # JSON schema (exactly-one-of is enforced by the
-                                          # resolver instead); dummy args therefore supply
-                                          # neither, and the resolver's argument error fires
-                                          # before the auth check is ever reached.
 }
 
 
