@@ -104,7 +104,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **Approval workflows** — read-only workflow/step/run/activity API + the `reset` action, step modes & conditions, approver assignees (a paid, Rossum-configured feature)
 - **Business rules & validation** — native Rules vs. the legacy Business Rules Validation extension, conditions, actions, automation blocking
 - **Email Body Converter** — hosted webhook that turns email HTML bodies (and HTML/TXT attachments or uploads) into PDF documents for extraction — setup, full settings schema, regional availability, body-only email recipes
-- **Parts library** — vetted, parameterized, composable building blocks (matching & export to start) the SA and Claude compose from instead of rebuilding; indexed by the `parts-index` pack
+- **Parts library** — vetted, parameterized, composable building blocks (master-data import, matching & export) the SA and Claude compose from instead of rebuilding; indexed by the `parts-index` pack
 
 ## 💡 What can you do with this?
 

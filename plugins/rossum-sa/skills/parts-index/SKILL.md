@@ -1,6 +1,6 @@
 ---
 name: parts-index
-description: Index of the rossum-sa parts library — vetted, parameterized, composable building blocks (capture, matching, export) lifted from the reference packs. Consult when assembling a Rossum implementation to reuse a known-good pattern instead of writing one from scratch; tells you which parts exist, what they produce/consume, and where they live.
+description: Index of the rossum-sa parts library — vetted, parameterized, composable building blocks (capture, master-data import, matching, export) lifted from the reference packs and from production implementations. Consult when assembling a Rossum implementation to reuse a known-good pattern instead of writing one from scratch; tells you which parts exist, what they produce/consume, their maturity, and where they live.
 user-invocable: false
 ---
 
@@ -57,10 +57,32 @@ reference pack once one exists.
 
 ## Candidates (`candidate` maturity — NOT for auto-composition)
 
-None in the library today. When a `candidate` lands it belongs in this section, and only
-here: it is believed-good but **unproven**, so offer it to a human for review and never wire
-it in automatically. Promotion to `standard` requires live validation.
+A `candidate` belongs in this section and only here: it is believed-good but **unproven in its
+generalized form**, so offer it to a human for review and never wire it in automatically.
+Promotion to `standard` requires running the filled fragment against a live target.
 
-Seven candidates (one MDH fan-out picker + six Workday-specific export/matching parts)
+The five below were **lifted from production hooks that run today** (two SAP integrations,
+2026-01 → 2026-09; see `sap-reference`) — the mechanisms are proven, the generalized fragments
+are not yet. Read each part's `provenance` for what was measured and what was left out.
+
+### Master data (`parts/master-data/`)
+
+Scheduled importers that fill the collections matching reads. Whole function hooks; they write
+MDH datasets, not schema fields, so `produces`/`consumes` are legitimately empty.
+
+| part | summary | source shape |
+|--------|---------|-------------|
+| `mdh-import-watermark-sync` | the two-phase engine: resumable full load, then semi-open incremental windows on a persisted watermark with a clock-skew safety lag; state in its own Data Storage collection; one adaptable `SourceApi` class | any paged HTTPS API (default: token-endpoint + `RESULT_FLAG`/`DATA` envelope) |
+| `mdh-odata-import-skiptoken-sync` | the same engine with the OData-via-gateway dialect built in: creation-date full load, change-date incremental, numeric `$skiptoken`, only-empty-page-ends, optional `$expand` flatten with header-date stamping | OData v4 behind BTP / API Management |
+| `mdh-odata-filtered-full-refresh` | filtered population swept and PUT-replaced once per run; propagates deletions, refuses an empty or truncated sweep | OData v4 behind BTP / API Management |
+
+### Export (`parts/export/`)
+
+| part | summary | produces |
+|--------|---------|----------|
+| `export-ubl-to-vim` | UBL 2.1 + embedded base64 document → OpenText VIM ingest through an SAP gateway (multipart `document` part); gateway SQL-threat-protection defences; sent XML archived as a relation; VIM regid written back | vim_reference_field |
+| `export-create-then-attach-with-state` | two-call BAPI-shaped export (create → attach) with a Data Storage state record as the duplicate guard, BAPIRET2 severity as the verdict, timeout recorded as `unknown` and never auto-retried, GR-aware receipt-coverage guard | doc_number, fiscal_year, archive_id, status, message fields |
+
+Seven further candidates (one MDH fan-out picker + six Workday-specific export/matching parts)
 are staged on the `feat/parts-library-candidates` branch, held back until each has been
 run against a live target rather than only structurally validated.

@@ -1,0 +1,21 @@
+{
+  "name": "mdh-odata-filtered-full-refresh",
+  "axis": "master-data",
+  "summary": "OData v4 behind an API gateway -> MDH dataset: sweep a server-side-filtered population by numeric $skiptoken, buffer it, and PUT-replace once - so source-side removals propagate and a failed sweep writes nothing.",
+  "maturity": "candidate",
+  "params": {
+    "dataset":          {"required": true, "type": "string", "description": "MDH dataset to replace"},
+    "id_keys":          {"required": true, "type": "string", "description": "comma-separated natural key"},
+    "odata_filter":     {"default": "", "type": "string", "description": "$filter selecting the population, e.g. startswith(Supplier,'<placeholder-prefix>'); empty = the whole entity set (then this IS the nightly drift companion for a watermark sync)"},
+    "expand_nav":       {"default": "", "type": "string", "description": "one navigation property to flatten onto the row as <nav>_<field> columns; empty for none"},
+    "select_fields":    {"default": "", "type": "string", "description": "comma-separated $select; empty = all fields. Keep any field you filter or key on"},
+    "order_by":         {"default": "PurchaseOrder asc", "type": "string", "description": "$orderby - the entity key, for stable offset paging"},
+    "page_top":         {"default": 500, "type": "number", "description": "$top; the gateway may serve fewer"},
+    "runtime_budget_s": {"default": 45, "type": "number", "description": "wall-clock budget; the sweep aborts WITHOUT writing when exceeded"}
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "Lifted from a production one-time-vendor address feed (2026-08): a startswith() filter on the placeholder vendor prefix selected 5,134 of ~2.33M purchase orders (0.2%), swept in ~20s over 12 pages of 500, with the header's _SupplierAddress expanded and flattened. 259 of those rows carried no LastChangeDateTime, which is why a watermark sync was rejected for this feed. Generalized here and not yet run in this form - hence candidate.",
+  "reference": "sap-reference#shape-a-odata-through-an-api-gateway",
+  "notes": "Never PUT an empty result - the fragment refuses, because a source hiccup would otherwise wipe a working dataset. A standalone `or` in the $filter is rejected by the gateway (403 FORBIDDEN_PARAMETER); express the population with `and`, startswith(), or ranges. ~5k rows is a few MB, well inside the 256MB runtime; a population that no longer fits one run belongs in mdh-odata-import-skiptoken-sync."
+}

@@ -1,0 +1,26 @@
+{
+  "name": "mdh-odata-import-skiptoken-sync",
+  "axis": "master-data",
+  "summary": "OData v4 behind an API gateway -> MDH dataset: full load windowed on the CREATION date, incremental on the LAST-CHANGE date, numeric $skiptoken paging where only an empty page ends the walk, optional $expand flatten with header-date stamping.",
+  "maturity": "candidate",
+  "params": {
+    "dataset":          {"required": true, "type": "string", "description": "MDH dataset receiving the rows"},
+    "state_dataset":    {"required": true, "type": "string", "description": "Data Storage collection for the single sync-state record"},
+    "state_key":        {"required": true, "type": "string", "description": "`key` of the state record, e.g. po_headers / po_line_items"},
+    "id_keys":          {"required": true, "type": "string", "description": "comma-separated natural key; composite for flattened children, e.g. PurchaseOrder,PurchaseOrderItem"},
+    "created_field":    {"default": "CreationDate", "type": "string", "description": "Edm.Date field that defines the full-load scope; literals are bare ISO dates"},
+    "changed_field":    {"default": "LastChangeDateTime", "type": "string", "description": "change stamp driving the incremental and the dataset watermark"},
+    "order_by":         {"default": "PurchaseOrder asc", "type": "string", "description": "$orderby for the full load - the ENTITY KEY, never a day-granular date"},
+    "full_load_start":  {"default": "2000-01-01", "type": "string", "description": "lower bound of the creation-date window; empty string skips the full load and runs incremental only"},
+    "start_date":       {"default": "2000-01-01T00:00:00Z", "type": "string", "description": "incremental floor when the dataset is empty and no handoff exists"},
+    "expand_nav":       {"default": "", "type": "string", "description": "navigation property to flatten (e.g. _PurchaseOrderItem); empty for a flat entity"},
+    "page_top":         {"default": 5000, "type": "number", "description": "$top; drop to 100-500 for an $expand feed - the gateway caps expanded pages harder and a 60s kill is close"},
+    "page_limit":       {"default": 200, "type": "number", "description": "pages per run"},
+    "runtime_budget_s": {"default": 40, "type": "number", "description": "wall-clock budget per run, under the 60s serverless kill"}
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "Lifted from two production importers (purchase-order headers; purchase-order line items via header $expand) plus their account-assignment sibling, running against an SAP S/4HANA system behind an SAP BTP API gateway since 2026-01, ~2.3M line items. The behaviours encoded (skiptoken vs nextLink, empty-page termination, key ordering, creation-vs-change scoping, $select stripping the watermark, `or` forbidden) were each measured after a silent data loss or a 403. Generalized here and not yet run in this form - hence candidate. Production extras deliberately left out: parallel stateless backfill workers, key-only CSV emit for proof extracts, a raw-URL passthrough.",
+  "reference": "sap-reference#shape-a-odata-through-an-api-gateway",
+  "notes": "Deletes never surface through OData GET - pair with a nightly full-replace companion (mdh-odata-filtered-full-refresh with an empty filter) if drift matters. Keep the header's date fields in any $select on an $expand URL, or the watermark is stripped. The gateway serialises beyond ~4 concurrent requests. MDH ingestion is asynchronous (HTTP 202) with one worker across datasets; a large window sits in that queue for minutes."
+}

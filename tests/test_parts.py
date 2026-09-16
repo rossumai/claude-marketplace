@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 PARTS = ROOT / "plugins" / "rossum-sa" / "parts"
 SKILLS = ROOT / "plugins" / "rossum-sa" / "skills"
-AXES = {"capture", "matching", "validation", "export", "formula"}
+AXES = {"capture", "master-data", "matching", "validation", "export", "formula"}
 MATURITIES = {"candidate", "reviewed", "standard"}
 REQUIRED = {"name", "axis", "summary", "maturity", "params",
             "produces", "consumes", "provenance", "reference"}
