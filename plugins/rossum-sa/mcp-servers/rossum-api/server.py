@@ -3807,6 +3807,23 @@ _CODE_FILE_PATH_DOC = (
 )
 
 
+_SETTINGS_FILE_PATH_DOC = (
+    "Path (absolute, or relative to the server's CWD) to a local JSON file holding the hook's "
+    "settings. Use INSTEAD of inline settings for anything but a small object: MDH matching and "
+    "Request Processor configurations run to thousands of lines, and reproducing them verbatim "
+    "into a tool call is expensive and unverifiable. The file is either the settings object "
+    "itself, or a whole hook object carrying a 'settings' key (what rossum_get_hook out_file_path "
+    "writes, or a prd2 hook.json) — recognised by the presence of other hook fields (id, type, "
+    "events, config, …); a file with ONLY a 'settings' key is refused as ambiguous. From a whole-"
+    "hook file only 'settings' is sent; every other key is reported back as ignored_keys, so the "
+    "file's code, queues or events never leak into this write. Supplying both this and settings "
+    "is an error. A file resolving to {} is refused because the API accepts {} and WIPES the "
+    "field — pass settings: {} inline if that is really the intent. Reading a prd2 tree's "
+    "hook.json is fine OUTSIDE a prd2 push flow; inside a prd2 project the change should go "
+    "through prd2 push."
+)
+
+
 # --- JSON object fields to/from local files (schema content; hook settings later) ---
 # A 2xx does not prove the bytes landed. For JSON fields the API normalises on write —
 # it injects default keys and silently drops unknown ones — so equality is the wrong
@@ -4233,6 +4250,59 @@ def _resolve_hook_code(request_id, arguments):
     return config, code, True
 
 
+def _resolve_hook_settings(request_id, arguments):
+    """Fold `settings_file_path` into a hook tool's `settings`.
+
+    Returns (settings, source, ignored_keys, file_id, ok) — the same 5-tuple as
+    _resolve_schema_content. `source` is "inline" / "file" / None (this call carries no
+    settings); `ignored_keys` are the top-level keys a whole-hook file carried that will
+    NOT be sent; `file_id` is that file's own 'id' (None otherwise) — only surfaced so a
+    caller can flag a file pulled from a different hook, never used as the hook_id;
+    ok=False means an error was already emitted. Every error fires before any HTTP call.
+
+    Measured behaviour this guards: `settings: {}` is accepted and WIPES the field, so a
+    file resolving to {} is refused (pass {} inline when that is the intent). `settings:
+    null` is a 400 upstream; it is intercepted here because it is otherwise indistinguishable
+    from settings being omitted, and the local message says what to do instead.
+    """
+    if "settings" in arguments and arguments["settings"] is None:
+        tool_result(
+            request_id,
+            "settings: null is not a valid settings object and was not sent. Omitting settings "
+            "leaves the hook's settings unchanged; pass settings: {} inline if you mean to clear it.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    inline = arguments.get("settings")
+    path = arguments.get("settings_file_path")
+    if inline is not None and path is not None:
+        tool_result(
+            request_id,
+            "Provide either settings or settings_file_path, not both — they set the same field "
+            "and the intended source is ambiguous.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    if path is None:
+        return inline, ("inline" if inline is not None else None), [], None, True
+    try:
+        settings, ignored, file_id = _load_json_dict_field(
+            path, "settings", wrapper_markers=_HOOK_OBJECT_KEYS)
+    except _FileInputError as exc:
+        tool_result(request_id, str(exc), is_error=True)
+        return None, None, [], None, False
+    if not settings:
+        tool_result(
+            request_id,
+            f"{path} resolves to an empty settings object. The API accepts {{}} and WIPES the "
+            "hook's settings, so a file is refused. Pass settings: {} inline if that is really "
+            "the intent.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    return settings, "file", ignored, file_id, True
+
+
 def _code_digest(code):
     """sha256 + character count of hook source, so a caller can assert what it sent."""
     return {
@@ -4241,7 +4311,9 @@ def _code_digest(code):
     }
 
 
-def _emit_hook_write_result(request_id, result, sent_code, *, created=False):
+def _emit_hook_write_result(request_id, result, sent_code, *, created=False,
+                            sent_settings=None, settings_ignored_keys=(),
+                            settings_file_id=None, hook_id=None):
     """Emit a hook create/patch response, verifying the code that actually landed.
 
     A 2xx does not prove the bytes landed, so when the write carried code the response's
@@ -4401,7 +4473,13 @@ def _reject_secret_values(request_id, arguments):
                     "Hook settings, available to the hook code as payload['settings'] — non-sensitive "
                     "configuration such as endpoints, queue filters, or mappings. Never put credentials "
                     "here; declare them in secrets_schema instead."
+                    " Mutually exclusive with settings_file_path — prefer the file for anything larger "
+                    "than a few lines."
                 ),
+            },
+            "settings_file_path": {
+                "type": "string",
+                "description": _SETTINGS_FILE_PATH_DOC,
             },
             "secrets_schema": {
                 "type": "object",
@@ -4419,6 +4497,10 @@ def handle_create_hook(request_id, arguments):
     if not base_url:
         return
     config, code, ok = _resolve_hook_code(request_id, arguments)
+    if not ok:
+        return
+    settings, _settings_source, settings_ignored, settings_file_id, ok = _resolve_hook_settings(
+        request_id, arguments)
     if not ok:
         return
     if config is None:
@@ -4440,12 +4522,16 @@ def handle_create_hook(request_id, arguments):
         body["run_after"] = _resource_urls(base_url, "hooks", arguments["run_after"])
     if "token_owner" in arguments:
         body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
-    for key in ("sideload", "description", "settings", "secrets_schema"):
+    for key in ("sideload", "description", "secrets_schema"):
         if key in arguments:
             body[key] = arguments[key]
+    if settings is not None:
+        body["settings"] = settings
     _rossum_post(request_id, "/api/v1/hooks", body,
                  format_result=lambda r: _emit_hook_write_result(
-                     request_id, r, code, created=True))
+                     request_id, r, code, created=True, sent_settings=settings,
+                     settings_ignored_keys=settings_ignored,
+                     settings_file_id=settings_file_id))
 
 
 @_tool(
@@ -4648,7 +4734,13 @@ def handle_delete_hook(request_id, arguments):
                 "description": (
                     "Updated hook settings. Replaces the whole settings object — "
                     "read-modify-write via rossum_get_hook to change one key."
+                    " Mutually exclusive with settings_file_path — prefer the file for anything larger "
+                    "than a few lines."
                 ),
+            },
+            "settings_file_path": {
+                "type": "string",
+                "description": _SETTINGS_FILE_PATH_DOC,
             },
             "description": {
                 "type": "string",
@@ -4675,12 +4767,17 @@ def handle_patch_hook(request_id, arguments):
     config, code, ok = _resolve_hook_code(request_id, arguments)
     if not ok:
         return
+    settings, _settings_source, settings_ignored, settings_file_id, ok = _resolve_hook_settings(
+        request_id, arguments)
+    if not ok:
+        return
     hook_id = arguments["hook_id"]
     body = {}
-    for key in ("name", "events", "active", "sideload", "settings",
-                "description", "secrets_schema"):
+    for key in ("name", "events", "active", "sideload", "description", "secrets_schema"):
         if key in arguments:
             body[key] = arguments[key]
+    if settings is not None:
+        body["settings"] = settings
     if config is not None:
         body["config"] = config
     if "queue_ids" in arguments:
@@ -4690,7 +4787,10 @@ def handle_patch_hook(request_id, arguments):
     if "token_owner" in arguments:
         body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
     _rossum_patch(request_id, f"/api/v1/hooks/{hook_id}", body,
-                  format_result=lambda r: _emit_hook_write_result(request_id, r, code))
+                  format_result=lambda r: _emit_hook_write_result(
+                      request_id, r, code, sent_settings=settings,
+                      settings_ignored_keys=settings_ignored,
+                      settings_file_id=settings_file_id, hook_id=hook_id))
 
 
 # --- Custom Format Templating export-template helpers ---
