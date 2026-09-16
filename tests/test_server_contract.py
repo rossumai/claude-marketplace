@@ -2919,6 +2919,7 @@ def test_validate_schema_requires_exactly_one_content_source(monkeypatch, args):
 
 @pytest.mark.parametrize("tool,extra", [
     ("rossum_validate_schema", {}),
+    ("rossum_patch_schema", {"schema_id": 4}),
 ])
 def test_content_file_path_errors_before_any_call(monkeypatch, tmp_path, tool, extra):
     for doc in ({"id": 1}, '{"content": [', "[]"):
@@ -2943,3 +2944,108 @@ def test_empty_content_from_file_is_refused_but_inline_is_allowed(monkeypatch, t
     fake, _ = run_handler(monkeypatch, "rossum_validate_schema", {"content": []},
                           lambda url, method, body: {})
     assert fake.calls[0]["body"] == {"content": []}, "inline [] is the deliberate escape hatch"
+
+
+def _schema_echo(landed=None, **over):
+    """Responder: PATCH returns the schema with content echoing what was sent, unless
+    `landed` forces a different tree (to simulate the API normalising or dropping keys)."""
+    def responder(url, method, body):
+        sent = (body or {}).get("content")
+        return _schema_obj(content=landed if landed is not None else sent, **over)
+    return responder
+
+
+def _landed_with_defaults(content):
+    """What the API really hands back for SCHEMA_CONTENT: the same tree plus injected defaults."""
+    landed = copy.deepcopy(content)
+    landed[0]["icon"] = None
+    landed[0]["children"][0] = {"rir_field_names": [], "default_value": None, **landed[0]["children"][0]}
+    return landed
+
+
+def test_patch_schema_reads_content_from_file_and_strips_content_from_echo(monkeypatch, tmp_path):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, SCHEMA_CONTENT)},
+        _schema_echo(),
+    )
+    assert fake.calls[0]["method"] == "PATCH"
+    assert fake.calls[0]["body"] == {"content": SCHEMA_CONTENT}
+    out = emitted_payload(emitted)
+    assert "content" not in out["schema"]
+    assert out["schema"]["id"] == 4
+    ci = out["content_integrity"]
+    assert ci["verified"] is True
+    assert ci["sent_sha256"] == ci["landed_sha256"] == server._canonical_sha256(SCHEMA_CONTENT)
+    assert ci["sent_datapoints"] == ci["landed_datapoints"] == 1
+    assert "injected_defaults" not in ci and "dropped" not in ci and "ignored_keys" not in ci
+
+
+def test_patch_schema_whole_object_file_sends_content_only_and_reports_ignored_keys(monkeypatch, tmp_path):
+    fake, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, _schema_obj(name="EDITED IN FILE"))},
+        _schema_echo(),
+    )
+    assert fake.calls[0]["body"] == {"content": SCHEMA_CONTENT}, "name/metadata from the file are NOT sent"
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["ignored_keys"] == ["id", "name", "queues", "url", "metadata", "modified_by", "modified_at"]
+
+
+def test_patch_schema_inline_name_travels_alongside_file_content(monkeypatch, tmp_path):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "name": "New", "content_file_path": _content_file(tmp_path, SCHEMA_CONTENT)},
+        _schema_echo(),
+    )
+    assert fake.calls[0]["body"] == {"name": "New", "content": SCHEMA_CONTENT}
+
+
+def test_patch_schema_injected_defaults_verify_with_a_note(monkeypatch, tmp_path):
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, SCHEMA_CONTENT)},
+        _schema_echo(landed=_landed_with_defaults(SCHEMA_CONTENT)),
+    )
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["verified"] is True
+    assert ci["injected_defaults"] == {"icon": 1, "rir_field_names": 1, "default_value": 1}
+    assert "normal" in ci["note"]
+    assert emitted[-1]["result"].get("isError") is not True
+
+
+def test_patch_schema_dropped_key_is_loud_but_not_an_error(monkeypatch, tmp_path):
+    sent = copy.deepcopy(SCHEMA_CONTENT)
+    sent[0]["children"][0]["hiden"] = True                     # typo the API will discard
+    _, emitted = run_handler(
+        monkeypatch, "rossum_patch_schema",
+        {"schema_id": 4, "content_file_path": _content_file(tmp_path, sent)},
+        _schema_echo(landed=_landed_with_defaults(SCHEMA_CONTENT)),
+    )
+    assert emitted[-1]["result"].get("isError") is not True, "the write landed; a retry would not help"
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["verified"] is False
+    assert ci["dropped"] == ["content[0].children[0].hiden"]
+    assert "do NOT retry" in ci["note"]
+
+
+def test_patch_schema_inline_content_also_gets_the_readback(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                             {"schema_id": 4, "content": SCHEMA_CONTENT}, _schema_echo())
+    out = emitted_payload(emitted)
+    assert out["content_integrity"]["verified"] is True and "content" not in out["schema"]
+
+
+def test_patch_schema_without_content_keeps_the_bare_response(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                             {"schema_id": 4, "name": "Renamed"}, _schema_echo(name="Renamed"))
+    out = emitted_payload(emitted)
+    assert "content_integrity" not in out and out["name"] == "Renamed"
+
+
+def test_patch_schema_response_without_content_list_is_unverified(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_patch_schema",
+                             {"schema_id": 4, "content": SCHEMA_CONTENT},
+                             lambda url, method, body: {"id": 4, "name": "S"})
+    ci = emitted_payload(emitted)["content_integrity"]
+    assert ci["verified"] is False and ci["landed_sha256"] is None

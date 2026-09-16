@@ -3988,6 +3988,48 @@ def _resolve_schema_content(request_id, arguments, *, require):
     return content, "file", ignored, True
 
 
+def _emit_schema_write_result(request_id, result, sent_content, *, ignored_keys):
+    """Emit a schema PATCH response with a structural readback of the content that landed.
+
+    Measured behaviour this encodes: an already-normalised tree round-trips exactly; the
+    API injects defaults (rir_field_names, default_value, section icon) — reported, not
+    failed; unknown keys are silently DROPPED and validate does not catch them — reported
+    as verified:false. The echoed schema has `content` stripped (returning it would defeat
+    the file path). verified:false is NOT is_error: the write landed, and a retry would
+    land the same way.
+    """
+    schema = {k: v for k, v in result.items() if k != "content"}
+    landed = result.get("content")
+    if isinstance(landed, list):
+        integrity = _json_integrity(sent_content, landed)
+        integrity["sent_datapoints"] = _count_datapoints(sent_content)
+        integrity["landed_datapoints"] = _count_datapoints(landed)
+    else:
+        integrity = {
+            "verified": False,
+            "sent_sha256": _canonical_sha256(sent_content),
+            "landed_sha256": None,
+            "sent_datapoints": _count_datapoints(sent_content),
+            "landed_datapoints": None,
+        }
+    if ignored_keys:
+        integrity["ignored_keys"] = ignored_keys
+    if not integrity["verified"]:
+        integrity["note"] = (
+            "The schema WAS updated, but what landed is not what was sent — do NOT retry, the "
+            "same content would land the same way. The API silently drops keys it does not know "
+            "and rossum_validate_schema does not catch them: check 'dropped' and 'changed', fix "
+            "the content, and patch again."
+        )
+    elif integrity.get("injected_defaults"):
+        integrity["note"] = (
+            "Content landed intact. The API added default keys (listed in injected_defaults); "
+            "this is normal."
+        )
+    tool_result(request_id, json.dumps(
+        {"schema": schema, "content_integrity": integrity}, indent=2))
+
+
 def _resolve_hook_code(request_id, arguments):
     """Fold `code_file_path` into the hook config.
 
@@ -5351,9 +5393,20 @@ def handle_get_schema(request_id, arguments):
 
 @_tool(
     "rossum_patch_schema",
-    "Updates an existing schema. Only provide the fields you want to change. "
-    "Most commonly used to update the 'content' field (the datapoint tree). "
-    "This is a write operation that affects all queues using this schema.",
+    "Updates an existing schema. Only provide the fields you want to change; `content` (the "
+    "full datapoint tree) REPLACES the stored tree wholesale. Real schemas are large, so pass "
+    "content_file_path instead of inline content: a local file holding either the bare content "
+    "array or the whole schema object (what rossum_get_schema out_file_path wrote, or a prd2 "
+    "schema.json). The file supplies content ONLY — name and metadata stay inline parameters, "
+    "and any other keys in a whole-object file are reported back as ignored_keys, not sent. A "
+    "file resolving to [] is refused (the API accepts [] and empties the schema; pass "
+    "content: [] inline if intended). Every content write returns content_integrity, a "
+    "structural comparison of what LANDED vs what was sent: verified:true with "
+    "injected_defaults is normal (the API adds rir_field_names/default_value/icon); "
+    "verified:false with dropped/changed means the API silently discarded or altered keys — "
+    "rossum_validate_schema does NOT catch unknown keys — so inspect and fix, do not retry. "
+    "The echoed schema omits content. This is a write operation that affects all queues "
+    "using this schema; dry-run with rossum_validate_schema first.",
     {
         "type": "object",
         "required": ["schema_id"],
@@ -5369,7 +5422,14 @@ def handle_get_schema(request_id, arguments):
             "content": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Updated schema content (the full datapoint tree: sections, fields, multivalues).",
+                "description": "Updated schema content (the full datapoint tree: sections, fields, "
+                               "multivalues). Mutually exclusive with content_file_path.",
+            },
+            "content_file_path": {
+                "type": "string",
+                "description": "Local JSON file holding the new content: the bare array or the "
+                               "whole schema object (its 'content' key is used; other keys are "
+                               "ignored and listed in the response). Mutually exclusive with content.",
             },
             "metadata": {
                 "type": "object",
@@ -5382,11 +5442,25 @@ def handle_get_schema(request_id, arguments):
 )
 def handle_patch_schema(request_id, arguments):
     schema_id = arguments["schema_id"]
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
+    content, _source, ignored_keys, ok = _resolve_schema_content(
+        request_id, arguments, require=False)
+    if not ok:
+        return
     body = {}
-    for key in ("name", "content", "metadata"):
+    for key in ("name", "metadata"):
         if key in arguments:
             body[key] = arguments[key]
-    _rossum_patch(request_id, f"/api/v1/schemas/{schema_id}", body)
+    format_result = None
+    if content is not None:
+        body["content"] = content
+
+        def format_result(result):
+            _emit_schema_write_result(request_id, result, content, ignored_keys=ignored_keys)
+
+    _rossum_patch(request_id, f"/api/v1/schemas/{schema_id}", body, format_result=format_result)
 
 
 # POST endpoint, but a pure dry-run (nothing is saved) -> annotated _READ_ONLY so it
