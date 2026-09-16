@@ -211,7 +211,7 @@ Note that in this case the `number` enum was injected as a number **even though 
 1. Prefer exact matching before fuzzy matching. Never do exact matching on names/addresses — use fuzzy for those.
 2. **Run the Atlas Search Index Pre-flight before shipping any `$search` query.** Confirm the named index exists on the collection and that every field referenced in the `$search` stage is mapped in the index. A missing or misnamed index makes `$search` return zero results silently — no error, hook log reads `status: completed`. See [Atlas Search Index Pre-flight](#atlas-search-index-pre-flight-run-before-shipping-any-search-query).
 3. When `$search` is used:
-   - Always follow with `$limit` (default 20 unless use case requires otherwise).
+   - Always follow **immediately** with `$limit` (default 20 unless use case requires otherwise). "Immediately" is load-bearing: any stage between `$search` and `$limit` silently caps the candidate set at 50. See [`$limit` must directly follow `$search`](#limit-must-directly-follow-search).
    - Capture score via `$addFields: { "__score": { "$meta": "searchScore" } }`.
    - Filter low-confidence matches with a score threshold.
    - Combine multiple strategies: use `phrase` and `text` searches with appropriate `slop` and `fuzzy` settings.
@@ -232,11 +232,51 @@ Note that in this case the `number` enum was injected as a number **even though 
 5. Do not use deprecated or JavaScript operators (`$function`, `$where`).
 6. Do not use `$expr` with nested `$and` / `$or`.
 7. Never deploy configuration to remote without user confirmation.
-8. Default result window is 20 for fuzzy/search stages. Runtime guardrail cap is 50 records for interactive previews.
+8. Default result window is 20 for fuzzy/search stages. A bare `$search` emits **exactly 50 documents** — this is not preview-only, it applies to the live pipeline, and an explicit `$limit` only lifts it when it directly follows `$search`. See [`$limit` must directly follow `$search`](#limit-must-directly-follow-search).
 9. Never dump full datasets in user-facing responses.
 10. Do not rely on key order in multi-key `$sort` stages without checking key lengths. Rossum's JSON serialization sorts object keys by key length (shortest first), which silently reorders `$sort` keys and changes sort priority. Always ensure the primary sort key is shorter than (or equal in length to) secondary keys. Example: `{"__priority": 1, "id.poLineId": 1}` works because `__priority` (12 chars) < `id.poLineId` (12 chars — tied, so original order is preserved). If the primary key is longer, rename it with a shorter alias (prefix with `__`).
 11. Don't assume a placeholder's JSON type. Check the source field's `type` / `enum_value_type` in the queue `schema.json`: a `number` enum (or `number` field) injects a number, a `string` enum/field injects a string. Comparing across types silently returns zero matches. See [Placeholder value types — check the schema first](#placeholder-value-types--check-the-schema-first).
 12. Don't validate MDH substitution by running `data_storage_aggregate` with a hand-typed literal — that bypasses MDH's type-aware injection and only tests your guess about the type. Verify against the schema and/or a real hook run (or the MDH "Try" button).
+
+---
+
+## `$limit` must directly follow `$search`
+
+A bare `$search` stage emits **exactly 50 documents**, no matter how many rows actually match. An explicit `$limit` raises that cap **only when it is the very next stage**. Put anything in between — `$match`, `$project`, `$addFields` — and the cap silently snaps back to 50, *including* when the `$limit` you wrote says 500.
+
+This is the highest-value shape error in MDH matching, because it is invisible: no error, no warning, `status: completed`, and a plausible-looking candidate list. It just quietly truncates the search to the top 50 by raw score, so any correct row ranked 51st or worse can never be selected — and you will spend your time theorizing about score gates instead.
+
+**Measured** against a production address dataset (~34.7k rows), one text query matching **3,697** rows. Only the stage order varies:
+
+| Pipeline | Docs out |
+|---|---|
+| `$search` | **50** |
+| `$search` → `$limit 500` | **500** |
+| `$search` → `$limit 40000` | **3697** (true match count) |
+| `$search` → `$match {active:true}` → `$limit 500` | **50** |
+| `$search` → `$limit 500` → `$match {active:true}` | **500** |
+| `$search` → `$project {...}` → `$limit 500` | **50** |
+| `$search` → `$skip 40` | **10** |
+
+Rows 4 and 5 are the control pair: identical stages, identical filter, only the order differs. Because moving `$limit` in front yields 500, the `$match` is filtering nothing — the ordering alone causes the loss. Row 6 shows it is **any** intervening stage, not `$match` specifically. Row 7 proves only 50 documents ever leave `$search` (`$skip 40` leaves 10).
+
+**Do this:**
+
+```json
+{ "$search": { "index": "default", "text": { "query": "…", "path": "name" } } },
+{ "$limit": 500 },
+{ "$match": { "active": true } }
+```
+
+**Not this:**
+
+```json
+{ "$search": { … } },
+{ "$match": { "active": true } },
+{ "$limit": 500 }
+```
+
+Filtering after `$limit` means the filter eats into your candidate budget, so size the `$limit` above the count you need to survive it. The alternative — moving the predicate into `$search` itself as a `compound.filter` clause — is cleaner *when it is available*, but it requires the field to be mapped in the search index. Under a `dynamic: false` index (the CIB default) a field like `active` usually is **not** mapped, which is exactly why these pipelines reach for a post-`$search` `$match` in the first place. Check the index mappings before assuming `compound.filter` is an option.
 
 ---
 
@@ -293,7 +333,88 @@ When fuzzy matching by name or address, raw `searchScore` can vary widely. Use l
 - The `__normalized_score` applies a sigmoid-like normalization to bound values between 0 and 1.
 - Threshold `0.8` is typical for name-only matching; use `0.9` when combining name + address.
 
+### The threshold saturates — verify it actually bites
+
+`__normalized_score` is `n/(1+n)`, which approaches 1 asymptotically. Substituting `n = s/(1+p)` (raw score `s`, length penalty `p`) collapses the whole chain to:
+
+```
+__normalized_score = s / (1 + s + p)
+```
+
+Solve that against a gate `t` and you get the raw score the gate actually demands:
+
+```
+__normalized_score > t   ⟺   s > (t / (1 - t)) · (1 + p)
+```
+
+- `t = 0.8` → `s > 4 · (1 + p)`
+- `t = 0.88` → `s > 7.33 · (1 + p)`
+
+Atlas raw scores for a compound name/address search routinely land in the **40–130** range. At those magnitudes every candidate normalizes to 0.97–0.99, so a `0.8` or `0.88` gate filters *nothing* — it is a no-op that reads like a tuning knob. Before blaming a threshold for a missing candidate, print `min`/`max` of `__normalized_score` across the returned set; if the spread sits entirely above the gate, the gate is not your bug.
+
+The same normalizer also **reorders** results, because the length penalty `p` is applied before the sigmoid. Measured: it promoted a raw-100.6 row above a raw-112.1 row. So a normalizer can move the correct row *down* the list even when no threshold rejects it.
+
+This is the concrete mechanism behind the standing "prefer relative score rules over absolute thresholds" guidance — a relative rule (share of the top score plus a uniqueness check) cannot silently saturate the way an absolute cutoff does.
+
 → Drop-in part: `mdh-fuzzy-score-normalization` (${CLAUDE_PLUGIN_ROOT}/parts/matching/).
+
+---
+
+## Diagnostic: "we get candidates but the correct one isn't among them"
+
+A recurring complaint shape: the enum/pick-list is populated, but the row everyone knows is right never appears. The tempting first hypothesis is a score threshold. It is usually **not** the threshold. Work the steps in order and do not skip to (c) — each step is cheap and the early ones are far more often the cause.
+
+### (a) How many candidates does the query actually return?
+
+Count before theorizing. Replay the config's pipeline shape verbatim and end it with `$count`.
+
+```json
+{ "$search": { … } },
+{ "$match": { … } },
+{ "$limit": 100 },
+{ "$count": "n" }
+```
+
+If this returns exactly **50**, stop — you have the [`$limit` directly-follows-`$search`](#limit-must-directly-follow-search) bug, not a scoring problem. A 50 here is a truncation artifact, and every conclusion you draw about ranking below it will be drawn from a truncated list.
+
+### (b) Where does the known-correct row rank by RAW search score?
+
+This is the key probe. Rank *before* any normalization or filtering, with a generous explicit `$limit` placed directly after `$search` so you see the true rank rather than a truncated one.
+
+```json
+{ "$search": { "index": "default", "text": { "query": "…", "path": "name" } } },
+{ "$limit": 40000 },
+{ "$addFields": { "score": { "$meta": "searchScore" } } },
+{ "$setWindowFields": {
+    "sortBy": { "score": -1 },
+    "output": { "rank_raw": { "$documentNumber": {} } }
+}},
+{ "$match": { "id": { "$in": [ <known-correct-id>, <id-that-got-picked> ] } } },
+{ "$project": { "_id": 0, "id": 1, "name": 1, "score": 1, "rank_raw": 1 } }
+```
+
+Put the known-correct id **and** the id that got picked instead in the `$in`, so you read both ranks off one run. Interpreting `rank_raw`:
+
+- **Beyond your candidate cap** (e.g. rank 2337 of 3697) — the row is never in play. The bug is recall: query shape, boosts, or the cap. Nothing downstream can rescue it.
+- **Just outside the cap** (rank 51–100 with a cap of 50) — the cap is the whole bug; the query is basically fine.
+- **Comfortably inside the cap but not selected** — *now* scoring/filtering is worth investigating; go to (c).
+
+Watch for over-weighted boosts here. Measured on a production deployment: a `boost: 10` clause scored the invoice's printed customer name against Coupa's *internal* location label — a semantically different string, so the boost amplified a comparison that was never going to align. Dozens of rows sharing a common name prefix outranked the true ship-to, which sat at raw rank 42 inside a 50-row window: inside the cap by 8 places, and one boost away from being invisible. A large boost on a clause whose two sides describe different things reliably buries the correct row.
+
+### (c) Only now: is a score gate responsible?
+
+Verify the gate actually bites before believing it:
+
+```json
+{ "$group": { "_id": null,
+    "min": { "$min": "$__normalized_score" },
+    "max": { "$max": "$__normalized_score" },
+    "n":   { "$sum": 1 } } }
+```
+
+If `min` already exceeds the threshold, the gate rejected nothing and is not your bug. A saturating normalizer makes an absolute threshold *look* load-bearing while filtering nothing — see [The threshold saturates](#the-threshold-saturates--verify-it-actually-bites) for why, and for the `s > (t/(1-t))·(1+p)` conversion that tells you what raw score a gate really demands.
+
+> **Worked example of getting this wrong.** On a production deployment, a `normalized_score > 0.88` gate was confidently diagnosed as the cause of a missing ship-to candidate. Measuring first would have killed that hypothesis in one call: all 50 returned candidates scored **0.97–0.99**, so the gate was a no-op. The real causes were a 50-row candidate cap plus the mis-weighted boost above — both of which steps (a) and (b) surface immediately.
 
 ---
 

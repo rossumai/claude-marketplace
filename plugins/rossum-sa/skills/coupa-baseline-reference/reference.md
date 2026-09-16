@@ -527,6 +527,8 @@ These are not imported from Coupa but built up by Rossum as users process docume
 | `_customer_memorization_test` | Customer Memorization hook | `recipient_name` + `recipient_address` | `recipient_match` |
 | `_tax_code_memorization` | Tax Coding Memorization hook | `sender_match` + `recipient_match` + `item_description` | `item_tax_code_match`, `description_export`, `tax_code_match` |
 
+> A filling collection is **not** evidence that memorization works — a key that is too specific mints a new row per document and is never recalled. Run the reuse-rate check in [7.1.1 Health check](#711-health-check-is-the-memorization-collection-actually-being-reused) before trusting any of these.
+
 ---
 
 ## 4. Master Data Hub — Matching & Enrichment
@@ -837,6 +839,63 @@ Three memorization hooks save user selections to Data Storage for future recall:
 - Saves: `sender_match`, `recipient_match`, `item_description`, `description_export`, `tax_code_match`, `item_tax_code_match`
 - Uses `unwind` on `line_item` — creates separate records per line item
 - Natural key: `sender_match` + `recipient_match` + `line_item.item_description`
+
+### 7.1.1 Health check: is the memorization collection actually being reused?
+
+A memorization hook that writes perfectly can still never be read from. Rows accumulate, the hook log is green, nothing errors — and yet every confirmed document mints a **new** key, so the `$unionWith` recall in the MDH cascade never once hits. This is a silent failure: from the write side a memory that has fired thousands of times and one that has never fired look identical. Check it explicitly; never assume a memorization feature works because the collection is filling up.
+
+**The check — reuse rate.**
+
+1. Read the hook's `settings.unique_natural_key`. That is the authoritative key — not this document, not the hook's `.py`.
+2. Group the collection by exactly those fields, applying the **same normalization the consuming MDH `$unionWith` applies** (typically `$trim` → `$toLower` → `$toString` → `$ifNull`). Normalizing differently here measures a key nobody uses.
+3. Compare distinct-key count to row count.
+
+```json
+[
+  { "$group": {
+      "_id": {
+        "name": { "$toLower": { "$trim": { "input": { "$ifNull": ["$sender_name", ""] } } } },
+        "addr": { "$toLower": { "$trim": { "input": { "$ifNull": ["$sender_address", ""] } } } }
+      },
+      "rows": { "$sum": 1 }
+  }},
+  { "$group": { "_id": null, "distinct_keys": { "$sum": 1 }, "rows": { "$sum": "$rows" } } },
+  { "$addFields": { "reuse_rate": { "$divide": ["$rows", "$distinct_keys"] } } }
+]
+```
+
+| Reading | Meaning |
+|---|---|
+| `reuse_rate ≈ 1.0` (distinct keys ≈ rows) | **The memory has never fired.** Every document creates a new key — the key is too specific. Write-only collection. |
+| `reuse_rate > 1` | Keys are being hit again; the memory is doing real work. |
+
+**Companion check — which key components are load-bearing?** Group by a *subset* of the key and look for subset-keys that map to more than one target value:
+
+```json
+[
+  { "$group": { "_id": "$sender_address", "targets": { "$addToSet": "$sender_match" } } },
+  { "$addFields": { "n": { "$size": "$targets" } } },
+  { "$match": { "n": { "$gt": 1 } } },
+  { "$sort": { "n": -1 } },
+  { "$limit": 20 }
+]
+```
+
+A subset that almost never maps to more than one target is **not discriminating** — it is only fragmenting the key, and dropping the other components would cost no accuracy while restoring recall. A subset with many multi-target keys genuinely needs the extra components to stay unambiguous.
+
+**Measured example (production deployment, 2026-08).** A ship-to memorization collection held 49 rows across 48 distinct keys — a reuse rate of 1.02, meaning the memory had fired essentially never. The natural key includes the raw OCR'd `recipient_address`, and OCR of one physical location varies like this:
+
+```
+1200 EXAMPLE DRIVE, # B
+1200 EXAMPLE DRIVE SUITE B
+1200 Example Dr, Suite B
+```
+
+Those are three separate keys for one location, all pointing at the same ship-to. `$trim` only strips the **ends** of a string, so internal punctuation, abbreviation variance (`DRIVE`/`Dr`, `SUITE`/`#`), and a trailing country line defeat it completely.
+
+This generalizes to every settings-driven memorization collection in the CIB shape — a single deployment typically runs several (supplier, customer, GL coding, GL location, tax code), all built with the same key construction, so one over-specific key pattern tends to affect all of them at once. Run the reuse-rate check on each before reporting that memorization "is working".
+
+**Fixes**, in order of preference: narrow the key to the components the companion check proves are load-bearing (often an ID or code, not an address); or normalize harder on **both** the write and the `$unionWith` read side — collapse internal whitespace and punctuation, not just the ends. Changing normalization on only one side orphans every existing row.
 
 ### 7.2 ShowHide Fields
 
