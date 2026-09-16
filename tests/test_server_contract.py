@@ -2737,6 +2737,32 @@ def test_create_hook_mismatch_is_not_an_error_and_names_the_created_hook(monkeyp
     assert "9" in integrity["note"] and "retry" in integrity["note"].lower()
 
 
+@pytest.mark.parametrize("tool,args", [
+    ("rossum_patch_hook", {"hook_id": 9, "code_file_path": "/nonexistent/dir/hook.py"}),
+    ("rossum_create_hook", {"name": "H", "type": "function",
+                            "events": ["annotation_content.export"],
+                            "code_file_path": "/nonexistent/dir/hook.py"}),
+    ("rossum_test_hook", {"hook_id": 9, "event": "annotation_content", "action": "export",
+                          "annotation_id": 55, "code_file_path": "/nonexistent/dir/hook.py"}),
+])
+def test_hook_handlers_check_connection_before_reading_files(monkeypatch, tool, args):
+    """Aligned with the schema handlers (#139): disconnected + a bad file path must report
+    'not connected' (rossum_set_token guidance), not 'file not found'. The connection is
+    the precondition for the whole call; local-file errors come second."""
+    monkeypatch.setattr(server, "_cached_base_url", None)
+    monkeypatch.setattr(server, "_cached_token", None)
+    monkeypatch.setattr(server, "_token_validated", False)
+    monkeypatch.setattr(server, "_http_request",
+                        lambda *a, **k: pytest.fail("network before connection check"))
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    server.HANDLERS[tool](1, args)
+    res = emitted[-1]["result"]
+    assert res.get("isError") is True
+    assert "rossum_set_token" in res["content"][0]["text"]
+    assert "not found" not in res["content"][0]["text"].lower()
+
+
 def test_create_hook_supplies_a_runtime_for_a_function_hook(monkeypatch, tmp_path):
     """code_file_path with no config is schema-valid; without runtime the API 400s."""
     fake, _ = run_handler(

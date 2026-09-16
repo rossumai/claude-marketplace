@@ -4359,11 +4359,11 @@ def _reject_secret_values(request_id, arguments):
 def handle_create_hook(request_id, arguments):
     if _reject_secret_values(request_id, arguments):
         return
-    config, code, ok = _resolve_hook_code(request_id, arguments)
-    if not ok:
-        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    config, code, ok = _resolve_hook_code(request_id, arguments)
+    if not ok:
         return
     if config is None:
         tool_result(request_id, "config is required (or supply code_file_path).", is_error=True)
@@ -4613,11 +4613,11 @@ def handle_delete_hook(request_id, arguments):
 def handle_patch_hook(request_id, arguments):
     if _reject_secret_values(request_id, arguments):
         return
-    config, code, ok = _resolve_hook_code(request_id, arguments)
-    if not ok:
-        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    config, code, ok = _resolve_hook_code(request_id, arguments)
+    if not ok:
         return
     hook_id = arguments["hook_id"]
     body = {}
@@ -5091,11 +5091,11 @@ def handle_generate_hook_payload(request_id, arguments):
     annotations=_WRITE,
 )
 def handle_test_hook(request_id, arguments):
-    config, code, ok = _resolve_hook_code(request_id, arguments)
-    if not ok:
-        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    config, code, ok = _resolve_hook_code(request_id, arguments)
+    if not ok:
         return
     hook_id = arguments["hook_id"]
     gen_body = _build_generate_payload_body(request_id, base_url, hook_id, arguments)
