@@ -210,7 +210,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.40.0"
+_SERVER_VERSION = "0.40.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -3877,7 +3877,7 @@ _SETTINGS_FILE_PATH_DOC = (
 )
 
 
-# --- JSON object fields to/from local files (schema content; hook settings later) ---
+# --- JSON object fields to/from local files (schema content and hook settings) ---
 # A 2xx does not prove the bytes landed. For JSON fields the API normalises on write —
 # it injects default keys and silently drops unknown ones — so equality is the wrong
 # check: the right one is "everything sent is present and equal in what landed", with
@@ -4805,7 +4805,20 @@ def handle_delete_hook(request_id, arguments):
     "unspecified fields are left untouched. Object fields differ in PATCH semantics: config is "
     "merged per-key, while settings and secrets_schema each replace the whole object. Use this to "
     "update hook code, toggle active state, change events, or reassign queues without recreating "
-    "the hook. " + _NO_SECRET_VALUES_DOC + " This is a write operation.",
+    "the hook. For settings of any size pass settings_file_path (the settings object, a "
+    "rossum_get_hook out_file_path dump, or a prd2 hook.json) instead of inlining. Every settings "
+    "write returns settings_integrity — a structural comparison of what LANDED vs what was sent, "
+    "with the settings stripped from the echoed hook: verified:true means the object you sent is "
+    "the object now stored (key order may differ — the API returns jsonb order); verified:false "
+    "with dropped/changed means the API altered it — inspect and fix, do NOT retry, the same object "
+    "lands the same way. settings does NOT silently normalise: a settings_schema violation is the "
+    "API's own HTTP 400, returned as-is. verified:true does NOT mean nobody else's work was lost — "
+    "settings replaces the stored object wholesale and the API exposes no ETag, so patching from a "
+    "stale copy silently discards edits made in between; re-read with rossum_get_hook before "
+    "patching a hook others may be editing. The response is nested: a code or settings write "
+    "returns {\"hook\": {...}, \"code_integrity\"?: {...}, \"settings_integrity\"?: {...}}, a "
+    "write with neither returns the bare hook object unwrapped — do not assume 'id' is top-level. "
+    + _NO_SECRET_VALUES_DOC + " This is a write operation.",
     {
         "type": "object",
         "required": ["hook_id"],
