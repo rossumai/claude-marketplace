@@ -3778,6 +3778,65 @@ _CODE_FILE_PATH_DOC = (
 )
 
 
+# --- JSON object fields to/from local files (schema content; hook settings later) ---
+# A 2xx does not prove the bytes landed. For JSON fields the API normalises on write —
+# it injects default keys and silently drops unknown ones — so equality is the wrong
+# check: the right one is "everything sent is present and equal in what landed", with
+# the API's additions reported separately. Canonical JSON is used only for hashing.
+
+
+def _canonical_sha256(obj):
+    """sha256 of canonical JSON (sorted keys, no whitespace) — stable across key order."""
+    text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _json_integrity(sent, landed, *, root="content"):
+    """Structural sent-vs-landed comparison of two parsed JSON values.
+
+    dropped  — paths present in `sent` but absent in `landed` (the API discarded them)
+    changed  — paths whose value differs; a list-length mismatch is reported once at the
+               list's path and not recursed into
+    injected_defaults — keys present only in `landed`, counted by key name (normal: the
+               API adds defaults such as rir_field_names / default_value)
+    verified — no dropped and no changed. Injected keys do NOT fail verification.
+    """
+    dropped, changed, injected = [], [], {}
+
+    def walk(s, l, path):
+        if isinstance(s, dict) and isinstance(l, dict):
+            for key, value in s.items():
+                if key not in l:
+                    dropped.append(f"{path}.{key}")
+                else:
+                    walk(value, l[key], f"{path}.{key}")
+            for key in l:
+                if key not in s:
+                    injected[key] = injected.get(key, 0) + 1
+        elif isinstance(s, list) and isinstance(l, list):
+            if len(s) != len(l):
+                changed.append({"path": path, "sent_length": len(s), "landed_length": len(l)})
+            else:
+                for i, (a, b) in enumerate(zip(s, l)):
+                    walk(a, b, f"{path}[{i}]")
+        elif s != l:
+            changed.append({"path": path, "sent": s, "landed": l})
+
+    walk(sent, landed, root)
+    out = {
+        "verified": not dropped and not changed,
+        "sent_sha256": _canonical_sha256(sent),
+        "landed_sha256": _canonical_sha256(landed),
+    }
+    if injected:
+        out["injected_defaults"] = injected
+    if dropped:
+        out["dropped"] = dropped
+    if changed:
+        out["changed"] = changed
+    return out
+
+
 def _resolve_hook_code(request_id, arguments):
     """Fold `code_file_path` into the hook config.
 

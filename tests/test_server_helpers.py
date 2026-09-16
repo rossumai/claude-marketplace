@@ -493,3 +493,70 @@ def test_walk_compact_default_shape_unchanged():
     assert fields["invoice_id"] == {"value": "INV-1", "src": "human"}
     assert tables["line_items"]["rows"][0]["item_desc"] == {"value": "Widget", "src": "human"}
     assert "_row_id" not in tables["line_items"]["rows"][0]
+
+
+# --- schema content file-path I/O: canonical hash + structural integrity diff ---
+# The API injects default keys on write (rir_field_names, default_value, section icon)
+# and silently DROPS keys it does not know, so a write's integrity is "everything sent
+# is present and equal in what landed" — extras are reported, not failed.
+
+_MIN_DP = {"category": "datapoint", "id": "f", "label": "F", "type": "string"}
+_SENT = [{"category": "section", "id": "s", "label": "S", "children": [dict(_MIN_DP)]}]
+
+
+def _landed_like_api(sent):
+    """What the API hands back for _SENT: same content plus the defaults it adds."""
+    import copy
+    landed = copy.deepcopy(sent)
+    landed[0]["icon"] = None
+    landed[0]["children"][0] = {"rir_field_names": [], "default_value": None, **landed[0]["children"][0]}
+    return landed
+
+
+def test_canonical_sha256_ignores_key_order_and_float_spelling():
+    a = {"b": 1.0, "a": [1, {"y": 2, "x": 3}]}
+    b = {"a": [1, {"x": 3, "y": 2}], "b": 1.0}
+    assert server._canonical_sha256(a) == server._canonical_sha256(b)
+    assert len(server._canonical_sha256(a)) == 64
+
+
+def test_json_integrity_identical_is_verified_with_no_extras():
+    out = server._json_integrity(_SENT, _SENT)
+    assert out["verified"] is True
+    assert out["sent_sha256"] == out["landed_sha256"] == server._canonical_sha256(_SENT)
+    assert "injected_defaults" not in out and "dropped" not in out and "changed" not in out
+
+
+def test_json_integrity_injected_defaults_still_verify():
+    out = server._json_integrity(_SENT, _landed_like_api(_SENT))
+    assert out["verified"] is True
+    assert out["injected_defaults"] == {"icon": 1, "rir_field_names": 1, "default_value": 1}
+    assert out["sent_sha256"] != out["landed_sha256"]
+
+
+def test_json_integrity_dropped_key_fails_with_path():
+    import copy
+    sent = copy.deepcopy(_SENT)
+    sent[0]["children"][0]["x_unknown_key"] = 1
+    out = server._json_integrity(sent, _landed_like_api(_SENT))
+    assert out["verified"] is False
+    assert out["dropped"] == ["content[0].children[0].x_unknown_key"]
+    assert "changed" not in out
+
+
+def test_json_integrity_changed_scalar_and_list_length():
+    import copy
+    landed = copy.deepcopy(_SENT)
+    landed[0]["children"][0]["label"] = "G"
+    landed[0]["children"].append(dict(_MIN_DP, id="extra"))
+    out = server._json_integrity(_SENT, landed)
+    assert out["verified"] is False
+    assert {"path": "content[0].children", "sent_length": 1, "landed_length": 2} in out["changed"]
+    # length mismatch stops recursion into that list, so the label change is NOT reported
+    assert not any(c.get("path") == "content[0].children[0].label" for c in out["changed"])
+
+
+def test_json_integrity_type_mismatch_is_a_change():
+    out = server._json_integrity({"a": [1]}, {"a": {"x": 1}}, root="settings")
+    assert out["verified"] is False
+    assert out["changed"] == [{"path": "settings.a", "sent": [1], "landed": {"x": 1}}]
