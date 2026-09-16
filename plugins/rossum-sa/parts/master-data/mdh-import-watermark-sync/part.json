@@ -1,0 +1,21 @@
+{
+  "name": "mdh-import-watermark-sync",
+  "axis": "master-data",
+  "summary": "Scheduled HTTPS -> MDH dataset sync: resumable full load, then semi-open incremental windows on a persisted watermark with a clock-skew safety lag; state in its own Data Storage collection.",
+  "maturity": "candidate",
+  "params": {
+    "dataset":          {"required": true, "type": "string", "description": "MDH dataset that receives the records"},
+    "state_dataset":    {"required": true, "type": "string", "description": "Data Storage collection holding the single sync-state record (one per feed)"},
+    "state_key":        {"required": true, "type": "string", "description": "value of the state record's `key`, e.g. vendors / purchase_orders"},
+    "id_keys":          {"required": true, "type": "string", "description": "comma-separated natural key of a record; MDH PATCH-merges on it. Check uniqueness before trusting a single column - supplier numbers repeat across company codes"},
+    "page_size":        {"default": 2000, "type": "number", "description": "rows requested per page (Top)"},
+    "safety_lag_s":     {"default": 120, "type": "number", "description": "seconds each window closes BEHIND now, absorbing source-vs-Rossum clock skew"},
+    "runtime_budget_s": {"default": 40, "type": "number", "description": "wall-clock budget per run; must sit below the hook timeout (60s cap, 30s for a manual invoke)"},
+    "full_operation":   {"default": "update", "type": "string", "description": "update = PATCH-merge page by page, resumable across runs; replace = buffer and PUT once, propagates deletions, refuses a truncated fetch, scope must fit one run"}
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "Lifted from three production master-data importers (vendors, purchase-order items, goods receipts) built 2026-08 for an SAP integration through a customer HTTPS middleware, themselves modelled on the SAP-BTP OData importers of an earlier implementation. Live-verified: full load of 17.5k rows in one run with replace; multi-run resumable full load of 3.7M PO items with update; exact window tiling; failure without watermark advance; backfill isolation. Generalized here and NOT yet run in this form - hence candidate.",
+  "reference": "sap-reference#shape-b-customer-https-middleware-wrapping-rfcs",
+  "notes": "Only `SourceApi` knows the API - adapt its constants/methods, keep the engine. Copy delta-window key names VERBATIM from a working call (one deployed API misspells a key and ignores the corrected spelling). Stagger the cron against sibling importers: MDH has a single ingest worker and a row count read right after a load is a queue snapshot. The state record is a checkpoint, never a lock: MDH writes are async, so two runs seconds apart both see 'no state'."
+}

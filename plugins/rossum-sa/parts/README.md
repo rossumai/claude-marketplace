@@ -24,7 +24,11 @@ parts/<axis>/<part-name>/
   README.md      # what it does, gotchas, how to adapt
 ```
 
-Axes: `capture`, `matching`, `validation`, `export`, `formula`.
+Axes: `capture`, `master-data`, `matching`, `validation`, `export`, `formula`.
+
+`master-data` holds the feeds that fill the collections matching reads — scheduled importers
+from an external system into MDH datasets. Their fragments are whole function hooks; they
+`produce` no schema field (they write datasets), so `produces`/`consumes` are legitimately empty.
 
 ## Category-qualified reference
 
