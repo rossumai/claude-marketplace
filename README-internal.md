@@ -157,3 +157,27 @@ State lives at `~/.cache/rossum-sa/friction/<session_id>.json` (honors
 `$XDG_CACHE_HOME`). The nudge arrives on the next `UserPromptSubmit` or at
 `Stop`. Watch hooks fire with `claude --debug`; reload edits with
 `/reload-plugins`.
+
+## Live-test the auth guard
+
+`hooks/rossum_auth_guard.py` blocks the credential hunt that follows an
+unauthenticated MCP call. Offline check — no session, no token needed:
+
+    echo '{"hook_event_name":"PostToolUse","tool_name":"mcp__plugin_rossum-sa_rossum-api__rossum_list_queues","tool_response":"Not connected to Rossum."}' \
+      | python3 plugins/rossum-sa/hooks/rossum_auth_guard.py
+
+Expect a `decision: block` JSON payload. Swap `tool_response` for anything else,
+or `tool_name` for `Bash`, and expect empty output — the guard is scoped to the
+rossum-api tools and that one marker.
+
+In a session (`claude --plugin-dir ./plugins/rossum-sa`), call any Rossum tool
+before setting a token. The tool result is followed by the block reason, and
+the model should ask for a token rather than start reading credential files.
+Two notes:
+
+1. **The matcher is in `hooks.json`, not the script** — `mcp__plugin_rossum-sa_rossum-api__.*`.
+   A guard wired up without it still self-checks the tool prefix, but the
+   matcher is what keeps it off every other tool's PostToolUse.
+2. **The marker must track `server.py`'s `_NOT_CONNECTED_MSG`.** Reword that
+   message without the guard and the guard silently stops firing;
+   `tests/test_rossum_auth_guard.py` pins the two together so CI catches it.

@@ -1,0 +1,79 @@
+{
+  "profile": "coupa",
+  "name_class": "coupa",
+  "integration_shape": "https_out",
+  "hop": "direct",
+  "coding_model": {
+    "model": "segmented",
+    "n_segments": "\u00abn_segments\u00bb"
+  },
+  "md_inbound_roles": [
+    "supplier",
+    "purchase_order",
+    "purchase_order_line",
+    "business_unit",
+    "tax_code",
+    "tax_registration",
+    "lookup_values",
+    "contract",
+    "unit_of_measure",
+    "account_type",
+    "payment_terms",
+    "remit_to_address"
+  ],
+  "packaging": {
+    "transport": "legacy_rest_chain",
+    "payload": "custom_format_template",
+    "response": "response_extractor",
+    "matching": "store_extension"
+  },
+  "transport": null,
+  "export_contract": {
+    "payload": "rendered by a template hook, not formulas (2000-char cap)",
+    "tags_field": "taggings: [{tag: {name}}] - set on create, not a follow-up PUT",
+    "requester": "requester-email is a plain string; no user lookup needed",
+    "line_level_tax": "tax rides on each line as tax-lines.tax-line, not flat tax-rate",
+    "auth": "OAuth2 client credentials; scopes per the operations used"
+  },
+  "provenance": {
+    "cluster_size": 7,
+    "cluster_basis": "shape records over local prd2 pulls, deduplicated (second pulls of one customer and copies of a baseline counted once); cluster is ap_invoice x coupa x https_out",
+    "intents_extracted_from": 1,
+    "intents_cross_checked_against": 1,
+    "mined_from": 2,
+    "honest_statement": "The CLUSTER is 7 implementations - that is what justifies publishing this shape at all. The INTENTS were extracted from 1 implementation and cross-checked against 1 hand-authored baseline, which added 17 and withdrew 0. Do not read 54 intents as the consensus of 7 trees; the other 5 have been clustered, not mined.",
+    "next": "extract intents from the remaining 5 cluster members; expect the count to keep rising - the baseline alone added 17",
+    "sibling_shapes_seen": {
+      "both": 2,
+      "file_out": 1
+    },
+    "intents_enumerated": 54,
+    "validation": "39/49 of the baseline's rules covered by mined intents, 17 added, 0 withdrawn",
+    "built_end_to_end": "one worked recipe from a single-country SOW: 31 objects, 8 phases, invoices created in a live target with line-level tax and tags"
+  },
+  "status": "supported",
+  "export_intents": [
+    {
+      "id": "E1",
+      "statement": "render the payload the target accepts",
+      "realized_by": [
+        "custom_format_template"
+      ],
+      "alternatives": [
+        "request_processor stage"
+      ],
+      "note": "46 formula fields exist ONLY to feed this; they are interface, not business logic"
+    },
+    {
+      "id": "E2",
+      "statement": "send the payload and record the target's response",
+      "realized_by": [
+        "legacy_rest_chain + response_extractor"
+      ],
+      "alternatives": [
+        "request_processor (preferred for new work)"
+      ],
+      "constraint": "a chain with a mid-chain formula dependency cannot collapse into one hook"
+    }
+  ]
+}

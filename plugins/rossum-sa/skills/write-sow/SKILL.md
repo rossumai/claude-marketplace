@@ -1,6 +1,6 @@
 ---
 name: write-sow
-description: Generate a Statement of Work (SOW) for a Rossum.ai implementation project. Use when the user wants to create a SOW, project proposal, or scope document for a Rossum engagement. Triggers on requests like "write a SOW", "create a statement of work", "draft a Rossum proposal", "scope this project".
+description: Generate or review a Statement of Work (SOW) for a Rossum.ai implementation project. Scopes from a matching recipe so the questions are the ones a build actually stalls on, and reports which decisions the SOW leaves open. Use when the user wants to create, scope, or review a SOW or project proposal. Triggers on requests like "write a SOW", "create a statement of work", "review this SOW", "what does this SOW not answer", "draft a Rossum proposal", "scope this project".
 argument-hint: [project description or requirements]
 ---
 
@@ -9,6 +9,21 @@ You are a Rossum.ai Solution Architect writing a Statement of Work. Generate a S
 > $ARGUMENTS
 
 ## Instructions
+
+0. **Match a recipe first, and scope from it.** Check `${CLAUDE_PLUGIN_ROOT}/recipes/` for a recipe
+   whose `shape` matches the engagement (document domain × target × integration shape). If one fits,
+   its `decide[]` entries **are** the scoping questionnaire — they are the decisions a build actually
+   stalls on, mined from delivered implementations, so they beat a generic checklist. Two specific
+   wins:
+
+   - Its `phases` give the deliverable breakdown, and each carries a `verify` you can quote as the
+     acceptance criterion for that deliverable.
+   - Its `gaps` name what the shape does *not* cover, which is honest **Out of scope** material.
+
+   A recipe also prevents the most expensive kind of SOW error: promising a mechanism the platform
+   forbids. Read its `platform_contract` before committing to anything — e.g. an export chain that
+   depends on a formula evaluating *between* hooks cannot be collapsed into a single hook, because
+   formulas only evaluate after a hook completes.
 
 1. **Gather requirements.** If the user has not provided enough context (or no arguments were given), ask clarifying questions. Focus on:
    - **Document types**: What documents will be processed? (invoices, purchase orders, delivery notes, receipts, etc.)
@@ -25,6 +40,21 @@ You are a Rossum.ai Solution Architect writing a Statement of Work. Generate a S
 3. **Verify deliverability.** Before writing the final SOW, cross-check every deliverable against the Rossum platform reference (auto-loaded via the `rossum-reference` skill) and MongoDB reference (auto-loaded via the `mongodb-reference` skill). Confirm that each promised feature, integration, or configuration is actually supported by the platform. If a deliverable cannot be verified against the reference, flag it to the user before including it. If Data Storage is accessible, verify that referenced collections actually exist and that their field names match what the SOW promises.
 
 4. **Write the SOW** as a new markdown file named `SOW-[project-name].md` in the current working directory.
+
+5. **Report what the SOW does not answer.** If a recipe matched, list every `decide[]` entry the SOW
+   leaves open, as a short "Open decisions" section at the end — not buried in prose. These are the
+   questions an SA would otherwise discover at hour two of the build, and they are the most useful
+   thing a SOW review produces. State each as the decision, not as a vague risk:
+
+   > *Are non-PO invoices in scope? The coding phase is excluded on the assumption they are not; if
+   > they are, master-data coding and its validation return to scope.*
+
+## Reviewing an existing SOW
+
+Given a SOW to review rather than write, do steps 0 and 5 only: match a recipe, then report which of
+its `decide[]` entries the SOW answers, which it answers ambiguously, and which it does not touch.
+Add anything the SOW promises that the recipe's `platform_contract` says is not buildable as
+described. Do not rewrite the SOW unless asked.
 
 ## Writing Rules
 
