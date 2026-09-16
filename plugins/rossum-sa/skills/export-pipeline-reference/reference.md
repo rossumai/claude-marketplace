@@ -95,10 +95,6 @@ External HTTPS egress from hook Lambdas may be disabled at the organization leve
 
 To confirm the diagnosis before opening a ticket: add a temporary `call_api` stage targeting `https://httpbin.org/get`. A Lambda timeout with no HTTP status (`FunctionException: Read timeout on endpoint URL...`) confirms egress is blocked; a 200 response means the issue is elsewhere.
 
-### Hook-level: the stages live in `hook.settings` — edit them through a file
-
-A Request Processor's `stages` array is the hook's `settings` object, and a real pipeline runs to thousands of lines. Outside a prd2 flow, edit it as a file: `rossum_get_hook` with `out_file_path` writes the whole hook to disk, and `rossum_patch_hook` with `settings_file_path` writes the edited file back (the whole-hook file is accepted; only `settings` is sent). Read `settings_integrity` in the response — `verified:true` means the stages you sent are the stages now stored. `settings` replaces the whole object on every write, so re-pull before editing a hook someone else may have touched.
-
 ### Hook-level: `token_owner` for Rossum API access
 
 `token_owner` is **not optional** — it is the engine's very first check. `rossum_hook_request_handler`
@@ -187,6 +183,10 @@ The top-level settings object:
 |-------|------|----------|-------------|
 | `stages` | Array | Yes | Ordered list of Stage objects |
 | `debugging` | Boolean | No | Enable debug logging (default: false) |
+
+### Editing `stages`: as a file, not inline
+
+A real pipeline runs to thousands of lines. Outside a prd2 flow, edit it as a file: `rossum_get_hook` with `out_file_path` writes the whole hook to disk, and `rossum_patch_hook` with `settings_file_path` writes the edited file back (the whole-hook file is accepted; only `settings` is sent). Read `settings_integrity` in the response — `verified:true` means the stages you sent are the stages now stored. `settings` replaces the whole object on every write, so re-pull before editing a hook someone else may have touched.
 
 ---
 
