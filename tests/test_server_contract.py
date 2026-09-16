@@ -3363,3 +3363,68 @@ def test_patch_schema_file_id_matching_schema_id_has_no_warning(monkeypatch, tmp
     ci = emitted_payload(emitted)["content_integrity"]
     assert "file_id" not in ci
     assert "note" not in ci
+
+
+# --- rossum_get_hook out_file_path ---
+
+def test_get_hook_without_out_file_is_unchanged(monkeypatch):
+    _, emitted = run_handler(monkeypatch, "rossum_get_hook", {"hook_id": 9},
+                             lambda url, method, body: _hook_obj())
+    assert emitted_payload(emitted) == _hook_obj()
+
+
+def test_get_hook_out_file_path_writes_whole_hook_and_returns_envelope(monkeypatch, tmp_path):
+    path = str(tmp_path / "hooks" / "h.json")          # parent does not exist yet
+    fake, emitted = run_handler(monkeypatch, "rossum_get_hook",
+                                {"hook_id": 9, "out_file_path": path},
+                                lambda url, method, body: _hook_obj())
+    assert fake.calls[0]["url"].endswith("/api/v1/hooks/9")
+    text = open(path, encoding="utf-8").read()
+    assert json.loads(text) == _hook_obj(), "the WHOLE hook is written, settings and code included"
+    assert text == json.dumps(_hook_obj(), indent=2, ensure_ascii=False) + "\n"
+    out = emitted_payload(emitted)
+    assert out == {
+        "id": 9, "name": "H", "type": "function", "active": True,
+        "events": ["annotation_content.user_update"], "queue_ids": [7],
+        "modified_at": "2026-01-01T00:00:00Z",
+        "settings_keys": 2, "settings_sha256": server._canonical_sha256(SETTINGS),
+        "code_sha256": CODE_SHA, "code_characters": len(CODE),
+        "written_to": path, "characters": len(text),
+    }
+
+
+def test_get_hook_out_file_envelope_omits_code_fields_for_a_webhook(monkeypatch, tmp_path):
+    hook = _hook_obj(type="webhook", config={"url": "https://example.com/wh"}, settings={})
+    _, emitted = run_handler(monkeypatch, "rossum_get_hook",
+                             {"hook_id": 9, "out_file_path": str(tmp_path / "h.json")},
+                             lambda url, method, body: hook)
+    out = emitted_payload(emitted)
+    assert "code_sha256" not in out and "code_characters" not in out
+    assert out["settings_keys"] == 0 and out["settings_sha256"] == server._canonical_sha256({})
+
+
+def test_get_hook_out_file_path_refuses_a_differing_existing_file(monkeypatch, tmp_path):
+    path = tmp_path / "h.json"
+    path.write_text('{"id": 9, "name": "edited locally"}', encoding="utf-8")
+    _, emitted = run_handler(monkeypatch, "rossum_get_hook",
+                             {"hook_id": 9, "out_file_path": str(path)},
+                             lambda url, method, body: _hook_obj())
+    assert emitted[-1]["result"].get("isError") is True
+    assert "Refusing to overwrite" in emitted[-1]["result"]["content"][0]["text"]
+    assert json.loads(path.read_text(encoding="utf-8")) == {"id": 9, "name": "edited locally"}
+
+
+def test_get_hook_out_file_path_reports_write_failures(monkeypatch, tmp_path):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    _, emitted = run_handler(monkeypatch, "rossum_get_hook",
+                             {"hook_id": 9, "out_file_path": str(blocker / "h.json")},
+                             lambda url, method, body: _hook_obj())
+    assert emitted[-1]["result"].get("isError") is True
+    assert "Could not write" in emitted[-1]["result"]["content"][0]["text"]
+
+
+def test_get_hook_stays_read_only_with_out_file_path():
+    tool = server.TOOLS["rossum_get_hook"]
+    assert "out_file_path" in tool["inputSchema"]["properties"]
+    assert tool["annotations"] == server._READ_ONLY

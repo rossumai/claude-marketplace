@@ -3742,8 +3742,21 @@ def handle_list_hooks(request_id, arguments):
 
 @_tool(
     "rossum_get_hook",
-    "Retrieves full details of a single hook (extension) including its code, URL, "
-    "settings, secrets key names, and configuration. Use rossum_list_hooks first to find hook IDs.",
+    "Retrieves full details of a single hook (extension) including its code, URL, settings, "
+    "secrets key names, and configuration. Use rossum_list_hooks first to find hook IDs. "
+    "hook.settings (the UI's 'Configuration') is where MDH matching, Request Processor and "
+    "business-rules configs live, and the largest run to tens of thousands of tokens — pass "
+    "out_file_path to write the WHOLE hook object to a local file and get back only an envelope "
+    "(id, name, type, active, events, queue_ids, modified_at, settings_keys, settings_sha256, "
+    "code_sha256/code_characters for function hooks, written_to, characters). The file is "
+    "directly usable as settings_file_path for rossum_patch_hook / rossum_create_hook (only its "
+    "'settings' is sent from it) and has the shape of a prd2 hook.json, but NOT its key order: "
+    "the API returns settings keys sorted by length then bytes (jsonb), so the file will not "
+    "byte-match a prd2 checkout — do not point out_file_path at a prd2 tree. The tool REFUSES to "
+    "overwrite an existing file whose content differs (unsaved edits or remote drift — it cannot "
+    "tell which): pass another path or delete it. modified_at changes on every write, so "
+    "re-fetching to the SAME path right after a patch refuses as 'differs'. Without out_file_path "
+    "the full object is returned inline as before.",
     {
         "type": "object",
         "required": ["hook_id"],
@@ -3752,13 +3765,53 @@ def handle_list_hooks(request_id, arguments):
                 "type": "integer",
                 "description": "The hook ID.",
             },
+            "out_file_path": {
+                "type": "string",
+                "description": "Local path to write the full hook object to (parent directories "
+                               "are created). When given, the response is an envelope instead of "
+                               "the hook; settings and code stay in the file.",
+            },
         },
         "additionalProperties": False,
     },
     annotations=_READ_ONLY,
 )
 def handle_get_hook(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}")
+    out_file_path = arguments.get("out_file_path")
+    if out_file_path is None:
+        _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}")
+        return
+
+    def emit(hook):
+        try:
+            characters = _write_json_file(out_file_path, hook)
+        except _FileInputError as exc:
+            tool_result(request_id, str(exc), is_error=True)
+            return
+        except OSError as exc:
+            tool_result(request_id, f"Could not write {out_file_path!r}: {exc}", is_error=True)
+            return
+        settings = hook.get("settings") if isinstance(hook.get("settings"), dict) else {}
+        code = (hook.get("config") or {}).get("code")
+        envelope = {
+            "id": hook.get("id"),
+            "name": hook.get("name"),
+            "type": hook.get("type"),
+            "active": hook.get("active"),
+            "events": hook.get("events"),
+            "queue_ids": [_url_to_id(q) for q in hook.get("queues") or []],
+            "modified_at": hook.get("modified_at"),
+            "settings_keys": len(settings),
+            "settings_sha256": _canonical_sha256(settings),
+        }
+        if isinstance(code, str):
+            envelope["code_sha256"] = _code_digest(code)["sha256"]
+            envelope["code_characters"] = len(code)
+        envelope["written_to"] = out_file_path
+        envelope["characters"] = characters
+        tool_result(request_id, json.dumps(envelope, indent=2))
+
+    _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}", format_result=emit)
 
 
 # Shared between rossum_create_hook and rossum_patch_hook: the secrets_schema
