@@ -21,7 +21,7 @@ A Claude Code plugin marketplace for Rossum.ai workflows (https://code.claude.co
 - Single-file Python, zero external dependencies (stdlib `urllib` + optional `certifi` for SSL) — the `tests/test_runtime_contract.py` guard enforces the stdlib-only contract
 - Implements MCP JSON-RPC over stdio (reads/writes newline-delimited JSON on stdin/stdout)
 - Tools are registered via the `@_tool` decorator which populates `TOOLS` and `HANDLERS` dicts
-- Three annotation levels control permission prompts: `_READ_ONLY`, `_WRITE`, `_DESTRUCTIVE`
+- Three annotation levels control permission prompts: `_READ_ONLY`, `_WRITE`, `_DESTRUCTIVE`. They describe the effect on the **Rossum org**, never on the local disk — a pure dry-run/preview POST is `_READ_ONLY`, and so is a tool that writes a local file (the `.rossum-cache/` dumps, `rossum_get_schema`'s `out_file_path`). Never demote a read tool to `_WRITE` because it touches the filesystem; the rationale is at the `_READ_ONLY` definition in `server.py`
 - Manages its own auth state (`_cached_token`, `_cached_base_url`) — no persistent credentials
 - All Rossum API calls go through `_http_request()` which handles auth, errors, and 401 invalidation
 - Pagination is handled by `_paginate()` for list endpoints and `_rossum_list()` wrapper

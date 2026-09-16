@@ -1010,6 +1010,27 @@ TOOLS = {}
 HANDLERS = {}
 
 
+# Tool annotations describe the effect on the Rossum ORGANISATION — the upstream
+# objects — and nothing else. They drive the host's permission prompt, so the
+# question they answer is "can calling this change the customer's configuration or
+# data?", NOT "does this touch the local disk".
+#
+#   _READ_ONLY    nothing upstream changes. A POST qualifies when it is a pure
+#                 dry-run, preview or search (rossum_validate_schema,
+#                 rossum_render_email_template, rossum_search_annotations).
+#                 Writing a LOCAL file also qualifies, and always has:
+#                 rossum_get_annotation and rossum_get_automation_insights /
+#                 _projections write .rossum-cache/ dumps, and rossum_get_schema's
+#                 out_file_path writes a caller-named file — all _READ_ONLY.
+#   _WRITE        creates or modifies an upstream object.
+#   _DESTRUCTIVE  deletes an upstream object, or changes it irreversibly.
+#
+# So do NOT re-annotate a tool because it writes locally: that is not what these
+# track, several shipped tools already rely on the distinction, and demoting a
+# read tool to _WRITE makes every ordinary fetch prompt for write permission.
+# (MCP spells readOnlyHint as "does not modify its environment"; this server has
+# always read "environment" as the Rossum org. Local files are the caller's own
+# machine, and are only ever written to a path the caller explicitly asked for.)
 _READ_ONLY = {"readOnlyHint": True}
 _WRITE = {"readOnlyHint": False, "destructiveHint": False}
 _DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
