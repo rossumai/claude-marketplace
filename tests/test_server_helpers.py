@@ -557,9 +557,44 @@ def test_json_integrity_changed_scalar_and_list_length():
 
 
 def test_json_integrity_type_mismatch_is_a_change():
+    # A container-vs-container type mismatch (list vs dict) is summarised, not inlined —
+    # see test_json_integrity_container_mismatch_is_compact below for the reason why.
     out = server._json_integrity({"a": [1]}, {"a": {"x": 1}}, root="settings")
     assert out["verified"] is False
-    assert out["changed"] == [{"path": "settings.a", "sent": [1], "landed": {"x": 1}}]
+    assert out["changed"] == [
+        {
+            "path": "settings.a",
+            "sent_type": "list",
+            "sent_size": 1,
+            "landed_type": "dict",
+            "landed_size": 1,
+        }
+    ]
+
+
+def test_json_integrity_scalar_mismatch_keeps_inline_values():
+    out = server._json_integrity({"a": 1, "b": "x"}, {"a": 2, "b": "y"}, root="settings")
+    assert out["verified"] is False
+    assert {"path": "settings.a", "sent": 1, "landed": 2} in out["changed"]
+    assert {"path": "settings.b", "sent": "x", "landed": "y"} in out["changed"]
+
+
+def test_json_integrity_container_mismatch_is_compact():
+    # A multivalue's `children` sent as a list but landed as a dict (or vice versa) used
+    # to inline both whole sub-trees into `changed` — for a large multivalue that alone
+    # can dwarf the rest of the response. The branch must instead summarise: type + size
+    # on each side, no sub-tree content.
+    big_list = [{"id": str(i), "value": i} for i in range(30)]
+    big_dict = {"category": "tuple", "children": list(big_list)}
+    out = server._json_integrity({"a": big_list}, {"a": big_dict}, root="settings")
+    assert out["verified"] is False
+    entry = out["changed"][0]
+    assert entry["path"] == "settings.a"
+    assert entry["sent_type"] == "list" and entry["sent_size"] == 30
+    assert entry["landed_type"] == "dict" and entry["landed_size"] == 2
+    assert "sent" not in entry and "landed" not in entry
+    # the whole result — not just this entry — must stay compact
+    assert len(json.dumps(out)) < 800
 
 
 # --- _load_json_field: bare array or whole object, errors before any HTTP ---
@@ -640,6 +675,28 @@ def test_count_datapoints_handles_multivalue_tuple_children():
     assert server._count_datapoints(content) == 3
     assert server._count_datapoints([]) == 0
     assert server._count_datapoints(None) == 0
+
+
+def test_count_datapoints_scalar_children_never_raises():
+    # A caller-supplied file can have malformed `children`; a scalar must contribute 0
+    # rather than raising (previously: `for node in nodes or ()` blew up with
+    # "'int' object is not iterable").
+    content = [{"category": "datapoint", "id": "f", "children": 5}]
+    assert server._count_datapoints(content) == 1  # the datapoint itself still counts
+    assert server._count_datapoints(5) == 0
+    assert server._count_datapoints(5.5) == 0
+    assert server._count_datapoints(True) == 0
+
+
+def test_count_datapoints_string_children_not_iterated_as_chars():
+    # A string is iterable in Python, so `children: "abc"` used to silently walk its
+    # characters (each skipped since a str isn't a dict) instead of being rejected as
+    # the wrong shape outright — contributes 0, and a top-level string never counts
+    # characters as nodes.
+    content = [{"category": "datapoint", "id": "f", "children": "abc"}]
+    assert server._count_datapoints(content) == 1
+    assert server._count_datapoints("abc") == 0
+    assert server._count_datapoints("") == 0
 
 
 def test_write_json_file_preserves_key_order_and_unicode(tmp_path):

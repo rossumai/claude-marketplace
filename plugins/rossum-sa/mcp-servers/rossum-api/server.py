@@ -3804,7 +3804,10 @@ def _json_integrity(sent, landed, *, root="content"):
 
     dropped  — paths present in `sent` but absent in `landed` (the API discarded them)
     changed  — paths whose value differs; a list-length mismatch is reported once at the
-               list's path and not recursed into
+               list's path and not recursed into. When the mismatch is between two
+               containers (e.g. a list vs a dict at the same path), the entry carries
+               each side's type and size instead of inlining the sub-trees — a caller
+               most needs this branch to stay small exactly when the mismatch is big.
     injected_defaults — keys present only in `landed`, counted by key name (normal: the
                API adds defaults such as rir_field_names / default_value)
     verified — no dropped and no changed. Injected keys do NOT fail verification.
@@ -3828,7 +3831,18 @@ def _json_integrity(sent, landed, *, root="content"):
                 for i, (a, b) in enumerate(zip(s, l)):
                     walk(a, b, f"{path}[{i}]")
         elif s != l:
-            changed.append({"path": path, "sent": s, "landed": l})
+            if isinstance(s, (dict, list)) or isinstance(l, (dict, list)):
+                changed.append(
+                    {
+                        "path": path,
+                        "sent_type": type(s).__name__,
+                        "sent_size": len(s) if isinstance(s, (dict, list)) else None,
+                        "landed_type": type(l).__name__,
+                        "landed_size": len(l) if isinstance(l, (dict, list)) else None,
+                    }
+                )
+            else:
+                changed.append({"path": path, "sent": s, "landed": l})
 
     walk(sent, landed, root)
     out = {
@@ -3849,20 +3863,29 @@ class _FileInputError(ValueError):
     """A local-file input the caller must fix. The message is user-facing."""
 
 
-def _load_json_field(path, key, *, bare_type=list):
-    """Read `key` from a local JSON file that is either the bare value or the whole object.
+def _load_json_field(path, key):
+    """Read `key` from a local JSON file that is either a bare JSON array or a wrapper
+    object carrying that array under `key`.
 
-    Returns (value, ignored_keys, file_id). A bare `bare_type` document is the value itself
-    (file_id is None). A JSON object yields obj[key] — which must be a `bare_type` — plus
-    every other top-level key in file order, so the caller can report what the file carried
-    that will NOT be sent (e.g. a prd2 schema.json's id/url/queues/name/metadata) — and the
-    object's own top-level 'id' (or None if it has none), so a caller can flag a file that
-    was pulled from a different object than the one being written. Reads with utf-8-sig, so
-    a UTF-8 BOM (common from Windows editors) is stripped transparently and is a no-op when
-    absent. A key repeated within one JSON object silently keeps only the LAST occurrence
-    per the JSON spec, which can hide a copy-paste slip inside a nested datapoint — that is
-    rejected instead of silently accepted. Raises _FileInputError with a user-facing
-    message; never touches the network.
+    Returns (value, ignored_keys, file_id). A bare JSON array is the value itself (file_id
+    is None). A JSON object yields obj[key] — which must be a JSON array — plus every other
+    top-level key in file order, so the caller can report what the file carried that will
+    NOT be sent (e.g. a prd2 schema.json's id/url/queues/name/metadata) — and the object's
+    own top-level 'id' (or None if it has none), so a caller can flag a file that was pulled
+    from a different object than the one being written. Reads with utf-8-sig, so a UTF-8 BOM
+    (common from Windows editors) is stripped transparently and is a no-op when absent. A key
+    repeated within one JSON object silently keeps only the LAST occurrence per the JSON
+    spec, which can hide a copy-paste slip inside a nested datapoint — that is rejected
+    instead of silently accepted. Raises _FileInputError with a user-facing message; never
+    touches the network.
+
+    List-only by design: `isinstance(data, bare_type)` is checked before the whole-object
+    branch, which is unambiguous only when the bare value is a list — a bare-object field
+    (e.g. future hook settings) would match a wrapper object on the FIRST branch and never
+    reach the key lookup, silently returning the whole wrapper with no warning. Don't
+    re-add a `bare_type=dict` flag to reuse this helper for such a field; give it its own
+    disambiguation rule (e.g. a required marker key, or a caller-supplied predicate)
+    instead.
     """
     import os
 
@@ -3893,7 +3916,7 @@ def _load_json_field(path, key, *, bare_type=list):
     except ValueError as exc:
         raise _FileInputError(f"{path} is not valid JSON: {exc}") from exc
 
-    if isinstance(data, bare_type):
+    if isinstance(data, list):
         return data, [], None
     if isinstance(data, dict):
         if key not in data:
@@ -3901,15 +3924,14 @@ def _load_json_field(path, key, *, bare_type=list):
                 f"{path} is a JSON object without a {key!r} key (keys found: "
                 f"{', '.join(map(repr, data))}). Pass the bare {key} value or the whole object."
             )
-        if not isinstance(data[key], bare_type):
+        if not isinstance(data[key], list):
             raise _FileInputError(
-                f"{path}: {key!r} must be a JSON {'array' if bare_type is list else 'object'}, "
-                f"got {type(data[key]).__name__}."
+                f"{path}: {key!r} must be a JSON array, got {type(data[key]).__name__}."
             )
         return data[key], [k for k in data if k != key], data.get("id")
     raise _FileInputError(
-        f"{path} must contain a JSON {'array' if bare_type is list else 'object'} or an object "
-        f"with a {key!r} key, got {type(data).__name__}."
+        f"{path} must contain a JSON array or an object with a {key!r} key, "
+        f"got {type(data).__name__}."
     )
 
 
@@ -3917,11 +3939,17 @@ def _count_datapoints(nodes):
     """Count category=='datapoint' nodes in a schema content tree.
 
     A multivalue's `children` is a single tuple object, not a list — normalise it.
+    `nodes` is caller-controlled (it can come straight from a local JSON file), so
+    anything that is not a list or a dict — including a string, which Python would
+    otherwise iterate character-by-character — contributes 0 rather than raising or
+    silently miscounting.
     """
     if isinstance(nodes, dict):
         nodes = [nodes]
+    elif not isinstance(nodes, list):
+        return 0
     count = 0
-    for node in nodes or ():
+    for node in nodes:
         if not isinstance(node, dict):
             continue
         if node.get("category") == "datapoint":
