@@ -18,7 +18,9 @@ IMPORTANT: Always use prd2 (v2). The original prd (v1) from the `deployment-mana
 
 ## Getting a token quickly
 
-If `prd2` complains about credentials, don't go hunting through `~/.prd2/credentials.yaml`, `~/.config/prd2/`, or `find ~` — that path has burned multiple sessions. Instead, ask the user for a curl-style token string from the Rossum UI ("Settings → API access") and call the MCP tool **`rossum_set_token`** with it. That sets the in-process credentials and `prd2` picks them up via the standard `ROSSUM_*` env vars without filesystem changes.
+If `prd2` complains about credentials, don't go hunting through `~/.prd2/credentials.yaml`, `~/.config/prd2/`, or `find ~` — that path has burned multiple sessions. Instead, ask the user for a curl-style token string from the Rossum UI ("Settings → API access") and call the MCP tool **`rossum_set_token`** with it. That sets the credentials for the MCP tools without touching the filesystem.
+
+It does **not** reach `prd2`, and no environment variable bridges the two: the MCP server is a separate process that sets none, and `prd2` reads no `ROSSUM_*` variable at all (verified against the installed `deployment_manager` package — only `PRD2_CONCURRENCY` and `AWS_PROFILE`). `prd2` takes its token from the per-directory `credentials.yaml` and nowhere else. So the two are authenticated separately: `rossum_set_token` for the MCP tools, `credentials.yaml` for `prd2`. If `prd2` reports bad credentials, that file is expired — ask the user for a fresh token; do not go looking for another store.
 
 Only fall back to inspecting credentials files if `rossum_set_token` is unavailable or the user explicitly wants the token persisted.
 

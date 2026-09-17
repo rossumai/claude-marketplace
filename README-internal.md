@@ -181,3 +181,43 @@ Two notes:
 2. **The marker must track `server.py`'s `_NOT_CONNECTED_MSG`.** Reword that
    message without the guard and the guard silently stops firing;
    `tests/test_rossum_auth_guard.py` pins the two together so CI catches it.
+3. **Two remediations, split on `agent_id`.** The harness sets that field only
+   inside a subagent, where "ask the user for a token and wait" is unfollowable —
+   nobody is there to ask. That branch bounces the agent back to the parent
+   instead. Check both:
+
+       for A in '"agent_id":"ag_1",' ''; do
+         echo "{$A\"tool_name\":\"mcp__plugin_rossum-sa_rossum-api__rossum_get_schema\",\"tool_response\":\"Not connected to Rossum.\"}" \
+           | python3 plugins/rossum-sa/hooks/rossum_auth_guard.py \
+           | python3 -c 'import json,sys; print(json.load(sys.stdin)["systemMessage"])'
+       done
+
+   Expect the subagent line first ("returning to the parent"), the interactive
+   one second ("asking the user for a fresh token").
+
+## Live-test the non-interactive connection
+
+`_autoconnect_from_env` exists for sessions that cannot answer the credential
+prompt: `claude -p`, `--agent` runs, scheduled and cloud agents. It runs from
+`_ensure_connection`, so it fires on the first tool call that needs a connection
+and at most once per process.
+
+    ROSSUM_TOKEN=<token> ROSSUM_API_URL=https://elis.rossum.ai \
+      claude --debug -p 'Call rossum_whoami and print the organization name.'
+
+Expect `Rossum autoconnect: connected to ...` on stderr and a real answer with no
+credential prompt. Then check the three ways it declines, all of which must fall
+through to the ordinary not-connected message rather than half-connecting:
+
+- **Unset** — no variables, no probe, behaviour identical to before the bootstrap.
+- **Half-set** — token without URL (or the reverse) logs which half is missing and
+  does not probe.
+- **Rejected** — a stale token logs the 401 once and never re-probes, including
+  after a mid-session `_invalidate_connection`.
+
+`conftest.py` clears every `ROSSUM_*` variable for the whole test suite, so an SA
+running `pytest` on the machine they work Rossum from cannot have their own token
+connect the disconnected-path tests (or fire a live probe per tool in
+`test_every_auth_tool_directs_to_set_token_when_disconnected`). Tests that
+exercise the bootstrap set the variables back and rearm `_autoconnect_attempted`
+via the `fresh_autoconnect` fixture.

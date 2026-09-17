@@ -65,6 +65,11 @@ The phases are delivery chunks, and they are what makes this buildable in a sess
 - **Dispatch one subagent per phase**, handing it the phase's intents, the parts it references, the
   relevant `platform_contract` entries, and its `verify` as the exit test. Phases are ordered, so run
   them in sequence and let each one's `verify` gate the next.
+- **Connect before you dispatch.** A subagent cannot establish the Rossum connection — nobody is
+  there to answer the credential prompt — so a phase dispatched into an unauthenticated server fails
+  on its first Rossum call with nothing it can do about it. Call `rossum_whoami` first. Read-only
+  work is better handed local files than a connection at all:
+  [`../__shared/fan-out-rules.md`](../__shared/fan-out-rules.md).
 - **Keep the contract in the prompt, not in the agent's memory.** The facts that cost a failed call —
   parenthesised rule conditions, enum-only MDH targets, the 2000-char formula cap — must be in the
   subagent's instructions or it will rediscover them one failure at a time.

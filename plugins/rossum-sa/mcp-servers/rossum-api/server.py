@@ -203,14 +203,27 @@ def _login_with_password(base_url, username, password):
 
 
 def _invalidate_connection():
-    """Clear cached connection state."""
+    """Clear cached connection state.
+
+    Also decides whether the environment bootstrap may run again. Where the
+    connection came from the environment, one more attempt is right: a 401 is
+    not proof the token expired (_emit_http_error cannot tell "expired" from
+    "forbidden on this object"), and an unattended session has no other way
+    back. Where the user connected explicitly, it is not: silently continuing
+    against whatever org the environment names — a different org, possibly
+    production — is the worst available outcome, so the bootstrap stays shut.
+    """
     global _cached_base_url, _cached_token, _token_validated
+    global _connection_source, _autoconnect_attempted
     _cached_base_url = None
     _cached_token = None
     _token_validated = False
+    if _connection_source == "env":
+        _autoconnect_attempted = False
+    _connection_source = None
 
 
-_SERVER_VERSION = "0.41.0"
+_SERVER_VERSION = "0.42.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -233,9 +246,113 @@ def _auth_headers(extra=None, token=None):
 _NOT_CONNECTED_MSG = "Not connected to Rossum. Call rossum_set_token to establish a connection."
 
 
+# Non-interactive bootstrap. rossum_set_token is the only way in, and its
+# credential prompt needs a user to answer it — so a session that has none
+# (`claude -p`, an `--agent` run, a scheduled or cloud agent) cannot connect at
+# all, however clearly the not-connected message is worded. The environment is
+# the way in for those: set it once and every server the CLI spawns inherits it.
+# Names follow what the rest of the plugin already uses (ROSSUM_TOKEN /
+# ROSSUM_API_URL in the b2brouter, queue-engine-binding and coupa-bulk scripts);
+# the *_API_TOKEN and *_BASE_URL spellings are accepted because they are what
+# people reach for first. A URL carrying the /api/v1 path is fine —
+# _validate_base_url reduces it to the origin.
+_ENV_TOKEN_VARS = ("ROSSUM_TOKEN", "ROSSUM_API_TOKEN")
+_ENV_URL_VARS = ("ROSSUM_API_URL", "ROSSUM_BASE_URL", "ROSSUM_URL")
+
+# The silent path gets a destination allow-list that rossum_set_token does not
+# need. set_token's URL is typed by a human in the moment; this one is ambient
+# and the two halves resolve independently, so a URL alone — from a project's
+# .claude/settings.json `env`, say — would be enough to send the SA's own token
+# to an arbitrary origin as a Bearer header, with no prompt. Every real Rossum
+# org is under these suffixes (checked across the client projects to hand); any
+# other destination has to go through set_token, where a person sees it.
+_ROSSUM_HOST_SUFFIXES = (".rossum.ai", ".rossum.app")
+_autoconnect_attempted = False
+_connection_source = None  # "explicit" (rossum_set_token) | "env" | None
+
+
+def _first_env(names):
+    """First non-empty environment variable from *names*, as (name, value)."""
+    import os
+
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return (name, value)
+    return (None, None)
+
+
+def _env_base_url():
+    """(var_name, origin) for the environment's base URL; origin None if unusable.
+
+    Shared by the bootstrap and data_storage_healthz so both name the same
+    destination. Validates and allow-lists but never probes — healthz is
+    deliberately auth-free and must stay that way.
+    """
+    url_var, raw_url = _first_env(_ENV_URL_VARS)
+    if not raw_url:
+        return (None, None)
+    origin = _validate_base_url(raw_url)
+    if not origin:
+        _log(f"Rossum autoconnect: {url_var} is not a valid https:// URL.")
+        return (url_var, None)
+    host = urlparse(origin).hostname or ""
+    if not host.endswith(_ROSSUM_HOST_SUFFIXES):
+        _log(f"Rossum autoconnect refused: {url_var} points at {host}, which is not a "
+             f"Rossum host. Use rossum_set_token for a non-Rossum destination.")
+        return (url_var, None)
+    return (url_var, origin)
+
+
+def _autoconnect_from_env():
+    """Connect from the environment, at most once per process. True if connected.
+
+    Called from _ensure_connection, so it costs nothing until a tool actually
+    needs a connection. The one-shot flag is load-bearing twice over: a fan-out
+    of parallel calls into an unconfigured server must not turn into one login
+    probe per call, and a rejected token must not re-probe — a 10s timeout — on
+    every later tool call for the rest of the session.
+
+    Failures only log to stderr and fall through to _NOT_CONNECTED_MSG, which
+    the auth-guard hook keys off; this must never swallow that message. Nothing
+    here logs the token itself.
+    """
+    global _cached_base_url, _cached_token, _token_validated
+    global _autoconnect_attempted, _connection_source
+    if _autoconnect_attempted:
+        return False
+    _autoconnect_attempted = True
+
+    token_var, token = _first_env(_ENV_TOKEN_VARS)
+    url_var, base_url = _env_base_url()
+    if not token or not base_url:
+        if token and not url_var:
+            # Half-configured is a typo, not a decision — name the missing half.
+            _log("Rossum autoconnect skipped: no base URL in the environment "
+                 f"(set one of {', '.join(_ENV_URL_VARS)}).")
+        elif url_var and not token:
+            _log("Rossum autoconnect skipped: no token in the environment "
+                 f"(set one of {', '.join(_ENV_TOKEN_VARS)}).")
+        return False
+
+    ok, detail = _probe_token(base_url, token)
+    if not ok:
+        _log(f"Rossum autoconnect failed: {token_var} rejected by {base_url} ({detail}).")
+        return False
+
+    _cached_base_url = base_url
+    _cached_token = token
+    _token_validated = True
+    _connection_source = "env"
+    _log(f"Rossum autoconnect: connected to {base_url} via {token_var}.")
+    return True
+
+
 def _ensure_connection(request_id):
     """Guard: return cached (base_url, token) or send an error directing to rossum_set_token."""
     if _token_validated and _cached_base_url and _cached_token:
+        return (_cached_base_url, _cached_token)
+    if _autoconnect_from_env():
         return (_cached_base_url, _cached_token)
 
     tool_result(request_id, _NOT_CONNECTED_MSG, is_error=True)
@@ -1583,9 +1700,15 @@ def handle_set_token(request_id, arguments):
             is_error=True,
         )
 
+    global _connection_source, _autoconnect_attempted
     _cached_base_url = base_url
     _cached_token = token
     _token_validated = True
+    # An explicit connection retires the environment bootstrap for the rest of
+    # the process: after this, a 401 must surface, never fail over to whatever
+    # org the environment names.
+    _connection_source = "explicit"
+    _autoconnect_attempted = True
     method = "username+password login" if username else "API token"
     return tool_result(request_id, f"Connected to {base_url} via {method}. Token validated for this session.")
 
@@ -1735,8 +1858,13 @@ def handle_healthz(request_id, arguments):
         validated = _cached_base_url
         source = "connected environment"
     else:
-        validated = "https://elis.rossum.ai"
-        source = "default (no connection established)"
+        env_var, env_url = _env_base_url()
+        if env_url:
+            validated = env_url
+            source = f"{env_var} (not connected yet)"
+        else:
+            validated = "https://elis.rossum.ai"
+            source = "default (no connection established)"
 
     if _check_health(validated):
         return tool_result(request_id, f"Data Storage API at {validated} is healthy ({source}).")

@@ -53,6 +53,33 @@ Claude prompts for your credentials when it connects, so nothing sensitive goes 
 
 See **What can you do with this?** below for more live-org prompts.
 
+### Sessions with nobody to prompt
+
+That prompt needs someone to answer it, so a session running unattended — `claude -p`,
+an `--agent` run, a scheduled or cloud agent — cannot connect that way. Put the
+credentials in the environment instead and the server connects on its first tool call:
+
+```bash
+export ROSSUM_TOKEN=<api-token>          # or ROSSUM_API_TOKEN
+export ROSSUM_API_URL=https://elis.rossum.ai   # or ROSSUM_BASE_URL; a /api/v1 suffix is fine
+```
+
+Every MCP server the CLI spawns inherits these, so per-project settings work too
+(`.claude/settings.json` → `env`). Details:
+
+- **Interactive sessions do not need this.** With nothing set, behaviour is exactly as
+  before: the first tool call asks for credentials.
+- The token is **probed once**. If it is rejected the reason goes to stderr
+  (`claude --debug`) and the session falls back to asking. A connection that *did* come
+  from the environment may re-probe once if it is later invalidated by a 401 — a 401 on
+  a single object is not proof the token expired — and latches shut if that fails.
+- **`rossum_set_token` wins.** Connecting explicitly retires the environment path for the
+  rest of the session, so a 401 surfaces as an error instead of quietly failing over to
+  whatever org the environment names.
+- Only Rossum hosts (`*.rossum.ai`, `*.rossum.app`) are accepted from the environment,
+  since nobody sees that URL before the token is sent to it. Use `rossum_set_token` for
+  anything else.
+
 ## 🛠️ Work on an implementation
 
 For real implementation work, pull a project to a local checkout with `prd2`, then let Claude work on the files:
