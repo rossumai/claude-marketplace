@@ -3750,12 +3750,17 @@ def handle_list_hooks(request_id, arguments):
     "(id, name, type, active, events, queue_ids, modified_at, settings_keys, settings_sha256, "
     "code_sha256/code_characters for function hooks, written_to, characters). The file is "
     "directly usable as settings_file_path for rossum_patch_hook / rossum_create_hook (only its "
-    "'settings' is sent from it) and has the shape of a prd2 hook.json, but NOT its key order: "
-    "the API returns settings keys sorted by length then bytes (jsonb), so the file will not "
-    "byte-match a prd2 checkout — do not point out_file_path at a prd2 tree. The tool REFUSES to "
-    "overwrite an existing file whose content differs (unsaved edits or remote drift — it cannot "
-    "tell which): pass another path or delete it. modified_at changes on every write, so "
-    "re-fetching to the SAME path right after a patch refuses as 'differs'. Without out_file_path "
+    "'settings' is sent from it) and has the shape of a prd2 hook.json, but not its bytes: the "
+    "API returns settings keys sorted by length then bytes (jsonb) rather than prd2's order, and "
+    "this tool writes ensure_ascii=False with a trailing newline where prd2 writes "
+    "ensure_ascii=True with none. Do not point out_file_path at a prd2 tree: even a hook.json "
+    "that is currently in sync with the remote parses equal, so the write is NOT refused — it "
+    "rewrites the file with this tool's serialisation, dirtying git and making the next prd2 "
+    "push re-push the hook. Write to a scratch path instead. Separately, the tool REFUSES to "
+    "overwrite an existing file whose PARSED content differs (unsaved edits or remote drift — it "
+    "cannot tell which: pass another path or delete it) — that guard is about content drift, not "
+    "the prd2 serialisation case above. modified_at changes on every write, so re-fetching to the "
+    "SAME path right after a patch refuses as 'differs' too. Without out_file_path "
     "the full object is returned inline as before.",
     {
         "type": "object",
@@ -3882,9 +3887,10 @@ _SETTINGS_FILE_PATH_DOC = (
 _HOOK_WRITE_RESPONSE_DOC = (
     "Response shape depends on what was sent: a write that carries code and/or settings "
     "returns {\"hook\": {...}, \"code_integrity\"?: {...}, \"settings_integrity\"?: {...}} — "
-    "read 'id' from inside \"hook\", not top-level; settings is stripped from that nested "
-    "hook object because settings_integrity already proves what landed. A write with "
-    "neither returns the bare hook object unwrapped, with 'id' top-level as usual."
+    "read 'id' from inside \"hook\", not top-level. settings is stripped from that nested hook "
+    "object only when the write carried settings, because only then does settings_integrity "
+    "prove what landed; a code-only write still echoes the hook's full stored settings. A write "
+    "that carried neither returns the bare hook object unwrapped, with 'id' top-level as usual."
 )
 
 
