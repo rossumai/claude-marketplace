@@ -827,3 +827,31 @@ def test_write_json_file_refuses_to_overwrite_a_differing_file(tmp_path, existin
         server._write_json_file(str(path), {"a": 1})
     assert "Refusing to overwrite" in str(exc.value)
     assert path.read_text(encoding="utf-8") == existing, "must not touch the file"
+
+
+def test_load_json_dict_field_settings_with_single_incidental_metadata_key(tmp_path):
+    # Regression guard: a legitimate settings object carrying one incidental hook-named key
+    # (metadata) must load without refusal. This shape was measured in real production data
+    # (2 out of 833 settings objects). With the old "any marker" rule, these would have
+    # been wrongly refused. A genuine whole-hook object carries ~13 markers, so the
+    # threshold of "two or more markers" cleanly separates the two shapes.
+    settings_with_metadata = {
+        "configurations": [{"source": "x"}],
+        "metadata": {"owner": "team"}
+    }
+    value, ignored, file_id = _load_settings(_write(tmp_path, "settings_meta.json", settings_with_metadata))
+    assert value == settings_with_metadata
+    assert ignored == []
+    assert file_id is None
+
+
+def test_load_json_dict_field_refuses_two_markers_without_settings_key(tmp_path):
+    # Pins the refusal threshold from the other side: two or more markers without the
+    # settings key must be refused as a whole hook object that simply has no settings.
+    hookish = {
+        "type": "function",
+        "config": {"runtime": "python3.12", "code": "x"},
+        "active": True
+    }
+    with pytest.raises(server._FileInputError, match="cannot be the settings object either"):
+        _load_settings(_write(tmp_path, "two_markers_no_settings.json", hookish))

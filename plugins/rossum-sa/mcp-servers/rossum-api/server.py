@@ -4067,12 +4067,13 @@ def _load_json_dict_field(path, key, *, wrapper_markers):
     at least one `wrapper_markers` key (for hooks: id / type / events / config / …). The
     rule is symmetric and refuses to guess in either direction: a file WITH `key` and NO
     marker is refused as ambiguous — it could be a wrapper stripped to one field or a bare
-    value that happens to contain `key` — and a file WITHOUT `key` but WITH a marker is
-    refused too, because that shape is a whole object of the wrapper's kind (a hook) that
-    simply has no `key`, not the bare value. Only a file with neither `key` nor any marker
-    is accepted as the bare value. Guessing instead of refusing is the failure mode that
-    got `bare_type=dict` removed from _load_json_field: a wrong guess silently sends the
-    wrong object.
+    value that happens to contain `key` — and a file WITHOUT `key` but WITH two or more markers
+    is refused too, because that shape is a whole object of the wrapper's kind (a hook) that
+    simply has no `key`, not the bare value. (A settings object can legitimately carry one
+    incidental key that shares a hook field name, like 'metadata'.) Only a file with neither `key`
+    nor any marker, or with one marker but no `key`, is accepted as the bare value. Guessing
+    instead of refusing is the failure mode that got `bare_type=dict` removed from _load_json_field:
+    a wrong guess silently sends the wrong object.
 
     Returns (value, ignored_keys, file_id) as _load_json_field does: `ignored_keys` are
     the wrapper's other top-level keys in file order (so the caller can report what will
@@ -4086,8 +4087,9 @@ def _load_json_dict_field(path, key, *, wrapper_markers):
             f"object with a {key!r} key — got {type(data).__name__}."
         )
     if key not in data:
-        if any(k in data for k in wrapper_markers):
-            examples = ", ".join(k for k in wrapper_markers if k in data)
+        found = [k for k in wrapper_markers if k in data]
+        if len(found) >= 2:
+            examples = ", ".join(found)
             raise _FileInputError(
                 f"{path} looks like a whole hook object (it has {examples}) but has no "
                 f"{key!r} key, so it cannot be the {key} object either. If the hook has no "
