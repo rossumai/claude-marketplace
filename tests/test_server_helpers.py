@@ -855,3 +855,258 @@ def test_load_json_dict_field_refuses_two_markers_without_settings_key(tmp_path)
     }
     with pytest.raises(server._FileInputError, match="cannot be the settings object either"):
         _load_settings(_write(tmp_path, "two_markers_no_settings.json", hookish))
+
+
+# --- non-interactive bootstrap: _first_env / _autoconnect_from_env ---
+#
+# The connection used to be reachable only through rossum_set_token's credential
+# prompt, which a session with no user cannot answer (`claude -p`, an --agent run,
+# a scheduled or cloud agent). These pin the environment path that replaces it.
+
+@pytest.fixture
+def fresh_autoconnect(monkeypatch):
+    """Disconnected server with the one-shot bootstrap flag rearmed.
+
+    The flag is module state, so without this a single earlier call would make
+    every later test in the process a silent no-op.
+    """
+    monkeypatch.setattr(server, "_cached_base_url", None)
+    monkeypatch.setattr(server, "_cached_token", None)
+    monkeypatch.setattr(server, "_token_validated", False)
+    monkeypatch.setattr(server, "_autoconnect_attempted", False)
+    monkeypatch.setattr(server, "_connection_source", None)
+    class _Probes(list):
+        """A list of (base_url, token) probes, with the stderr log alongside."""
+        logs: list
+
+    probes = _Probes()
+    monkeypatch.setattr(server, "_probe_token",
+                        lambda base, tok: (probes.append((base, tok)), (True, None))[1])
+    # Captured, not discarded: the declines are only observable through stderr,
+    # so README-internal documents their wording and tests have to hold it.
+    probes.logs = logs = []
+    monkeypatch.setattr(server, "_log", logs.append)
+    return probes
+
+
+def test_first_env_precedence_and_blank_handling(monkeypatch):
+    monkeypatch.setenv("ROSSUM_API_TOKEN", "alias-tok")
+    assert server._first_env(server._ENV_TOKEN_VARS) == ("ROSSUM_API_TOKEN", "alias-tok")
+    # The canonical name wins over the accepted alias when both are set.
+    monkeypatch.setenv("ROSSUM_TOKEN", "primary-tok")
+    assert server._first_env(server._ENV_TOKEN_VARS) == ("ROSSUM_TOKEN", "primary-tok")
+    # Whitespace-only is absence, not a value — otherwise an empty `export` in a
+    # shell profile would be probed as a token.
+    monkeypatch.setenv("ROSSUM_TOKEN", "   ")
+    assert server._first_env(server._ENV_TOKEN_VARS) == ("ROSSUM_API_TOKEN", "alias-tok")
+
+
+def test_autoconnect_noop_without_env(fresh_autoconnect):
+    """The default install is unchanged: nothing set, nothing probed, no connection."""
+    assert server._autoconnect_from_env() is False
+    assert fresh_autoconnect == []
+    assert server._token_validated is False
+
+
+def test_autoconnect_connects_from_env(fresh_autoconnect, monkeypatch):
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://elis.rossum.ai")
+    assert server._autoconnect_from_env() is True
+    assert fresh_autoconnect == [("https://elis.rossum.ai", "tok")]
+    assert server._cached_base_url == "https://elis.rossum.ai"
+    assert server._cached_token == "tok"
+    assert server._token_validated is True
+
+
+def test_autoconnect_accepts_the_alias_spellings(fresh_autoconnect, monkeypatch):
+    monkeypatch.setenv("ROSSUM_API_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_BASE_URL", "https://elis.rossum.ai")
+    assert server._autoconnect_from_env() is True
+
+
+def test_autoconnect_reduces_an_api_path_url_to_its_origin(fresh_autoconnect, monkeypatch):
+    """`ROSSUM_API_URL` conventionally carries /api/v1 (the coupa-bulk script uses
+    it that way), but every URL this server builds starts from the origin."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://elis.rossum.ai/api/v1")
+    assert server._autoconnect_from_env() is True
+    assert server._cached_base_url == "https://elis.rossum.ai"
+
+
+@pytest.mark.parametrize("token,url", [
+    ("tok", ""),            # token without a URL
+    ("", "https://elis.rossum.ai"),  # URL without a token
+])
+def test_autoconnect_requires_both_halves(fresh_autoconnect, monkeypatch, token, url):
+    if token:
+        monkeypatch.setenv("ROSSUM_TOKEN", token)
+    if url:
+        monkeypatch.setenv("ROSSUM_API_URL", url)
+    assert server._autoconnect_from_env() is False
+    assert fresh_autoconnect == [], "half-configured must not be probed"
+    missing = "token" if not token else "base URL"
+    assert any(f"no {missing} in the environment" in line
+               for line in fresh_autoconnect.logs), fresh_autoconnect.logs
+
+
+def test_autoconnect_rejects_a_non_https_url_without_probing(fresh_autoconnect, monkeypatch):
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "http://elis.rossum.ai")
+    assert server._autoconnect_from_env() is False
+    assert fresh_autoconnect == []
+    assert server._token_validated is False
+
+
+def test_autoconnect_leaves_state_clear_when_the_token_is_rejected(fresh_autoconnect, monkeypatch):
+    """A stale env token must fall through to the not-connected message, not
+    half-connect — the auth-guard hook keys off that message."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "stale")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://elis.rossum.ai")
+    monkeypatch.setattr(server, "_probe_token", lambda base, tok: (False, "HTTP 401: expired"))
+    assert server._autoconnect_from_env() is False
+    assert server._cached_token is None
+    assert server._token_validated is False
+
+
+def test_autoconnect_probes_at_most_once_per_process(fresh_autoconnect, monkeypatch):
+    """The reason the flag exists: a parallel fan-out into an unconfigured server
+    must not become one 10s login probe per call, and a rejected token must not
+    re-probe for the rest of the session."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "stale")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://elis.rossum.ai")
+    monkeypatch.setattr(
+        server, "_probe_token",
+        lambda base, tok: (fresh_autoconnect.append((base, tok)), (False, "HTTP 401"))[1])
+    for _ in range(14):
+        assert server._autoconnect_from_env() is False
+    assert len(fresh_autoconnect) == 1
+
+
+def test_ensure_connection_uses_the_env_bootstrap(fresh_autoconnect, monkeypatch):
+    """The whole point: a tool call in a session that never ran rossum_set_token
+    connects and proceeds, instead of erroring at a prompt nobody can answer."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://elis.rossum.ai")
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    assert server._ensure_connection(1) == ("https://elis.rossum.ai", "tok")
+    assert emitted == [], "connected: nothing to report"
+
+
+def test_ensure_connection_still_reports_not_connected_without_env(fresh_autoconnect, monkeypatch):
+    """The guard hook's marker has to stay reachable when the bootstrap declines."""
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    assert server._ensure_connection(1) == (None, None)
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert text == server._NOT_CONNECTED_MSG
+    assert text.startswith("Not connected to Rossum")
+
+
+def test_explicit_set_token_retires_the_env_bootstrap(fresh_autoconnect, monkeypatch):
+    """A hand-made connection must shut the environment path for the process.
+
+    Without this the bootstrap stays armed behind an explicit connection, and
+    the first 401 hands the session to whatever org the environment names.
+    """
+    monkeypatch.setenv("ROSSUM_TOKEN", "env-tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://prod.rossum.app")
+    monkeypatch.setattr(server, "write_message", lambda msg: None)
+    server.HANDLERS["rossum_set_token"](
+        1, {"token": "uat-tok", "baseUrl": "https://uat.rossum.app"})
+    assert server._connection_source == "explicit"
+    assert server._autoconnect_attempted is True
+
+
+def test_a_401_on_an_explicit_connection_does_not_fail_over_to_the_env(
+        fresh_autoconnect, monkeypatch):
+    """Regression test for the worst outcome this feature could produce.
+
+    An SA connects to UAT by hand while their shell still exports a production
+    token. One 401 — an expired token, or simply an object their token may not
+    read — invalidates the connection. The next tool call must report
+    not-connected, NOT silently continue against production, where this server's
+    destructive tools would then be pointed at the wrong org.
+    """
+    monkeypatch.setenv("ROSSUM_TOKEN", "prod-tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://prod.rossum.app")
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    server.HANDLERS["rossum_set_token"](
+        1, {"token": "uat-tok", "baseUrl": "https://uat.rossum.app"})
+    assert server._ensure_connection(2) == ("https://uat.rossum.app", "uat-tok")
+
+    server._invalidate_connection()
+    assert server._ensure_connection(3) == (None, None)
+    assert emitted[-1]["result"]["content"][0]["text"] == server._NOT_CONNECTED_MSG
+
+
+def test_an_env_connection_recovers_once_after_invalidation(fresh_autoconnect, monkeypatch):
+    """The other side of the same coin. A 401 does not prove the token expired —
+    _emit_http_error cannot tell that from "forbidden on this object" — and an
+    unattended run has no other way back, so an env-sourced connection is
+    allowed to re-probe. A failed re-probe then latches it shut for good, which
+    is what keeps this from becoming a probe per call.
+    """
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://elis.rossum.ai")
+    assert server._ensure_connection(1) == ("https://elis.rossum.ai", "tok")
+    server._invalidate_connection()
+    assert server._ensure_connection(2) == ("https://elis.rossum.ai", "tok")
+    assert len(fresh_autoconnect) == 2
+
+    monkeypatch.setattr(server, "_probe_token", lambda base, tok: (False, "HTTP 401"))
+    monkeypatch.setattr(server, "write_message", lambda msg: None)
+    server._invalidate_connection()
+    assert server._ensure_connection(3) == (None, None)
+    server._invalidate_connection()
+    assert server._ensure_connection(4) == (None, None)
+    assert server._autoconnect_attempted is True, "a failed re-probe must latch"
+
+
+def test_non_rossum_host_in_the_env_is_refused_without_probing(
+        fresh_autoconnect, monkeypatch):
+    """The silent path must not send the token wherever the environment points.
+
+    rossum_set_token's URL is typed by a person; this one is ambient, and the
+    token and URL resolve independently — a project .claude/settings.json `env`
+    supplying only the URL would otherwise exfiltrate the SA's own token in a
+    Bearer header with no prompt.
+    """
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://collector.example")
+    assert server._autoconnect_from_env() is False
+    assert fresh_autoconnect == [], "must refuse before sending the token anywhere"
+    assert any("not a Rossum host" in line for line in fresh_autoconnect.logs)
+
+
+@pytest.mark.parametrize("url", [
+    "https://elis.rossum.ai",
+    "https://acme.rossum.app",
+    "https://api.elis.rossum.ai/api/v1",
+])
+def test_real_rossum_hosts_are_accepted(fresh_autoconnect, monkeypatch, url):
+    """The allow-list has to cover the shapes that actually occur — every client
+    project to hand is under .rossum.app or .rossum.ai, including the *.api.*
+    spelling that _validate_base_url rewrites."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", url)
+    assert server._autoconnect_from_env() is True
+
+
+def test_healthz_names_the_env_target_instead_of_the_default(fresh_autoconnect, monkeypatch):
+    """data_storage_healthz stays auth-free (it must not probe), but reporting
+    "no connection established" against elis while the environment names another
+    org is a lie the bootstrap introduced."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://acme.rossum.app")
+    checked = []
+    monkeypatch.setattr(server, "_check_health",
+                        lambda url: (checked.append(url), True)[1])
+    emitted = []
+    monkeypatch.setattr(server, "write_message", lambda msg: emitted.append(msg))
+    server.HANDLERS["data_storage_healthz"](1, {})
+    assert checked == ["https://acme.rossum.app"]
+    assert fresh_autoconnect == [], "healthz must not probe a token"
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "ROSSUM_API_URL (not connected yet)" in text

@@ -31,6 +31,8 @@ Use an **Explore subagent** to thoroughly read:
 
 Additionally, if the `rossum-api` MCP tools are available, use `data_storage_list_collections` to discover datasets and `data_storage_list_indexes` / `data_storage_list_search_indexes` to understand indexing. This adds context about what master data backs the matching hooks.
 
+Make those calls **in this session, not in the Explore subagent** — a subagent cannot establish the Rossum connection, and the table above is local files anyway. When you need a live object an agent has to read, dump it first (`rossum_get_schema` / `rossum_get_hook` with `out_file_path`) and hand over the path: [`../__shared/fan-out-rules.md`](../__shared/fan-out-rules.md).
+
 Do NOT produce output during this phase. Read everything first.
 
 ## Phase 2: Map the Processing Pipeline
