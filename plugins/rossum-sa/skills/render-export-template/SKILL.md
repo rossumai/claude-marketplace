@@ -129,7 +129,7 @@ rossum_generate_export_settings(templatePath="<your-template>.j2", exportReferen
 Returns the `export_configs` JSON block. To apply it, merge it into the hook's `settings` and push **through the hard-gate**:
 
 - In a **prd2 project**, prefer editing the local hook JSON and `prd2 push` (per the project's `CLAUDE.md` workflow) over a direct API patch.
-- Otherwise, `rossum_patch_hook(hookId=<id>, settings=<merged settings>)` — only after showing the change and getting a "yes".
+- Otherwise, `rossum_patch_hook(hookId=<id>, settings=<merged settings>)` — only after showing the change and getting a "yes". `export_configs` is among the largest settings objects in the product, so for anything but a small template pull the hook first with `rossum_get_hook` + `out_file_path` and write the merge back with `settings_file_path` rather than inlining it.
 
 ## The iteration loop
 

@@ -662,6 +662,96 @@ def test_load_json_field_strips_utf8_bom(tmp_path):
     assert value == _SENT and ignored == [] and file_id is None
 
 
+# --- _load_json_dict_field: bare object or whole-hook wrapper, ambiguity refused ---
+# `settings` is a dict, so both shapes are JSON objects. The wrapper is recognised by
+# structure: a file with `settings` AND another hook field is a hook; a file with
+# neither `settings` nor any hook marker is the bare settings object. The two mixed
+# cases are both refused rather than guessed: `settings` alone (no markers) could be a
+# wrapper stripped to one field or a bare object that happens to be named `settings`;
+# hook markers with no `settings` key at all is a whole hook that simply has none.
+
+_SETTINGS = {"configurations": [{"source": {"queries": [{"$match": {"a": 1}}]}}], "n": 2}
+_HOOK = {"id": 9, "type": "function", "name": "H", "settings": _SETTINGS,
+         "config": {"runtime": "python3.12", "code": "x"}, "events": ["invocation.manual"]}
+
+
+def _load_settings(path):
+    return server._load_json_dict_field(path, "settings", wrapper_markers=server._HOOK_OBJECT_KEYS)
+
+
+def test_load_json_dict_field_bare_object(tmp_path):
+    value, ignored, file_id = _load_settings(_write(tmp_path, "s.json", _SETTINGS))
+    assert value == _SETTINGS and ignored == [] and file_id is None
+
+
+def test_load_json_dict_field_wrapper_reports_ignored_keys_and_id(tmp_path):
+    value, ignored, file_id = _load_settings(_write(tmp_path, "h.json", _HOOK))
+    assert value == _SETTINGS
+    assert ignored == ["id", "type", "name", "config", "events"]   # file order, minus settings
+    assert file_id == 9
+
+
+def test_load_json_dict_field_wrapper_needs_only_one_marker(tmp_path):
+    value, ignored, file_id = _load_settings(_write(tmp_path, "h.json", {"type": "webhook", "settings": {"a": 1}}))
+    assert value == {"a": 1} and ignored == ["type"] and file_id is None
+
+
+def test_load_json_dict_field_refuses_hook_without_settings_key(tmp_path):
+    # Mirror case of the ambiguity refusal below: a file that is plainly a whole hook
+    # object (it carries several _HOOK_OBJECT_KEYS markers) but has no `settings` key at
+    # all must be refused, not silently returned AS the settings object — that would
+    # send the hook's id/type/config/events wholesale as the new settings.
+    hookish = {"id": 9, "type": "function", "config": {"runtime": "python3.12", "code": "x"},
+               "events": ["invocation.manual"]}
+    with pytest.raises(server._FileInputError, match="cannot be the settings object either"):
+        _load_settings(_write(tmp_path, "hook_no_settings.json", hookish))
+
+
+def test_load_json_dict_field_bare_settings_with_no_markers_still_loads(tmp_path):
+    # Regression guard for the fix above: a genuine bare settings object that happens to
+    # carry NONE of the hook markers must still load — the new refusal is keyed off the
+    # markers actually being present, not merely off `settings` being absent.
+    bare = {"base_url": "https://example.com", "queries": [{"field": "vendor_id"}], "n": 3}
+    value, ignored, file_id = _load_settings(_write(tmp_path, "bare_settings.json", bare))
+    assert value == bare and ignored == [] and file_id is None
+
+
+def test_load_json_dict_field_refuses_settings_key_without_markers(tmp_path):
+    with pytest.raises(server._FileInputError, match="cannot be told apart"):
+        _load_settings(_write(tmp_path, "amb.json", {"settings": {"a": 1}}))
+    # a settings object that itself carries a 'settings' key looks identical — same refusal
+    with pytest.raises(server._FileInputError, match="cannot be told apart"):
+        _load_settings(_write(tmp_path, "amb2.json", {"settings": {"nested": True}, "other": 1}))
+
+
+@pytest.mark.parametrize("doc,fragment", [
+    ([1, 2], "must contain a JSON object"),
+    ("\"just a string\"", "must contain a JSON object"),
+    ({"id": 9, "settings": [1, 2]}, "'settings' must be a JSON object"),
+    ({"id": 9, "settings": None}, "'settings' must be a JSON object"),
+], ids=["array", "string", "settings-is-list", "settings-is-null"])
+def test_load_json_dict_field_rejects_wrong_shapes(tmp_path, doc, fragment):
+    with pytest.raises(server._FileInputError, match=fragment):
+        _load_settings(_write(tmp_path, "bad.json", doc))
+
+
+def test_load_json_dict_field_shares_the_strict_reader(tmp_path):
+    with pytest.raises(server._FileInputError, match="File not found"):
+        _load_settings(str(tmp_path / "nope.json"))
+    with pytest.raises(server._FileInputError, match="not valid JSON"):
+        _load_settings(_write(tmp_path, "bad.json", "{not json"))
+    with pytest.raises(server._FileInputError, match="duplicate key 'a'"):
+        _load_settings(_write(tmp_path, "dup.json", '{"x": {"a": 1, "a": 2}}'))
+    bom = tmp_path / "bom.json"
+    bom.write_bytes(b"\xef\xbb\xbf" + json.dumps(_SETTINGS).encode("utf-8"))
+    assert _load_settings(str(bom))[0] == _SETTINGS
+
+
+def test_load_json_dict_field_empty_object_is_returned_not_refused(tmp_path):
+    # The {} guard belongs to the resolver (it knows {} wipes the field); the loader is shape-only.
+    assert _load_settings(_write(tmp_path, "e.json", {})) == ({}, [], None)
+
+
 # --- _count_datapoints + _write_json_file ---
 
 def test_count_datapoints_handles_multivalue_tuple_children():
@@ -737,3 +827,31 @@ def test_write_json_file_refuses_to_overwrite_a_differing_file(tmp_path, existin
         server._write_json_file(str(path), {"a": 1})
     assert "Refusing to overwrite" in str(exc.value)
     assert path.read_text(encoding="utf-8") == existing, "must not touch the file"
+
+
+def test_load_json_dict_field_settings_with_single_incidental_metadata_key(tmp_path):
+    # Regression guard: a legitimate settings object carrying one incidental hook-named key
+    # (metadata) must load without refusal. This shape was measured in real production data
+    # (2 out of 833 settings objects). With the old "any marker" rule, these would have
+    # been wrongly refused. A genuine whole-hook object carries ~13 markers, so the
+    # threshold of "two or more markers" cleanly separates the two shapes.
+    settings_with_metadata = {
+        "configurations": [{"source": "x"}],
+        "metadata": {"owner": "team"}
+    }
+    value, ignored, file_id = _load_settings(_write(tmp_path, "settings_meta.json", settings_with_metadata))
+    assert value == settings_with_metadata
+    assert ignored == []
+    assert file_id is None
+
+
+def test_load_json_dict_field_refuses_two_markers_without_settings_key(tmp_path):
+    # Pins the refusal threshold from the other side: two or more markers without the
+    # settings key must be refused as a whole hook object that simply has no settings.
+    hookish = {
+        "type": "function",
+        "config": {"runtime": "python3.12", "code": "x"},
+        "active": True
+    }
+    with pytest.raises(server._FileInputError, match="cannot be the settings object either"):
+        _load_settings(_write(tmp_path, "two_markers_no_settings.json", hookish))

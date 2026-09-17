@@ -184,6 +184,10 @@ The top-level settings object:
 | `stages` | Array | Yes | Ordered list of Stage objects |
 | `debugging` | Boolean | No | Enable debug logging (default: false) |
 
+### Editing `stages`: as a file, not inline
+
+A real pipeline runs to thousands of lines. Outside a prd2 flow, edit it as a file: `rossum_get_hook` with `out_file_path` writes the whole hook to disk, and `rossum_patch_hook` with `settings_file_path` writes the edited file back (the whole-hook file is accepted; only `settings` is sent). Read `settings_integrity` in the response — `verified:true` means the stages you sent are the stages now stored. `settings` replaces the whole object on every write, so re-pull before editing a hook someone else may have touched.
+
 ---
 
 ## Variable Templating

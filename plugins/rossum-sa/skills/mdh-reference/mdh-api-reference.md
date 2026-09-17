@@ -485,6 +485,8 @@ Schema fields in Rossum annotations use these types:
 
 ## MDH Hook Configuration Pattern
 
+> **Editing a live MDH configuration through the API.** The configuration is `hook.settings`, and real ones run to thousands of lines. Pull it with `rossum_get_hook` + `out_file_path` (the whole hook lands in a file), edit the file, and write it back with `rossum_patch_hook` + `settings_file_path` — the file is accepted as-is, only its `settings` is sent, and the response's `settings_integrity` confirms the object that landed (keys come back in the API's jsonb order, which is fine — the comparison is structural). `settings` replaces the whole object, so never patch from a stale file. Inside a prd2 project the same edit goes through `prd2 push` instead.
+
 MDH hooks use a **cascade query pattern** to match extracted document data against master data. The hook configuration is a JSON object stored on the Rossum extension (hook). Here is how the cascade works:
 
 ### How Query Cascade Works

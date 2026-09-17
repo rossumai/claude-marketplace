@@ -183,12 +183,12 @@ The MCP server starts automatically when `rossum-sa` is enabled. Write and destr
 | `rossum_patch_engine_field` | ✏️ Update an engine field (label, type, subtype, pretrained seeding; `name` is immutable) |
 | `rossum_delete_engine_field` | ⚠️ Delete an engine field — remove the matching schema datapoint first (the API 409s while referenced; the tool reports which schemas to edit) |
 | `rossum_list_hooks` | List hooks/extensions (filter by queue, active) |
-| `rossum_get_hook` | Get full hook details including code and config |
-| `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) incl. description, settings, and `secrets_schema` (declares secret key names — values are entered by a human in the UI). Pass hook source via `code_file_path` instead of inlining it; the response carries the sha256 of the code that landed |
+| `rossum_get_hook` | Get full hook details including code and config; `out_file_path` writes the whole object to a local file and returns an envelope (settings key count + sha256, code digest) instead of an object that can run to tens of thousands of tokens |
+| `rossum_create_hook` | ✏️ Create a new hook (serverless function or webhook) incl. description, settings, and `secrets_schema` (declares secret key names — values are entered by a human in the UI). Pass hook source via `code_file_path` and settings via `settings_file_path` instead of inlining them; the response verifies what landed (`code_integrity`, `settings_integrity`) |
 | `rossum_create_hook_from_template` | ✏️ Create a hook from a hook template (catalog) — template supplies the base, you supply name/queues/settings |
 | `rossum_duplicate_hook` | ✏️ Clone an existing hook (created inactive; queues/secrets/dependencies copied only on request) |
 | `rossum_delete_hook` | ⚠️ Delete a hook |
-| `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues, settings, description, `secrets_schema` — never secret values). Pass hook source via `code_file_path`; the response verifies the landed code's sha256 against what was sent |
+| `rossum_patch_hook` | ✏️ Update an existing hook (code, events, active, queues, settings, description, `secrets_schema` — never secret values). Pass hook source via `code_file_path` and settings via `settings_file_path` (settings object, `rossum_get_hook` dump, or prd2 `hook.json`); every settings write returns a `settings_integrity` sent-vs-landed readback with the settings stripped from the echo |
 | `rossum_extract_export_template` | Pull a Custom Format Templating export template out of a hook's `export_configs` into editable text |
 | `rossum_generate_export_settings` | Turn a local Jinja2 template into the `export_configs` settings block to push back |
 | `rossum_generate_export_payload` | Generate an annotation's export payload (feeds the local render preview) |

@@ -210,7 +210,7 @@ def _invalidate_connection():
     _token_validated = False
 
 
-_SERVER_VERSION = "0.40.0"
+_SERVER_VERSION = "0.41.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -3742,8 +3742,26 @@ def handle_list_hooks(request_id, arguments):
 
 @_tool(
     "rossum_get_hook",
-    "Retrieves full details of a single hook (extension) including its code, URL, "
-    "settings, secrets key names, and configuration. Use rossum_list_hooks first to find hook IDs.",
+    "Retrieves full details of a single hook (extension) including its code, URL, settings, "
+    "secrets key names, and configuration. Use rossum_list_hooks first to find hook IDs. "
+    "hook.settings (the UI's 'Configuration') is where MDH matching, Request Processor and "
+    "business-rules configs live, and the largest run to tens of thousands of tokens — pass "
+    "out_file_path to write the WHOLE hook object to a local file and get back only an envelope "
+    "(id, name, type, active, events, queue_ids, modified_at, settings_keys, settings_sha256, "
+    "code_sha256/code_characters for function hooks, written_to, characters). The file is "
+    "directly usable as settings_file_path for rossum_patch_hook / rossum_create_hook (only its "
+    "'settings' is sent from it) and has the shape of a prd2 hook.json, but not its bytes: the "
+    "API returns settings keys sorted by length then bytes (jsonb) rather than prd2's order, and "
+    "this tool writes ensure_ascii=False with a trailing newline where prd2 writes "
+    "ensure_ascii=True with none. Do not point out_file_path at a prd2 tree: even a hook.json "
+    "that is currently in sync with the remote parses equal, so the write is NOT refused — it "
+    "rewrites the file with this tool's serialisation, dirtying git and making the next prd2 "
+    "push re-push the hook. Write to a scratch path instead. Separately, the tool REFUSES to "
+    "overwrite an existing file whose PARSED content differs (unsaved edits or remote drift — it "
+    "cannot tell which: pass another path or delete it) — that guard is about content drift, not "
+    "the prd2 serialisation case above. modified_at changes on every write, so re-fetching to the "
+    "SAME path right after a patch refuses as 'differs' too. Without out_file_path "
+    "the full object is returned inline as before.",
     {
         "type": "object",
         "required": ["hook_id"],
@@ -3752,13 +3770,53 @@ def handle_list_hooks(request_id, arguments):
                 "type": "integer",
                 "description": "The hook ID.",
             },
+            "out_file_path": {
+                "type": "string",
+                "description": "Local path to write the full hook object to (parent directories "
+                               "are created). When given, the response is an envelope instead of "
+                               "the hook; settings and code stay in the file.",
+            },
         },
         "additionalProperties": False,
     },
     annotations=_READ_ONLY,
 )
 def handle_get_hook(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}")
+    out_file_path = arguments.get("out_file_path")
+    if out_file_path is None:
+        _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}")
+        return
+
+    def emit(hook):
+        try:
+            characters = _write_json_file(out_file_path, hook)
+        except _FileInputError as exc:
+            tool_result(request_id, str(exc), is_error=True)
+            return
+        except OSError as exc:
+            tool_result(request_id, f"Could not write {out_file_path!r}: {exc}", is_error=True)
+            return
+        settings = hook.get("settings") if isinstance(hook.get("settings"), dict) else {}
+        code = (hook.get("config") or {}).get("code")
+        envelope = {
+            "id": hook.get("id"),
+            "name": hook.get("name"),
+            "type": hook.get("type"),
+            "active": hook.get("active"),
+            "events": hook.get("events"),
+            "queue_ids": [_url_to_id(q) for q in hook.get("queues") or []],
+            "modified_at": hook.get("modified_at"),
+            "settings_keys": len(settings),
+            "settings_sha256": _canonical_sha256(settings),
+        }
+        if isinstance(code, str):
+            envelope["code_sha256"] = _code_digest(code)["sha256"]
+            envelope["code_characters"] = len(code)
+        envelope["written_to"] = out_file_path
+        envelope["characters"] = characters
+        tool_result(request_id, json.dumps(envelope, indent=2))
+
+    _rossum_get(request_id, f"/api/v1/hooks/{arguments['hook_id']}", format_result=emit)
 
 
 # Shared between rossum_create_hook and rossum_patch_hook: the secrets_schema
@@ -3807,11 +3865,45 @@ _CODE_FILE_PATH_DOC = (
 )
 
 
-# --- JSON object fields to/from local files (schema content; hook settings later) ---
-# A 2xx does not prove the bytes landed. For JSON fields the API normalises on write —
-# it injects default keys and silently drops unknown ones — so equality is the wrong
-# check: the right one is "everything sent is present and equal in what landed", with
-# the API's additions reported separately. Canonical JSON is used only for hashing.
+_SETTINGS_FILE_PATH_DOC = (
+    "Path (absolute, or relative to the server's CWD) to a local JSON file holding the hook's "
+    "settings. Use INSTEAD of inline settings for anything but a small object: MDH matching and "
+    "Request Processor configurations run to thousands of lines, and reproducing them verbatim "
+    "into a tool call is expensive and unverifiable. The file is either the settings object "
+    "itself, or a whole hook object carrying a 'settings' key (what rossum_get_hook out_file_path "
+    "writes, or a prd2 hook.json) — recognised by the presence of other hook fields (id, type, "
+    "events, config, …); a file with ONLY a 'settings' key is refused as ambiguous. From a whole-"
+    "hook file only 'settings' is sent; every other key is reported back as ignored_keys, so the "
+    "file's code, queues or events never leak into this write. Supplying both this and settings "
+    "is an error. A file resolving to {} is refused because the API accepts {} and WIPES the "
+    "field — pass settings: {} inline if that is really the intent. Reading a prd2 tree's "
+    "hook.json is fine OUTSIDE a prd2 push flow; inside a prd2 project the change should go "
+    "through prd2 push."
+)
+
+
+# Shared between rossum_create_hook and rossum_patch_hook: _emit_hook_write_result gives
+# both the same response shape, keyed off whether code and/or settings were sent.
+_HOOK_WRITE_RESPONSE_DOC = (
+    "Response shape depends on what was sent: a write that carries code and/or settings "
+    "returns {\"hook\": {...}, \"code_integrity\"?: {...}, \"settings_integrity\"?: {...}} — "
+    "read 'id' from inside \"hook\", not top-level. settings is stripped from that nested hook "
+    "object only when the write carried settings, because only then does settings_integrity "
+    "prove what landed; a code-only write still echoes the hook's full stored settings. A write "
+    "that carried neither returns the bare hook object unwrapped, with 'id' top-level as usual."
+)
+
+
+# --- JSON object fields to/from local files (schema content and hook settings) ---
+# A 2xx does not prove the bytes landed, and the two fields fail differently, so
+# neither can be checked by plain equality. Schema content really does normalise on
+# write — the API injects default keys and silently drops unknown ones. Hook settings
+# does NOT: it is measured to be stored verbatim, and an invalid settings object is
+# rejected with an HTTP 400, not silently corrected — there the same machinery instead
+# licenses stripping a settings echo that can run to tens of thousands of tokens. Either
+# way the right check is the same: "everything sent is present and equal in what
+# landed", with the API's own additions (if any) reported separately. Canonical JSON is
+# used only for hashing.
 
 
 def _canonical_sha256(obj):
@@ -3829,8 +3921,10 @@ def _json_integrity(sent, landed, *, root="content"):
                containers (e.g. a list vs a dict at the same path), the entry carries
                each side's type and size instead of inlining the sub-trees — a caller
                most needs this branch to stay small exactly when the mismatch is big.
-    injected_defaults — keys present only in `landed`, counted by key name (normal: the
-               API adds defaults such as rir_field_names / default_value)
+    injected_defaults — keys present only in `landed`, counted by key name. Normal for
+               schema content (the API adds defaults such as rir_field_names /
+               default_value); NOT expected for hook settings, which the API stores
+               verbatim — there it is a signal, not noise (see _settings_integrity).
     verified — no dropped and no changed. Injected keys do NOT fail verification.
     """
     dropped, changed, injected = [], [], {}
@@ -3884,29 +3978,13 @@ class _FileInputError(ValueError):
     """A local-file input the caller must fix. The message is user-facing."""
 
 
-def _load_json_field(path, key):
-    """Read `key` from a local JSON file that is either a bare JSON array or a wrapper
-    object carrying that array under `key`.
+def _read_json_file_strict(path):
+    """Read and parse a local JSON file for a field loader.
 
-    Returns (value, ignored_keys, file_id). A bare JSON array is the value itself (file_id
-    is None). A JSON object yields obj[key] — which must be a JSON array — plus every other
-    top-level key in file order, so the caller can report what the file carried that will
-    NOT be sent (e.g. a prd2 schema.json's id/url/queues/name/metadata) — and the object's
-    own top-level 'id' (or None if it has none), so a caller can flag a file that was pulled
-    from a different object than the one being written. Reads with utf-8-sig, so a UTF-8 BOM
-    (common from Windows editors) is stripped transparently and is a no-op when absent. A key
-    repeated within one JSON object silently keeps only the LAST occurrence per the JSON
-    spec, which can hide a copy-paste slip inside a nested datapoint — that is rejected
-    instead of silently accepted. Raises _FileInputError with a user-facing message; never
-    touches the network.
-
-    List-only by design: `isinstance(data, bare_type)` is checked before the whole-object
-    branch, which is unambiguous only when the bare value is a list — a bare-object field
-    (e.g. future hook settings) would match a wrapper object on the FIRST branch and never
-    reach the key lookup, silently returning the whole wrapper with no warning. Don't
-    re-add a `bare_type=dict` flag to reuse this helper for such a field; give it its own
-    disambiguation rule (e.g. a required marker key, or a caller-supplied predicate)
-    instead.
+    utf-8-sig so a UTF-8 BOM (common from Windows editors) is stripped transparently; a
+    key repeated within one JSON object is rejected instead of silently keeping the last
+    occurrence per the JSON spec. Raises _FileInputError with a user-facing message;
+    never touches the network.
     """
     import os
 
@@ -3931,11 +4009,34 @@ def _load_json_field(path, key):
         return dict(pairs)
 
     try:
-        data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     except _FileInputError:
         raise
     except ValueError as exc:
         raise _FileInputError(f"{path} is not valid JSON: {exc}") from exc
+
+
+def _load_json_field(path, key):
+    """Read `key` from a local JSON file that is either a bare JSON array or a wrapper
+    object carrying that array under `key`.
+
+    Returns (value, ignored_keys, file_id). A bare JSON array is the value itself (file_id
+    is None). A JSON object yields obj[key] — which must be a JSON array — plus every other
+    top-level key in file order, so the caller can report what the file carried that will
+    NOT be sent (e.g. a prd2 schema.json's id/url/queues/name/metadata) — and the object's
+    own top-level 'id' (or None if it has none), so a caller can flag a file that was pulled
+    from a different object than the one being written. Raises _FileInputError with a
+    user-facing message; never touches the network.
+
+    List-only by design: `isinstance(data, bare_type)` is checked before the whole-object
+    branch, which is unambiguous only when the bare value is a list — a bare-object field
+    (e.g. future hook settings) would match a wrapper object on the FIRST branch and never
+    reach the key lookup, silently returning the whole wrapper with no warning. Don't
+    re-add a `bare_type=dict` flag to reuse this helper for such a field; give it its own
+    disambiguation rule (e.g. a required marker key, or a caller-supplied predicate)
+    instead.
+    """
+    data = _read_json_file_strict(path)
 
     if isinstance(data, list):
         return data, [], None
@@ -3954,6 +4055,67 @@ def _load_json_field(path, key):
         f"{path} must contain a JSON array or an object with a {key!r} key, "
         f"got {type(data).__name__}."
     )
+
+
+# Top-level keys a hook object carries and a settings object does not (measured across
+# 833 real non-empty settings objects: none contained any of them). Tuple, not set, so the
+# first four double as the examples quoted in the refusal message.
+_HOOK_OBJECT_KEYS = ("id", "type", "events", "config", "name", "url", "queues", "active",
+                     "description", "sideload", "settings_schema", "secrets_schema", "metadata")
+
+
+def _load_json_dict_field(path, key, *, wrapper_markers):
+    """Read `key` — a JSON OBJECT — from a local file that is either that object itself
+    or a wrapper object carrying it under `key`.
+
+    The dict-valued sibling of _load_json_field. Both shapes are JSON objects, so the
+    wrapper is recognised by structure, not type: a file is a wrapper iff it has `key` AND
+    at least one `wrapper_markers` key (for hooks: id / type / events / config / …). The
+    rule is symmetric and refuses to guess in either direction: a file WITH `key` and NO
+    marker is refused as ambiguous — it could be a wrapper stripped to one field or a bare
+    value that happens to contain `key` — and a file WITHOUT `key` but WITH two or more markers
+    is refused too, because that shape is a whole object of the wrapper's kind (a hook) that
+    simply has no `key`, not the bare value. (A settings object can legitimately carry one
+    incidental key that shares a hook field name, like 'metadata'.) Only a file with neither `key`
+    nor any marker, or with one marker but no `key`, is accepted as the bare value. Guessing
+    instead of refusing is the failure mode that got `bare_type=dict` removed from _load_json_field:
+    a wrong guess silently sends the wrong object.
+
+    Returns (value, ignored_keys, file_id) as _load_json_field does: `ignored_keys` are
+    the wrapper's other top-level keys in file order (so the caller can report what will
+    NOT be sent), `file_id` the wrapper's own 'id' or None. Raises _FileInputError; never
+    touches the network.
+    """
+    data = _read_json_file_strict(path)
+    if not isinstance(data, dict):
+        raise _FileInputError(
+            f"{path} must contain a JSON object — the {key} object itself, or a whole hook "
+            f"object with a {key!r} key — got {type(data).__name__}."
+        )
+    if key not in data:
+        found = [k for k in wrapper_markers if k in data]
+        if len(found) >= 2:
+            examples = ", ".join(found)
+            raise _FileInputError(
+                f"{path} looks like a whole hook object (it has {examples}) but has no "
+                f"{key!r} key, so it cannot be the {key} object either. If the hook has no "
+                f"{key}, pass {key} inline; otherwise point at a file that carries {key!r}."
+            )
+        return data, [], None
+    if not any(k in data for k in wrapper_markers):
+        examples = ", ".join(wrapper_markers[:4])
+        raise _FileInputError(
+            f"{path} has a top-level {key!r} key but none of the other hook fields "
+            f"({examples}, …), so it cannot be told apart from a {key} object that happens to "
+            f"contain a {key!r} key. If it is a whole hook, keep its other fields; if it is the "
+            f"{key} object itself, either pass it inline or wrap it as "
+            f'{{"type": "function", "{key}": {{...}}}} so the wrapper is unambiguous.'
+        )
+    if not isinstance(data[key], dict):
+        raise _FileInputError(
+            f"{path}: {key!r} must be a JSON object, got {type(data[key]).__name__}."
+        )
+    return data[key], [k for k in data if k != key], data.get("id")
 
 
 def _count_datapoints(nodes):
@@ -4177,6 +4339,64 @@ def _resolve_hook_code(request_id, arguments):
     return config, code, True
 
 
+def _resolve_hook_settings(request_id, arguments):
+    """Fold `settings_file_path` into a hook tool's `settings`.
+
+    Returns (settings, source, ignored_keys, file_id, ok) — the same 5-tuple as
+    _resolve_schema_content. `source` is "inline" / "file" / None (this call carries no
+    settings); `ignored_keys` are the top-level keys a whole-hook file carried that will
+    NOT be sent; `file_id` is that file's own 'id' (None otherwise) — only surfaced so a
+    caller can flag a file pulled from a different hook, never used as the hook_id;
+    ok=False means an error was already emitted. Every error fires before any HTTP call.
+
+    Measured behaviour this guards: `settings: {}` is accepted and WIPES the field, so a
+    file resolving to {} is refused (pass {} inline when that is the intent). `settings:
+    null` is a 400 upstream; it is intercepted here because it is otherwise indistinguishable
+    from settings being omitted, and the local message says what to do instead. The
+    mutual-exclusion check runs BEFORE the null-specific one: `settings: null` alongside a
+    `settings_file_path` is the caller supplying both, so it gets the both-given error, not
+    the null-specific message (which would otherwise misdirect and skip the file entirely).
+    """
+    has_settings_key = "settings" in arguments
+    settings_is_null = has_settings_key and arguments["settings"] is None
+    inline = arguments.get("settings")
+    path = arguments.get("settings_file_path")
+    if path is not None and (inline is not None or settings_is_null):
+        tool_result(
+            request_id,
+            "Provide either settings or settings_file_path, not both — they set the same field "
+            "and the intended source is ambiguous.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    if settings_is_null:
+        tool_result(
+            request_id,
+            "settings: null is not a valid settings object and was not sent. Pass settings: {} "
+            "inline if you mean to clear settings.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    if path is None:
+        return inline, ("inline" if inline is not None else None), [], None, True
+    try:
+        settings, ignored, file_id = _load_json_dict_field(
+            path, "settings", wrapper_markers=_HOOK_OBJECT_KEYS)
+    except _FileInputError as exc:
+        tool_result(request_id, str(exc), is_error=True)
+        return None, None, [], None, False
+    if not settings:
+        tool_result(
+            request_id,
+            f"{path} resolves to an empty settings object. The API accepts {{}} and WIPES the "
+            "hook's settings, so a file is refused. Pass settings: {} inline if that is really "
+            "the intent.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    return settings, "file", ignored, file_id, True
+
+
 def _code_digest(code):
     """sha256 + character count of hook source, so a caller can assert what it sent."""
     return {
@@ -4185,21 +4405,16 @@ def _code_digest(code):
     }
 
 
-def _emit_hook_write_result(request_id, result, sent_code, *, created=False):
-    """Emit a hook create/patch response, verifying the code that actually landed.
+def _code_integrity(result, sent_code, *, created):
+    """code_integrity block for a hook write that carried code; returns (block, is_error).
 
-    A 2xx does not prove the bytes landed, so when the write carried code the response's
-    config.code is compared with what was sent. The API strips surrounding whitespace from
-    hook code, so the comparison is on stripped text — a raw comparison would flag every
-    source file that ends in a newline and drown a genuine corruption in false alarms.
-
-    `created` marks the non-idempotent create path: a mismatch there is reported WITHOUT
-    is_error, because the hook exists and a caller that retries on error mints duplicates.
-    Writes that do not touch code keep the bare hook object as the response shape.
+    A 2xx does not prove the bytes landed, so the response's config.code is compared with
+    what was sent. The API strips surrounding whitespace from hook code, so the comparison
+    is on stripped text — a raw comparison would flag every source file that ends in a
+    newline and drown a genuine corruption in false alarms. A mismatch is is_error only on
+    patch: on create the hook exists and retry-on-error mints duplicates, so the note names
+    the id and says not to retry.
     """
-    if sent_code is None:
-        tool_result(request_id, json.dumps(result, indent=2))
-        return
     landed = (result.get("config") or {}).get("code")
     landed_text = landed if isinstance(landed, str) else None
     integrity = {
@@ -4218,10 +4433,7 @@ def _emit_hook_write_result(request_id, result, sent_code, *, created=False):
                 "Code landed intact. The stored copy differs only in surrounding whitespace, "
                 "which the API strips."
             )
-        tool_result(request_id, json.dumps(
-            {"hook": result, "code_integrity": integrity}, indent=2))
-        return
-
+        return integrity, False
     hook_id = result.get("id")
     if created:
         integrity["note"] = (
@@ -4229,21 +4441,116 @@ def _emit_hook_write_result(request_id, result, sent_code, *, created=False):
             f"second hook. But the code it came back with is not what was sent. Inspect it with "
             f"rossum_get_hook({hook_id}) and fix it with rossum_patch_hook before relying on it."
         )
-        # Not an error result: the object exists, and retry-on-error is the harmful response.
-        tool_result(request_id, json.dumps(
-            {"hook": result, "code_integrity": integrity}, indent=2))
-        return
-
+        return integrity, False
     integrity["note"] = (
         "The hook returned by the API does not carry the code that was sent (difference is not "
         "just surrounding whitespace). The write reported success but the bytes did not land "
         "intact — re-read the hook with rossum_get_hook before relying on it."
     )
-    tool_result(
-        request_id,
-        json.dumps({"hook": result, "code_integrity": integrity}, indent=2),
-        is_error=True,
-    )
+    return integrity, True
+
+
+def _settings_integrity(sent, landed, *, ignored_keys=(), file_id=None, hook_id=None,
+                        created=False):
+    """settings_integrity block: structural readback of the settings that landed.
+
+    Measured live on a throwaway hook: settings is stored as an opaque JSON object — it
+    round-trips deep-equal with no injected keys and no silent drops, is validated
+    server-side against the hook's settings_schema (a violation is a 400, never a silent
+    change), and comes back key-REORDERED on later reads (Postgres jsonb: length, then
+    bytes) — so the comparison is structural and the hashes canonical. Its job is
+    therefore not to catch silent corruption, which the API does not do here, but to
+    license stripping a settings echo that can run to tens of thousands of tokens from
+    the response, and to stay honest if the API ever starts normalising.
+
+    Never is_error: the write landed and a retry would land identically. `file_id` (a
+    whole-hook file's own id) is flagged only on patch, when it differs from the hook
+    being written — on create, building a hook from another hook's file is a clone.
+    """
+    if isinstance(landed, dict):
+        integrity = _json_integrity(sent, landed, root="settings")
+        integrity["landed_keys"] = len(landed)
+    else:
+        integrity = {
+            "verified": False,
+            "sent_sha256": _canonical_sha256(sent),
+            "landed_sha256": None,
+            "landed_keys": None,
+        }
+    integrity["sent_keys"] = len(sent) if isinstance(sent, dict) else None
+    if ignored_keys:
+        integrity["ignored_keys"] = list(ignored_keys)
+    notes = []
+    if integrity["verified"] and integrity.get("injected_defaults"):
+        notes.append(
+            "Settings landed, but the API returned key(s) that were not sent (see "
+            "'injected_defaults') — that is NOT expected for hook settings, which are "
+            "normally stored verbatim. Re-read the hook with rossum_get_hook before relying "
+            "on this being exactly what you sent."
+        )
+    elif integrity["verified"]:
+        notes.append("Settings landed intact.")
+    elif integrity["landed_sha256"] is None:
+        notes.append(
+            "The response carried no settings object at all, so what landed could not be "
+            "checked — re-read the hook with rossum_get_hook before relying on it."
+        )
+    elif created:
+        notes.append(
+            f"The hook WAS created (id {hook_id}) — do NOT retry this call, that would create a "
+            "second hook. But the settings it came back with are not what was sent: check "
+            "'dropped' and 'changed', inspect with rossum_get_hook and fix with rossum_patch_hook."
+        )
+    else:
+        notes.append(
+            "The hook WAS updated, but the settings that landed are not what was sent — do NOT "
+            "retry, the same object would land the same way. Check 'dropped' and 'changed', fix "
+            "the settings, and patch again."
+        )
+    if not created and isinstance(file_id, int) and file_id != hook_id:
+        integrity["file_id"] = file_id
+        notes.append(
+            f"The settings file's own id ({file_id}) differs from the hook being patched "
+            f"({hook_id}) — this looks like a file pulled from a different hook, so the settings "
+            "sent may not be the object you meant to send."
+        )
+    integrity["note"] = " ".join(notes)
+    return integrity
+
+
+def _emit_hook_write_result(request_id, result, sent_code, *, created=False,
+                            sent_settings=None, settings_ignored_keys=(),
+                            settings_file_id=None, hook_id=None):
+    """Emit a hook create/patch response, verifying what actually landed.
+
+    Two independent readbacks — measured: a settings write never disturbs config.code and
+    vice versa, so the blocks never disagree about the same bytes:
+      code_integrity      when the write carried code (see _code_integrity);
+      settings_integrity  when the write carried settings (see _settings_integrity) — the
+                          echoed hook then has `settings` STRIPPED, because returning it
+                          would defeat settings_file_path and the readback proves what landed.
+    A write that carried neither returns the bare hook object, unchanged from before. A
+    write that did not carry settings keeps them in the echo: stripping is licensed by
+    the readback, and there is none.
+
+    `created` marks the non-idempotent create path: a mismatch there is never is_error,
+    because the hook exists and a caller that retries on error mints duplicates. Only a
+    code mismatch on patch is is_error (unchanged behaviour).
+    """
+    if sent_code is None and sent_settings is None:
+        tool_result(request_id, json.dumps(result, indent=2))
+        return
+    out = {"hook": result}
+    is_error = False
+    if sent_code is not None:
+        out["code_integrity"], is_error = _code_integrity(result, sent_code, created=created)
+    if sent_settings is not None:
+        out["hook"] = {k: v for k, v in result.items() if k != "settings"}
+        out["settings_integrity"] = _settings_integrity(
+            sent_settings, result.get("settings"),
+            ignored_keys=settings_ignored_keys, file_id=settings_file_id,
+            hook_id=result.get("id") if created else hook_id, created=created)
+    tool_result(request_id, json.dumps(out, indent=2), is_error=is_error)
 
 
 def _reject_secret_values(request_id, arguments):
@@ -4269,8 +4576,8 @@ def _reject_secret_values(request_id, arguments):
     "Creates a new hook (extension) in the Rossum organization. Hooks can be serverless functions "
     "(type='function') executed in Python 3.12 or webhooks (type='webhook') that POST to an external URL. "
     "Always set description, and when the hook reads payload['secrets'] also set secrets_schema so the "
-    "expected secret key names are declared up front. " + _NO_SECRET_VALUES_DOC +
-    " This is a write operation.",
+    "expected secret key names are declared up front. " + _HOOK_WRITE_RESPONSE_DOC + " " +
+    _NO_SECRET_VALUES_DOC + " This is a write operation.",
     {
         "type": "object",
         "required": ["name", "type", "events"],
@@ -4345,7 +4652,13 @@ def _reject_secret_values(request_id, arguments):
                     "Hook settings, available to the hook code as payload['settings'] — non-sensitive "
                     "configuration such as endpoints, queue filters, or mappings. Never put credentials "
                     "here; declare them in secrets_schema instead."
+                    " Mutually exclusive with settings_file_path — prefer the file for anything larger "
+                    "than a few lines."
                 ),
+            },
+            "settings_file_path": {
+                "type": "string",
+                "description": _SETTINGS_FILE_PATH_DOC,
             },
             "secrets_schema": {
                 "type": "object",
@@ -4359,11 +4672,15 @@ def _reject_secret_values(request_id, arguments):
 def handle_create_hook(request_id, arguments):
     if _reject_secret_values(request_id, arguments):
         return
+    base_url, _ = _ensure_connection(request_id)
+    if not base_url:
+        return
     config, code, ok = _resolve_hook_code(request_id, arguments)
     if not ok:
         return
-    base_url, _ = _ensure_connection(request_id)
-    if not base_url:
+    settings, _settings_source, settings_ignored, settings_file_id, ok = _resolve_hook_settings(
+        request_id, arguments)
+    if not ok:
         return
     if config is None:
         tool_result(request_id, "config is required (or supply code_file_path).", is_error=True)
@@ -4384,12 +4701,16 @@ def handle_create_hook(request_id, arguments):
         body["run_after"] = _resource_urls(base_url, "hooks", arguments["run_after"])
     if "token_owner" in arguments:
         body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
-    for key in ("sideload", "description", "settings", "secrets_schema"):
+    for key in ("sideload", "description", "secrets_schema"):
         if key in arguments:
             body[key] = arguments[key]
+    if settings is not None:
+        body["settings"] = settings
     _rossum_post(request_id, "/api/v1/hooks", body,
                  format_result=lambda r: _emit_hook_write_result(
-                     request_id, r, code, created=True))
+                     request_id, r, code, created=True, sent_settings=settings,
+                     settings_ignored_keys=settings_ignored,
+                     settings_file_id=settings_file_id))
 
 
 @_tool(
@@ -4532,7 +4853,18 @@ def handle_delete_hook(request_id, arguments):
     "unspecified fields are left untouched. Object fields differ in PATCH semantics: config is "
     "merged per-key, while settings and secrets_schema each replace the whole object. Use this to "
     "update hook code, toggle active state, change events, or reassign queues without recreating "
-    "the hook. " + _NO_SECRET_VALUES_DOC + " This is a write operation.",
+    "the hook. For settings of any size pass settings_file_path (the settings object, a "
+    "rossum_get_hook out_file_path dump, or a prd2 hook.json) instead of inlining. Every settings "
+    "write returns settings_integrity — a structural comparison of what LANDED vs what was sent, "
+    "with the settings stripped from the echoed hook: verified:true means the object you sent is "
+    "the object now stored (key order may differ — the API returns jsonb order); verified:false "
+    "with dropped/changed means the API altered it — inspect and fix, do NOT retry, the same object "
+    "lands the same way. settings does NOT silently normalise: a settings_schema violation is the "
+    "API's own HTTP 400, returned as-is. verified:true does NOT mean nobody else's work was lost — "
+    "settings replaces the stored object wholesale and the API exposes no ETag, so patching from a "
+    "stale copy silently discards edits made in between; re-read with rossum_get_hook before "
+    "patching a hook others may be editing. " + _HOOK_WRITE_RESPONSE_DOC + " " +
+    _NO_SECRET_VALUES_DOC + " This is a write operation.",
     {
         "type": "object",
         "required": ["hook_id"],
@@ -4592,7 +4924,13 @@ def handle_delete_hook(request_id, arguments):
                 "description": (
                     "Updated hook settings. Replaces the whole settings object — "
                     "read-modify-write via rossum_get_hook to change one key."
+                    " Mutually exclusive with settings_file_path — prefer the file for anything larger "
+                    "than a few lines."
                 ),
+            },
+            "settings_file_path": {
+                "type": "string",
+                "description": _SETTINGS_FILE_PATH_DOC,
             },
             "description": {
                 "type": "string",
@@ -4613,18 +4951,23 @@ def handle_delete_hook(request_id, arguments):
 def handle_patch_hook(request_id, arguments):
     if _reject_secret_values(request_id, arguments):
         return
-    config, code, ok = _resolve_hook_code(request_id, arguments)
-    if not ok:
-        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
+    config, code, ok = _resolve_hook_code(request_id, arguments)
+    if not ok:
+        return
+    settings, _settings_source, settings_ignored, settings_file_id, ok = _resolve_hook_settings(
+        request_id, arguments)
+    if not ok:
+        return
     hook_id = arguments["hook_id"]
     body = {}
-    for key in ("name", "events", "active", "sideload", "settings",
-                "description", "secrets_schema"):
+    for key in ("name", "events", "active", "sideload", "description", "secrets_schema"):
         if key in arguments:
             body[key] = arguments[key]
+    if settings is not None:
+        body["settings"] = settings
     if config is not None:
         body["config"] = config
     if "queue_ids" in arguments:
@@ -4634,7 +4977,10 @@ def handle_patch_hook(request_id, arguments):
     if "token_owner" in arguments:
         body["token_owner"] = _resource_url(base_url, "users", arguments['token_owner'])
     _rossum_patch(request_id, f"/api/v1/hooks/{hook_id}", body,
-                  format_result=lambda r: _emit_hook_write_result(request_id, r, code))
+                  format_result=lambda r: _emit_hook_write_result(
+                      request_id, r, code, sent_settings=settings,
+                      settings_ignored_keys=settings_ignored,
+                      settings_file_id=settings_file_id, hook_id=hook_id))
 
 
 # --- Custom Format Templating export-template helpers ---
@@ -5091,11 +5437,11 @@ def handle_generate_hook_payload(request_id, arguments):
     annotations=_WRITE,
 )
 def handle_test_hook(request_id, arguments):
-    config, code, ok = _resolve_hook_code(request_id, arguments)
-    if not ok:
-        return
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    config, code, ok = _resolve_hook_code(request_id, arguments)
+    if not ok:
         return
     hook_id = arguments["hook_id"]
     gen_body = _build_generate_payload_body(request_id, base_url, hook_id, arguments)
