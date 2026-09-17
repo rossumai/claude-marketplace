@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest  # noqa: E402  (must follow the sys.path insert)
 
+import credentials  # noqa: E402
 import recon  # noqa: E402
 
 
@@ -28,6 +29,10 @@ def _never_read_the_operators_own_credentials_file(monkeypatch, tmp_path):
     written yet. Tests that exercise the default-path pickup on purpose
     monkeypatch this same name themselves, which still wins.
     """
-    monkeypatch.setattr(
-        recon, "DEFAULT_CREDENTIALS_PATH", tmp_path / "absent" / "credentials.json",
-    )
+    absent = tmp_path / "absent" / "credentials.json"
+    # Both names, not just the one read today: `recon` imports the constant
+    # by value, so patching only `credentials` would miss it -- and patching
+    # only `recon` would miss a future reader that imports it from
+    # `credentials` instead. The guard should not depend on which.
+    monkeypatch.setattr(recon, "DEFAULT_CREDENTIALS_PATH", absent)
+    monkeypatch.setattr(credentials, "DEFAULT_CREDENTIALS_PATH", absent)

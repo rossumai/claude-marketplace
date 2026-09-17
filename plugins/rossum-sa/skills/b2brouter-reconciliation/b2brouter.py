@@ -390,6 +390,14 @@ class B2brouterClient:
         `offset` advances by rows returned while the result is a set, so
         overlapping pages -- a group edited mid-listing -- can reach the
         declared total having actually collected fewer accounts.
+
+        That last check also fires on a group that legitimately SHRINKS
+        between two pages, or that lists one account twice: from outside,
+        neither is distinguishable from a truncated listing. The raise is
+        transient and contained -- build_client_resolver skips just that key
+        with a warning, the account reads as uncovered for that run, and a
+        re-run clears it -- which is the trade this method exists to make
+        (an unverified account beats a silently truncated one).
         """
         ids: set[str] = set()
         offset = 0
@@ -425,7 +433,18 @@ class B2brouterClient:
                 break
 
             before = len(ids)
-            ids.update(str(a["id"]) for a in accounts)
+            # Every other malformed-response case here raises B2bError, which
+            # build_client_resolver catches per key ("skipping this key") and
+            # _report_abort renders in plain language. A bare KeyError from an
+            # id-less row escapes both and surfaces as a traceback.
+            try:
+                ids.update(str(a["id"]) for a in accounts)
+            except (KeyError, TypeError) as exc:
+                raise B2bError(
+                    f"Account listing row at offset {offset} has no usable 'id' "
+                    f"({exc!r}). Refusing to report a partial account list as "
+                    "this key's full visibility."
+                ) from exc
             # A server that ignores `offset` replays page one forever: the walk
             # advances but the set does not. Abort instead of spinning until
             # MAX_ACCOUNT_PAGES, and say which page it happened on.

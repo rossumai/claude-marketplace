@@ -192,16 +192,20 @@ def test_account_listing_pages_past_a_full_first_page():
     assert client.visible_account_ids() == {"0", "1", "2", "3", "4"}
 
 
-def test_a_clamped_account_page_size_does_not_end_the_listing_early():
-    """The declared total, not page fullness, ends the loop -- a server that
-    clamps the page size below the one requested must still be paged out."""
+def test_a_short_page_does_not_end_the_account_listing_while_the_total_is_outstanding():
+    """A page below capacity is just a small page until the declared total is
+    reached. This is the only protection left when a server hands back short
+    pages WITHOUT echoing a limit that would mark them full -- stopping on the
+    first one would report 2 of 5 accounts as a key's whole visibility."""
+    pages = {0: [0, 1], 2: [2, 3, 4]}
+
     def transport(path):
         offset = int(path.split("offset=")[1].split("&")[0])
-        return {"accounts": [_account(n) for n in range(offset, min(offset + 1, 3))],
-                "total_count": 3, "offset": offset, "limit": 1}
+        return {"accounts": [_account(n) for n in pages.get(offset, [])],
+                "total_count": 5, "offset": offset}
 
     client = B2brouterClient("k", BASE, transport=transport, page_size=500)
-    assert client.visible_account_ids() == {"0", "1", "2"}
+    assert client.visible_account_ids() == {"0", "1", "2", "3", "4"}
 
 
 def test_an_account_listing_without_a_declared_total_ends_on_a_short_page():
@@ -283,3 +287,17 @@ def test_a_clamped_page_size_pages_on_even_with_no_declared_total():
 
     client = B2brouterClient("k", BASE, transport=transport, page_size=500)
     assert len(client.visible_account_ids()) == 250
+
+
+def test_an_account_row_without_an_id_raises_the_modules_own_error():
+    """Every other malformed-response case in this listing raises B2bError,
+    which build_client_resolver catches per key and reports as "skipping this
+    key". A bare KeyError escapes both that handler and the top-level
+    plain-language abort, so one odd row turns into a traceback."""
+    def transport(path):
+        return {"accounts": [{"id": 1}, {"name": "no id here"}],
+                "total_count": 2, "offset": 0, "limit": 500}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=500)
+    with pytest.raises(B2bError):
+        client.visible_account_ids()
