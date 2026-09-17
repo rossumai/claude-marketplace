@@ -90,8 +90,9 @@ Once a file exists at the default path, every run picks it up automatically
 — `--credentials` is only needed to point at a different path. `base_url`
 and `ui_host` in the file are used as defaults; the matching CLI flags
 still override them, and `--ui-host` stops being required once the file
-supplies `rossum.ui_host`. See "Credentials resolution order" below for the
-exact precedence, and the `keys` shape a moment below.
+supplies either `rossum.ui_host` or `rossum.base_url` (see "Where the links
+point" below). See "Credentials resolution order" below for the exact
+precedence, and the `keys` shape a moment below.
 
 **The alternative, for CI or anywhere a file isn't practical:** environment
 variables, exactly as before this flag existed —
@@ -168,6 +169,40 @@ Purchase invoices — staging: 0/1 accounts covered
     uncovered: 900301
 ```
 
+Two things this probe deliberately does *not* do. It does not cap the
+account listing at one page: a key's visibility is paged out in full, because
+account groups of several hundred are normal and an earlier single-call probe
+rejected a perfectly scoped key the moment its group exceeded one page —
+which failed the gate hardest on exactly the large deployments reconciliation
+matters most for. The walk ends on a short or empty page, never on the
+server's declared `total_count` while a full page is still coming back (a
+count declared alongside a full page is measured behaviour on this API), and
+it refuses rather than returns if it collected fewer accounts than were
+declared. And it does not mix channels that share a B2Brouter host: coverage
+is counted and listed per channel, over that channel's own accounts only, so
+a sibling channel's uncovered account is never subtracted from this one's
+total.
+
+### Where the links point
+
+Every `annotation_link` in the report is `https://<ui-host>/document/<id>`,
+built from `--ui-host` (or `rossum.ui_host`) alone — the API never announces
+which domain a team opens Rossum in. A wrong value is the one error this
+tool cannot catch downstream: the report renders perfectly and every link
+lands on a cell that does not hold the annotation, which typically surfaces
+weeks later when someone clicks one.
+
+So the UI host follows the API base URL unless you say otherwise. Both
+deployment shapes serve the UI and `/api/v1` on the same host —
+`elis.rossum.ai` for the shared cell, `<org>.rossum.app` for an organization
+on its own — so naming the cell once, with `--base-url` or `rossum.base_url`,
+settles both, and the run says on stderr which host it derived. `--ui-host`
+still wins when given, and when it names a different host than the API the
+run prints a warning naming both; that is a warning, not a refusal, since an
+older domain often keeps resolving after a migration. What is *not* allowed
+is guessing: with neither flag given, the tool exits 2 rather than quietly
+building links for the shared cell.
+
 Once coverage looks right, run a full report. With no `--from`/`--to`, the
 window defaults to the last 30 days:
 
@@ -197,7 +232,7 @@ hook's name. `--only-exceptions` drops every row whose note is `ok` or
 
 | flag | meaning | default |
 |---|---|---|
-| `--ui-host` | host used to build clickable annotation links, e.g. `example-org.rossum.app` (required unless a credentials file supplies `rossum.ui_host`) | — |
+| `--ui-host` | host used to build clickable annotation links, e.g. `example-org.rossum.app` (required only when neither `--base-url` nor a credentials file names the host — see [Where the links point](#where-the-links-point)) | the host of an explicitly given `--base-url` / `rossum.base_url` |
 | `--base-url` | Rossum API base URL | `https://elis.rossum.ai`, or a credentials file's `rossum.base_url` |
 | `--init-credentials [PATH]` | write a credentials template to PATH and exit (refuses to overwrite an existing file; never prints file contents) | `~/.config/rossum-b2brouter-recon/credentials.json` |
 | `--credentials PATH` | read credentials from this file instead of the environment — see "Credentials resolution order" above | — |

@@ -37,6 +37,13 @@ keys, on two different account groups:
 Shared by both, regardless of version:
   - `GET /accounts?limit=500` -> a FLAT envelope on BOTH generations (the
     new generation's invoice listing is the odd one out, not `/accounts`).
+    It pages on `limit`/`offset` like the invoice listing, and carries a
+    `total_count`: a production group of 708 accounts reported
+    `total_count: 708` and enumerated all 708 when paged, while the single
+    capped call this client used to make returned exactly 500 (reported from
+    the field, issue #144 -- not measured in the session above, unlike
+    everything else in this block). `visible_account_ids` deliberately does
+    NOT trust that count as an end-of-data signal; see the reasoning there.
   - Listing received invoices requires `type=ReceivedInvoice&ack=true&limit=
     N&offset=M` -- identical query parameters on both hosts/paths. `ack` is
     REQUIRED, not optional: omitting it entirely (or sending `ack=false`)
@@ -343,39 +350,146 @@ class B2brouterClient:
                 raise B2bError(f"GET {url} failed: {exc!r}") from exc
         raise B2bError(f"GET {url} exhausted retries")
 
+    # A key whose account group is larger than one page must be PAGED, not
+    # refused. An earlier version made a single `/accounts?limit=500` call and
+    # treated a full page as evidence of truncation, which rejected a
+    # perfectly scoped key on any group over 500 accounts -- the coverage gate
+    # then became unpassable for exactly the large deployments reconciliation
+    # matters most for (one production group holds ~708).
+    MAX_ACCOUNT_PAGES = 200
+
     def visible_account_ids(self) -> set[str]:
-        """Accounts this key can see, used to map keys to accounts.
+        """Every account this key can see, paged out in full.
 
-        Raises B2bError if the account list may be truncated (returned accounts
-        equal the requested limit).
+        Raises B2bError if the listing cannot be enumerated completely --
+        under-enumerating a key's visibility is never silent here, because it
+        surfaces downstream as accounts reported UNCOVERED that the key can in
+        fact see, and an operator would go chase access that already exists.
+
+        Termination. Only two things end the walk, and `total_count` is
+        neither of them on its own:
+          1. an EMPTY page, always.
+          2. a SHORT page -- one holding fewer rows than the page capacity --
+             but only once the declared total (if any) has been reached.
+
+        `total_count` is therefore a reason to KEEP GOING, never a reason to
+        stop: a full page always continues the walk no matter what the server
+        declared. That asymmetry is deliberate and matches
+        `received_invoices` -- a server declaring `total_count: 0` while
+        serving a FULL page is measured behaviour on this API (see that
+        method), and ending there would report 500 of 708 accounts as a key's
+        full visibility, which is issue #144's own failure reached through a
+        different door.
+
+        Page capacity is the limit the SERVER echoed when it clamped below
+        the one requested (both generations clamp at 500, see the module
+        docstring), else the one requested -- otherwise a clamping server
+        makes every page look short and the walk ends on page one.
+
+        Finally, the walk must have SEEN as many accounts as were declared:
+        `offset` advances by rows returned while the result is a set, so
+        overlapping pages -- a group edited mid-listing -- can reach the
+        declared total having actually collected fewer accounts.
+
+        That last check also fires on a group that legitimately SHRINKS
+        between two pages, or that lists one account twice: from outside,
+        neither is distinguishable from a truncated listing. The raise is
+        transient and contained -- build_client_resolver skips just that key
+        with a warning, the account reads as uncovered for that run, and a
+        re-run clears it -- which is the trade this method exists to make
+        (an unverified account beats a silently truncated one).
         """
-        limit = 500
-        payload = self._transport(f"/accounts?limit={limit}")
-        # I3: require the key. `.get("accounts", [])` turned any 200 response
-        # of an unexpected shape -- a captive proxy page, an envelope change --
-        # into "this key sees no accounts", which reads as a coverage problem
-        # instead of the protocol failure it actually is.
-        if "accounts" not in payload:
-            raise B2bError(
-                "Account listing response has no 'accounts' key "
-                f"(keys present: {sorted(payload)}). Refusing to treat an "
-                "unrecognised response as an empty account list."
+        ids: set[str] = set()
+        offset = 0
+        total_declared: int | None = None
+        for _ in range(self.MAX_ACCOUNT_PAGES):
+            payload = self._transport(
+                f"/accounts?limit={self._page_size}&offset={offset}"
             )
-        accounts = payload["accounts"]
-        if not isinstance(accounts, list):
+            # I3: require the key. `.get("accounts", [])` turned any 200 response
+            # of an unexpected shape -- a captive proxy page, an envelope change --
+            # into "this key sees no accounts", which reads as a coverage problem
+            # instead of the protocol failure it actually is.
+            if "accounts" not in payload:
+                raise B2bError(
+                    "Account listing response has no 'accounts' key "
+                    f"(keys present: {sorted(payload)}). Refusing to treat an "
+                    "unrecognised response as an empty account list."
+                )
+            accounts = payload["accounts"]
+            if not isinstance(accounts, list):
+                raise B2bError(
+                    f"Account listing 'accounts' is {type(accounts).__name__}, not a list."
+                )
+            if total_declared is None and "total_count" in payload:
+                total_declared = payload["total_count"]
+                if not isinstance(total_declared, int) or isinstance(total_declared, bool):
+                    raise B2bError(
+                        "Invalid total_count in account listing: expected int, got "
+                        f"{type(total_declared).__name__} ({total_declared!r})"
+                    )
+
+            if not accounts:
+                break
+
+            before = len(ids)
+            # Every other malformed-response case here raises B2bError, which
+            # build_client_resolver catches per key ("skipping this key") and
+            # _report_abort renders in plain language. A bare KeyError from an
+            # id-less row escapes both and surfaces as a traceback.
+            try:
+                ids.update(str(a["id"]) for a in accounts)
+            except (KeyError, TypeError) as exc:
+                raise B2bError(
+                    f"Account listing row at offset {offset} has no usable 'id' "
+                    f"({exc!r}). Refusing to report a partial account list as "
+                    "this key's full visibility."
+                ) from exc
+            # A server that ignores `offset` replays page one forever: the walk
+            # advances but the set does not. Abort instead of spinning until
+            # MAX_ACCOUNT_PAGES, and say which page it happened on.
+            if len(ids) == before:
+                raise B2bError(
+                    f"Account listing returned no new accounts at offset {offset} "
+                    f"({len(accounts)} rows, all already seen) -- the server appears "
+                    "to ignore `offset`. Refusing to page indefinitely."
+                )
+
+            offset += len(accounts)
+
+            # A full page NEVER ends the walk, whatever the server declared.
+            # Fullness is judged against the echoed limit when the server
+            # clamped below what was asked for -- an unreadable or absent
+            # echo just leaves the requested size in force, which is the
+            # conservative direction here (it keeps paging).
+            capacity = self._page_size
+            echoed_limit = payload.get("limit")
+            if (
+                isinstance(echoed_limit, int)
+                and not isinstance(echoed_limit, bool)
+                and 0 < echoed_limit < capacity
+            ):
+                capacity = echoed_limit
+            if len(accounts) >= capacity:
+                continue
+            # A short page ends the walk only once the declared total is
+            # reached; until then it is just a small page.
+            if total_declared is None or offset >= total_declared:
+                break
+        else:
             raise B2bError(
-                f"Account listing 'accounts' is {type(accounts).__name__}, not a list."
+                f"Account listing exceeded {self.MAX_ACCOUNT_PAGES} pages "
+                f"({offset} accounts walked). Refusing to page indefinitely."
             )
 
-        # Detect truncation: if we got exactly as many accounts as we requested,
-        # the list may be incomplete.
-        if len(accounts) >= limit:
+        if total_declared is not None and len(ids) < total_declared:
             raise B2bError(
-                f"Account listing may be truncated: received {len(accounts)} accounts "
-                f"at limit {limit}. This key may have visibility to more accounts."
+                f"Account listing yielded {len(ids)} account(s) but the server "
+                f"declared {total_declared} ({offset} rows walked). Refusing to "
+                "report a partial account list as this key's full visibility."
             )
 
-        return {str(a["id"]) for a in accounts}
+        return ids
 
     def get_invoice(self, einvoice_id: str) -> InvoiceRef | None:
         """Look up ONE received invoice by id and return which account owns

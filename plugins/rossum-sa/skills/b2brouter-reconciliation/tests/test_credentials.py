@@ -190,3 +190,94 @@ def test_main_uses_the_credentials_files_token_keys_and_ui_host(tmp_path, monkey
         rows = list(csv.DictReader(handle))
     assert rows[0]["note"] == "ok"
     assert "from-file.rossum.app" in rows[0]["annotation_link"]
+
+
+def test_the_template_ships_no_concrete_host_to_be_mistaken_for_the_ui_host(tmp_path):
+    """recon.py now reads the UI host off an explicitly supplied base URL, so
+    a template that pre-fills `base_url` with a real host would hand every
+    file-based run that host's links -- silently, for organizations on their
+    own cell. A filled-in-but-otherwise-default file must still carry no
+    opinion about either host."""
+    path = tmp_path / "credentials.json"
+    init_credentials(path)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["rossum"]["token"] = "real-token"
+    doc["b2brouter"]["keys"] = {"GROUP-1": "real-key"}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    creds = load_credentials_file(path)
+
+    assert creds.base_url is None
+    assert creds.ui_host is None
+
+
+def test_a_credentials_file_at_the_default_path_is_picked_up_without_the_flag(
+    tmp_path, monkeypatch,
+):
+    """The branch the autouse isolation fixture exists to neutralise, tested
+    on purpose: with no `--credentials` flag, a file sitting at the default
+    path supplies the token, keys and host for the whole run. Its own
+    monkeypatch of the same name wins over the fixture, so this stays a
+    tmp_path file and never the operator's real one."""
+    from datetime import datetime, timezone  # noqa: F401  (parity with the sibling test)
+    from match import RossumAnn
+
+    creds_path = tmp_path / "default-credentials.json"
+    creds_path.write_text(json.dumps({
+        "rossum": {"token": "default-path-token", "base_url": "https://from-default.rossum.app"},
+        "b2brouter": {"keys": {"GROUP-1": "default-path-key"}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(recon, "DEFAULT_CREDENTIALS_PATH", creds_path)
+    monkeypatch.delenv("ROSSUM_TOKEN", raising=False)
+    monkeypatch.delenv("B2B_API_KEY", raising=False)
+
+    class _FakeRossumClient:
+        def __init__(self, token, base_url):
+            assert token == "default-path-token"
+            assert base_url == "https://from-default.rossum.app"
+
+        def list_hooks(self):
+            return _HOOKS
+
+        def einvoice_index(self, queue_ids, since):
+            return {"1": [RossumAnn(1, "exported", "einvoice1.pdf", True,
+                                     "2026-01-19T10:00:00Z")]}
+
+        def lookup_einvoice(self, einvoice_id):
+            return []
+
+        def has_surviving_original(self, invoice_number):
+            return False
+
+    class _FakeB2bClient:
+        def __init__(self, api_key, base_url, api_version=None):
+            assert api_key == "default-path-key"
+            self.skipped_rows = {}
+
+        def visible_account_ids(self):
+            return {"800001"}
+
+        def received_invoices(self, account_id, *, since, until):
+            from match import B2bInvoice
+            return [B2bInvoice(
+                einvoice_id="1", account_id="800001", number="N1",
+                sender="Example Supplier", total="10.0", currency="EUR",
+                state="new", created_at="2026-01-19T10:00:00Z",
+                ack_at="2026-01-19T10:05:00Z",
+            )]
+
+        def get_invoice(self, einvoice_id):
+            return None
+
+    monkeypatch.setattr(recon, "RossumClient", _FakeRossumClient)
+    monkeypatch.setattr(recon, "B2brouterClient", _FakeB2bClient)
+
+    out_path = tmp_path / "out.csv"
+    rc = recon.main(["--out", str(out_path)])
+
+    assert rc == 0
+    with out_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    # The links follow the file's base_url, so nothing but the file could have
+    # supplied them -- no flag, no environment variable was set.
+    assert rows[0]["annotation_link"] == "https://from-default.rossum.app/document/1"
