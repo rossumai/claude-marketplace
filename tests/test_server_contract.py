@@ -2851,6 +2851,25 @@ def test_settings_file_path_errors_before_any_call(monkeypatch, tmp_path, tool, 
     check({"settings_file_path": _settings_file(tmp_path, {})}, "WIPES")
     check({"settings_file_path": _settings_file(tmp_path, {"settings": {"a": 1}})}, "cannot be told apart")
     check({"settings_file_path": _settings_file(tmp_path, [1, 2])}, "must contain a JSON object")
+    # settings: null alongside a settings_file_path is "both given", not the null-specific
+    # case — the mutual-exclusion guard must run first or the file is silently never read.
+    check({"settings": None, "settings_file_path": _settings_file(tmp_path, SETTINGS)}, "not both")
+
+
+def test_settings_null_only_message_is_honest_for_create_too(monkeypatch):
+    """The null-specific message used to say 'omitting settings leaves the hook's settings
+    unchanged' — true for patch, but _resolve_hook_settings also serves rossum_create_hook,
+    where there is nothing to leave unchanged. The message must not assert that either way."""
+    _, emitted = run_handler(
+        monkeypatch, "rossum_create_hook",
+        {"name": "H", "type": "webhook", "events": ["invocation.manual"],
+         "config": {"url": "https://example.com/wh"}, "settings": None},
+        lambda url, method, body: pytest.fail("HTTP call made"),
+    )
+    assert emitted[-1]["result"].get("isError") is True
+    text = emitted[-1]["result"]["content"][0]["text"]
+    assert "settings: null" in text
+    assert "unchanged" not in text
 
 
 def test_settings_file_path_is_declared_on_patch_and_create_only():
@@ -2972,6 +2991,11 @@ def test_settings_integrity_when_response_has_no_settings(monkeypatch, tmp_path)
     si = emitted_payload(emitted)["settings_integrity"]
     assert si["verified"] is False and si["landed_sha256"] is None and si["landed_keys"] is None
     assert "rossum_get_hook" in si["note"]
+    # This branch has nothing to structurally compare (no settings object came back at
+    # all) — the note must not point at 'dropped'/'changed' (those never ran) or assert
+    # the write landed; it must say only that what landed could not be checked.
+    assert "dropped" not in si["note"] and "'changed'" not in si["note"]
+    assert "WAS updated" not in si["note"] and "WAS created" not in si["note"]
 
 
 def test_settings_integrity_lists_ignored_keys_and_flags_foreign_file_id(monkeypatch, tmp_path):

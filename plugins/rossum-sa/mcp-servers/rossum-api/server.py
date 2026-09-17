@@ -4352,23 +4352,28 @@ def _resolve_hook_settings(request_id, arguments):
     Measured behaviour this guards: `settings: {}` is accepted and WIPES the field, so a
     file resolving to {} is refused (pass {} inline when that is the intent). `settings:
     null` is a 400 upstream; it is intercepted here because it is otherwise indistinguishable
-    from settings being omitted, and the local message says what to do instead.
+    from settings being omitted, and the local message says what to do instead. The
+    mutual-exclusion check runs BEFORE the null-specific one: `settings: null` alongside a
+    `settings_file_path` is the caller supplying both, so it gets the both-given error, not
+    the null-specific message (which would otherwise misdirect and skip the file entirely).
     """
-    if "settings" in arguments and arguments["settings"] is None:
-        tool_result(
-            request_id,
-            "settings: null is not a valid settings object and was not sent. Omitting settings "
-            "leaves the hook's settings unchanged; pass settings: {} inline if you mean to clear it.",
-            is_error=True,
-        )
-        return None, None, [], None, False
+    has_settings_key = "settings" in arguments
+    settings_is_null = has_settings_key and arguments["settings"] is None
     inline = arguments.get("settings")
     path = arguments.get("settings_file_path")
-    if inline is not None and path is not None:
+    if path is not None and (inline is not None or settings_is_null):
         tool_result(
             request_id,
             "Provide either settings or settings_file_path, not both — they set the same field "
             "and the intended source is ambiguous.",
+            is_error=True,
+        )
+        return None, None, [], None, False
+    if settings_is_null:
+        tool_result(
+            request_id,
+            "settings: null is not a valid settings object and was not sent. Pass settings: {} "
+            "inline if you mean to clear settings.",
             is_error=True,
         )
         return None, None, [], None, False
@@ -4485,6 +4490,11 @@ def _settings_integrity(sent, landed, *, ignored_keys=(), file_id=None, hook_id=
         )
     elif integrity["verified"]:
         notes.append("Settings landed intact.")
+    elif integrity["landed_sha256"] is None:
+        notes.append(
+            "The response carried no settings object at all, so what landed could not be "
+            "checked — re-read the hook with rossum_get_hook before relying on it."
+        )
     elif created:
         notes.append(
             f"The hook WAS created (id {hook_id}) — do NOT retry this call, that would create a "
@@ -4496,11 +4506,6 @@ def _settings_integrity(sent, landed, *, ignored_keys=(), file_id=None, hook_id=
             "The hook WAS updated, but the settings that landed are not what was sent — do NOT "
             "retry, the same object would land the same way. Check 'dropped' and 'changed', fix "
             "the settings, and patch again."
-        )
-    if integrity["landed_sha256"] is None:
-        notes.append(
-            "landed_sha256 is null because the response carried no settings object at all — "
-            "re-read the hook with rossum_get_hook before assuming anything about what is stored."
         )
     if not created and isinstance(file_id, int) and file_id != hook_id:
         integrity["file_id"] = file_id
