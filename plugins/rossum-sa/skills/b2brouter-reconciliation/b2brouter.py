@@ -37,6 +37,13 @@ keys, on two different account groups:
 Shared by both, regardless of version:
   - `GET /accounts?limit=500` -> a FLAT envelope on BOTH generations (the
     new generation's invoice listing is the odd one out, not `/accounts`).
+    It pages on `limit`/`offset` like the invoice listing, and carries a
+    `total_count`: a production group of 708 accounts reported
+    `total_count: 708` and enumerated all 708 when paged, while the single
+    capped call this client used to make returned exactly 500 (reported from
+    the field, issue #144 -- not measured in the session above, unlike
+    everything else in this block). `visible_account_ids` deliberately does
+    NOT trust that count as an end-of-data signal; see the reasoning there.
   - Listing received invoices requires `type=ReceivedInvoice&ack=true&limit=
     N&offset=M` -- identical query parameters on both hosts/paths. `ack` is
     REQUIRED, not optional: omitting it entirely (or sending `ack=false`)
@@ -359,16 +366,30 @@ class B2brouterClient:
         surfaces downstream as accounts reported UNCOVERED that the key can in
         fact see, and an operator would go chase access that already exists.
 
-        Termination, in order of authority:
-          1. the server-declared `total_count` -- page until it is reached.
-             Page fullness is NOT used while a total is outstanding, so a
-             server that clamps the page size below the one requested (both
-             generations clamp at 500, see the module docstring) still gets
-             paged to the end rather than ending on its own short page.
-          2. a short page, only when no `total_count` was ever declared.
-          3. an empty page, always -- but if a total was declared and not
-             reached, that is a contradiction and raises rather than
-             returning a partial set.
+        Termination. Only two things end the walk, and `total_count` is
+        neither of them on its own:
+          1. an EMPTY page, always.
+          2. a SHORT page -- one holding fewer rows than the page capacity --
+             but only once the declared total (if any) has been reached.
+
+        `total_count` is therefore a reason to KEEP GOING, never a reason to
+        stop: a full page always continues the walk no matter what the server
+        declared. That asymmetry is deliberate and matches
+        `received_invoices` -- a server declaring `total_count: 0` while
+        serving a FULL page is measured behaviour on this API (see that
+        method), and ending there would report 500 of 708 accounts as a key's
+        full visibility, which is issue #144's own failure reached through a
+        different door.
+
+        Page capacity is the limit the SERVER echoed when it clamped below
+        the one requested (both generations clamp at 500, see the module
+        docstring), else the one requested -- otherwise a clamping server
+        makes every page look short and the walk ends on page one.
+
+        Finally, the walk must have SEEN as many accounts as were declared:
+        `offset` advances by rows returned while the result is a set, so
+        overlapping pages -- a group edited mid-listing -- can reach the
+        declared total having actually collected fewer accounts.
         """
         ids: set[str] = set()
         offset = 0
@@ -401,12 +422,6 @@ class B2brouterClient:
                     )
 
             if not accounts:
-                if total_declared is not None and offset < total_declared:
-                    raise B2bError(
-                        f"Account listing ended at {offset} accounts but the server "
-                        f"declared {total_declared}. Refusing to report a partial "
-                        "account list as this key's full visibility."
-                    )
                 break
 
             before = len(ids)
@@ -422,18 +437,37 @@ class B2brouterClient:
                 )
 
             offset += len(accounts)
-            if total_declared is not None:
-                if offset >= total_declared:
-                    break
+
+            # A full page NEVER ends the walk, whatever the server declared.
+            # Fullness is judged against the echoed limit when the server
+            # clamped below what was asked for -- an unreadable or absent
+            # echo just leaves the requested size in force, which is the
+            # conservative direction here (it keeps paging).
+            capacity = self._page_size
+            echoed_limit = payload.get("limit")
+            if (
+                isinstance(echoed_limit, int)
+                and not isinstance(echoed_limit, bool)
+                and 0 < echoed_limit < capacity
+            ):
+                capacity = echoed_limit
+            if len(accounts) >= capacity:
                 continue
-            # No total to page against: a page shorter than the one requested
-            # is the only end-of-data signal left.
-            if len(accounts) < self._page_size:
+            # A short page ends the walk only once the declared total is
+            # reached; until then it is just a small page.
+            if total_declared is None or offset >= total_declared:
                 break
         else:
             raise B2bError(
                 f"Account listing exceeded {self.MAX_ACCOUNT_PAGES} pages "
                 f"({offset} accounts walked). Refusing to page indefinitely."
+            )
+
+        if total_declared is not None and len(ids) < total_declared:
+            raise B2bError(
+                f"Account listing yielded {len(ids)} account(s) but the server "
+                f"declared {total_declared} ({offset} rows walked). Refusing to "
+                "report a partial account list as this key's full visibility."
             )
 
         return ids

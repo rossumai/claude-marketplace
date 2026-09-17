@@ -170,14 +170,18 @@ Purchase invoices — staging: 0/1 accounts covered
 ```
 
 Two things this probe deliberately does *not* do. It does not cap the
-account listing at one page: a key's visibility is paged out in full against
-the server-declared `total_count`, because account groups of several hundred
-are normal and an earlier single-call probe rejected a perfectly scoped key
-the moment its group exceeded one page — which failed the gate hardest on
-exactly the large deployments reconciliation matters most for. And it does
-not mix channels that share a B2Brouter host: coverage is counted and listed
-per channel, over that channel's own accounts only, so a sibling channel's
-uncovered account is never subtracted from this one's total.
+account listing at one page: a key's visibility is paged out in full, because
+account groups of several hundred are normal and an earlier single-call probe
+rejected a perfectly scoped key the moment its group exceeded one page —
+which failed the gate hardest on exactly the large deployments reconciliation
+matters most for. The walk ends on a short or empty page, never on the
+server's declared `total_count` while a full page is still coming back (a
+count declared alongside a full page is measured behaviour on this API), and
+it refuses rather than returns if it collected fewer accounts than were
+declared. And it does not mix channels that share a B2Brouter host: coverage
+is counted and listed per channel, over that channel's own accounts only, so
+a sibling channel's uncovered account is never subtracted from this one's
+total.
 
 ### Where the links point
 

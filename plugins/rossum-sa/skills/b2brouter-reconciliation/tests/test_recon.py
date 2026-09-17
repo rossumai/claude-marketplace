@@ -388,9 +388,21 @@ def test_an_explicit_base_url_supplies_the_ui_host_for_links(tmp_path, monkeypat
 
 def test_neither_a_ui_host_nor_a_base_url_still_refuses_to_guess(monkeypatch):
     """With no base URL either, the default is a guess about which cell the
-    org lives on -- and a wrong link is silent. Keep refusing."""
+    org lives on -- and a wrong link is silent. Keep refusing, and refuse
+    BEFORE touching the network: exit 2 is also what an auth failure returns,
+    so a client that gets built here would make this test pass for the wrong
+    reason (see the credentials-isolation fixture in conftest.py)."""
     monkeypatch.setenv("ROSSUM_TOKEN", "test-token")
     monkeypatch.setenv("B2B_API_KEY", "test-key")
+
+    class _NeverBuilt:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "main() must refuse before constructing any API client"
+            )
+
+    monkeypatch.setattr(recon, "RossumClient", _NeverBuilt)
+    monkeypatch.setattr(recon, "B2brouterClient", _NeverBuilt)
 
     assert main(["--check-coverage"]) == 2
 
@@ -421,3 +433,33 @@ def test_a_ui_host_on_a_different_host_than_the_api_is_flagged(tmp_path, monkeyp
     with out_path.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["annotation_link"].startswith("https://elis.rossum.ai/document/")
+
+
+def test_a_ui_host_pasted_with_its_scheme_is_not_reported_as_a_mismatch(tmp_path, monkeypatch, capsys):
+    """`--ui-host https://acme.rossum.app` names the same host as
+    `--base-url https://acme.rossum.app`. Comparing the two raw turns a
+    harmless paste into a warning about cross-cell links -- the one message
+    guaranteed to send an operator looking in the wrong place -- and the
+    scheme lands in the link itself."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "test-token")
+    monkeypatch.setenv("B2B_API_KEY", "test-key")
+    rossum_cls = _fake_rossum_factory(
+        _HOOKS_ONE_CHANNEL,
+        index={"1": [RossumAnn(1, "exported", "einvoice1.pdf", True, "2026-01-19T10:00:00Z")]},
+    )
+    monkeypatch.setattr(recon, "RossumClient", rossum_cls)
+    monkeypatch.setattr(recon, "B2brouterClient", _fake_b2b_factory({"800001": [_inv("1", "800001")]}))
+
+    out_path = tmp_path / "out.csv"
+    rc = main([
+        "--base-url", "https://example-org.rossum.app",
+        "--ui-host", "https://example-org.rossum.app",
+        "--out", str(out_path),
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "WARNING" not in captured.err
+    with out_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["annotation_link"] == "https://example-org.rossum.app/document/1"

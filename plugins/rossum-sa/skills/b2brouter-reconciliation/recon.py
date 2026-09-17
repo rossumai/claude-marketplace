@@ -5,7 +5,11 @@ own importer hooks, so no per-customer configuration is needed.
 
     export ROSSUM_TOKEN=... B2B_API_KEY=...
     python3 ${CLAUDE_PLUGIN_ROOT}/skills/b2brouter-reconciliation/recon.py \
-        --ui-host <org>.rossum.app --from 2026-01-01
+        --base-url https://<org>.rossum.app --from 2026-01-01
+
+Name the organization's own host with --base-url: the clickable links in the
+report follow it, so --ui-host is only needed when the team opens Rossum
+somewhere else.
 
 B2Brouter API keys are scoped per ACCOUNT GROUP, so a real organization
 routinely supplies SEVERAL keys, one per group -- each in its own
@@ -204,11 +208,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="B2Brouter ↔ Rossum e-invoice reconciliation")
     parser.add_argument("--ui-host", default=None,
                         help="host used to build clickable links, e.g. acme.rossum.app. "
-                             "Required unless a credentials file supplies rossum.ui_host "
-                             "(see --credentials)")
+                             "Defaults to the host of --base-url (or a credentials file's "
+                             "rossum.base_url) -- only needed when the team opens Rossum on "
+                             "a different host than the API")
     parser.add_argument("--base-url", default=None,
-                        help=f"Rossum API base URL (default: {DEFAULT_BASE_URL}, or a "
-                             "credentials file's rossum.base_url)")
+                        help=f"Rossum API base URL, e.g. https://acme.rossum.app (default: "
+                             f"{DEFAULT_BASE_URL}, or a credentials file's rossum.base_url). "
+                             "Naming it here also settles --ui-host; falling back to the "
+                             "default settles nothing, so --ui-host is then required")
     parser.add_argument("--init-credentials", nargs="?", const=str(DEFAULT_CREDENTIALS_PATH),
                         default=None, metavar="PATH",
                         help="write a credentials template to PATH (default: "
@@ -1238,6 +1245,12 @@ def main(argv: list[str] | None = None) -> int:
     # ui_host_from_base_url. Asking them to repeat it as --ui-host is exactly
     # where the two drift apart, and a mismatch is silent: every link in the
     # report points at a cell that does not hold the annotation.
+    # Normalised the same way a base URL is, so a host pasted with its
+    # scheme (or a trailing path) builds a usable link and does not read as a
+    # different host than the API in the comparison below.
+    if ui_host:
+        ui_host = ui_host_from_base_url(ui_host)
+
     if not ui_host and base_url_is_explicit:
         ui_host = ui_host_from_base_url(base_url)
         print(

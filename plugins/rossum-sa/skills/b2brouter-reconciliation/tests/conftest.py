@@ -4,3 +4,30 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pytest  # noqa: E402  (must follow the sys.path insert)
+
+import recon  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _never_read_the_operators_own_credentials_file(monkeypatch, tmp_path):
+    """No test may ever pick up the real credentials file.
+
+    `main()` falls back to `DEFAULT_CREDENTIALS_PATH` whenever that file
+    exists, and a credentials file overrides the environment WHOLESALE --
+    so on the machine of anyone who has actually used this skill, a test
+    that only sets ROSSUM_TOKEN/B2B_API_KEY silently runs on their real
+    token and host instead. That is how a unit test ends up making a live
+    authenticated request with production credentials, and it fails in the
+    least visible way possible: the run still returns the exit code the
+    test asserted, just for the wrong reason.
+
+    Autouse, not per-test, because the hazard is the DEFAULT -- every test
+    that calls `main()` without `--credentials` has it, including ones not
+    written yet. Tests that exercise the default-path pickup on purpose
+    monkeypatch this same name themselves, which still wins.
+    """
+    monkeypatch.setattr(
+        recon, "DEFAULT_CREDENTIALS_PATH", tmp_path / "absent" / "credentials.json",
+    )

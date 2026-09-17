@@ -236,3 +236,50 @@ def test_an_account_listing_that_ignores_offset_raises_instead_of_looping():
     client = B2brouterClient("k", BASE, transport=transport, page_size=2)
     with pytest.raises(B2bError):
         client.visible_account_ids()
+
+
+def test_a_declared_total_of_zero_does_not_end_the_account_listing_on_a_full_page():
+    """The declared total is a REASON TO KEEP GOING, never a reason to stop
+    on a full page. `received_invoices` documents `total_count: 0` alongside
+    a full page as a measured behaviour of this API; trusting it here would
+    report 500 of 708 accounts as a key's full visibility, which is issue
+    #144's own failure (a covered account reported uncovered) through a
+    different door."""
+    def transport(path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        return {"accounts": [_account(n) for n in range(offset, min(offset + 2, 5))],
+                "total_count": 0, "offset": offset, "limit": 2}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=2)
+    assert client.visible_account_ids() == {"0", "1", "2", "3", "4"}
+
+
+def test_overlapping_account_pages_that_walk_past_the_declared_total_raise():
+    """`offset` advances by rows returned while the result is a SET, so pages
+    that re-serve a row -- what a group being edited mid-listing looks like --
+    let the walk reach the declared total having actually seen fewer
+    accounts. Stopping there under-reports visibility silently."""
+    pages = {0: [0, 1], 2: [1, 2], 4: [2, 3]}
+
+    def transport(path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        return {"accounts": [_account(n) for n in pages.get(offset, [])],
+                "total_count": 5, "offset": offset, "limit": 2}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=2)
+    with pytest.raises(B2bError):
+        client.visible_account_ids()
+
+
+def test_a_clamped_page_size_pages_on_even_with_no_declared_total():
+    """With no total to page against, fullness is judged against the limit
+    the SERVER echoed, not the one requested -- otherwise a server that
+    clamps the page size makes every page look short and the listing ends on
+    page one."""
+    def transport(path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        return {"accounts": [_account(n) for n in range(offset, min(offset + 100, 250))],
+                "offset": offset, "limit": 100}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=500)
+    assert len(client.visible_account_ids()) == 250
