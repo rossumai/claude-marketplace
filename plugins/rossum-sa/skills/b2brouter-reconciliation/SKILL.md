@@ -59,11 +59,15 @@ order); the tool never merges a file with the environment.
 
 ### 1. Establish the target
 
-Ask the operator for the Rossum API base URL (`--base-url`, defaults to
-`https://elis.rossum.ai`, or a credentials file's `rossum.base_url`) and the
-UI host used for links (`--ui-host`, required unless a credentials file
-supplies `rossum.ui_host` — Rossum's organization endpoint exposes no UI
-URL, so this can't be discovered). Ask for credentials via the file route
+Ask the operator which host the organization lives on — `https://elis.rossum.ai`
+for the shared cell, `https://<org>.rossum.app` for an organization on its
+own — and pass it as `--base-url` (or `rossum.base_url` in a credentials
+file). The clickable links in the report follow that host automatically, so
+`--ui-host` is only needed when the team opens Rossum somewhere else; the
+run warns if the two name different hosts, and refuses to run when neither
+is given rather than guess a cell. Getting this wrong is silent — the report
+looks perfect and every link opens the wrong cell — so confirm the host
+rather than assuming the shared one. Ask for credentials via the file route
 above; only fall back to asking for `ROSSUM_TOKEN` and
 `B2B_API_KEY`/`B2B_API_KEY_<LABEL>` as environment variables when a file
 genuinely isn't practical (e.g. CI) — never ask the operator to paste a

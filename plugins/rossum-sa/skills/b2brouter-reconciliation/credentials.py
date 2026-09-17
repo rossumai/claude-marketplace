@@ -44,14 +44,20 @@ TEMPLATE = {
     ),
     "rossum": {
         "_comment": (
-            "An API token for the Rossum organization you are reconciling. "
-            "ui_host is the domain your team opens Rossum in; it is only "
-            "used to build clickable links and cannot be discovered from "
-            "the API."
+            "An API token for the Rossum organization you are reconciling, "
+            "and the host that organization lives on -- https://elis.rossum.ai "
+            "for the shared cell, https://<org>.rossum.app for an "
+            "organization on its own. base_url is where the API is called; "
+            "ui_host is the domain your team opens Rossum in, used only to "
+            "build the clickable links in the report. Fill in base_url and "
+            "leave ui_host as-is unless your team opens Rossum somewhere "
+            "else: the links then follow base_url's host automatically, so "
+            "the two can never drift apart and point the report at a cell "
+            "that does not hold the annotations."
         ),
         "token": "--PASTE-ROSSUM-API-TOKEN-HERE--",
-        "base_url": "https://elis.rossum.ai",
-        "ui_host": "--PASTE-ROSSUM-UI-HOST-HERE--",
+        "base_url": "--PASTE-ROSSUM-BASE-URL-HERE--",
+        "ui_host": "--PASTE-ROSSUM-UI-HOST-HERE-ONLY-IF-IT-DIFFERS--",
     },
     "b2brouter": {
         "_comment": (

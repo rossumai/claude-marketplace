@@ -190,3 +190,22 @@ def test_main_uses_the_credentials_files_token_keys_and_ui_host(tmp_path, monkey
         rows = list(csv.DictReader(handle))
     assert rows[0]["note"] == "ok"
     assert "from-file.rossum.app" in rows[0]["annotation_link"]
+
+
+def test_the_template_ships_no_concrete_host_to_be_mistaken_for_the_ui_host(tmp_path):
+    """recon.py now reads the UI host off an explicitly supplied base URL, so
+    a template that pre-fills `base_url` with a real host would hand every
+    file-based run that host's links -- silently, for organizations on their
+    own cell. A filled-in-but-otherwise-default file must still carry no
+    opinion about either host."""
+    path = tmp_path / "credentials.json"
+    init_credentials(path)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["rossum"]["token"] = "real-token"
+    doc["b2brouter"]["keys"] = {"GROUP-1": "real-key"}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    creds = load_credentials_file(path)
+
+    assert creds.base_url is None
+    assert creds.ui_host is None

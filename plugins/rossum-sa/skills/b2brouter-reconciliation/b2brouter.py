@@ -343,39 +343,100 @@ class B2brouterClient:
                 raise B2bError(f"GET {url} failed: {exc!r}") from exc
         raise B2bError(f"GET {url} exhausted retries")
 
+    # A key whose account group is larger than one page must be PAGED, not
+    # refused. An earlier version made a single `/accounts?limit=500` call and
+    # treated a full page as evidence of truncation, which rejected a
+    # perfectly scoped key on any group over 500 accounts -- the coverage gate
+    # then became unpassable for exactly the large deployments reconciliation
+    # matters most for (one production group holds ~708).
+    MAX_ACCOUNT_PAGES = 200
+
     def visible_account_ids(self) -> set[str]:
-        """Accounts this key can see, used to map keys to accounts.
+        """Every account this key can see, paged out in full.
 
-        Raises B2bError if the account list may be truncated (returned accounts
-        equal the requested limit).
+        Raises B2bError if the listing cannot be enumerated completely --
+        under-enumerating a key's visibility is never silent here, because it
+        surfaces downstream as accounts reported UNCOVERED that the key can in
+        fact see, and an operator would go chase access that already exists.
+
+        Termination, in order of authority:
+          1. the server-declared `total_count` -- page until it is reached.
+             Page fullness is NOT used while a total is outstanding, so a
+             server that clamps the page size below the one requested (both
+             generations clamp at 500, see the module docstring) still gets
+             paged to the end rather than ending on its own short page.
+          2. a short page, only when no `total_count` was ever declared.
+          3. an empty page, always -- but if a total was declared and not
+             reached, that is a contradiction and raises rather than
+             returning a partial set.
         """
-        limit = 500
-        payload = self._transport(f"/accounts?limit={limit}")
-        # I3: require the key. `.get("accounts", [])` turned any 200 response
-        # of an unexpected shape -- a captive proxy page, an envelope change --
-        # into "this key sees no accounts", which reads as a coverage problem
-        # instead of the protocol failure it actually is.
-        if "accounts" not in payload:
-            raise B2bError(
-                "Account listing response has no 'accounts' key "
-                f"(keys present: {sorted(payload)}). Refusing to treat an "
-                "unrecognised response as an empty account list."
+        ids: set[str] = set()
+        offset = 0
+        total_declared: int | None = None
+        for _ in range(self.MAX_ACCOUNT_PAGES):
+            payload = self._transport(
+                f"/accounts?limit={self._page_size}&offset={offset}"
             )
-        accounts = payload["accounts"]
-        if not isinstance(accounts, list):
+            # I3: require the key. `.get("accounts", [])` turned any 200 response
+            # of an unexpected shape -- a captive proxy page, an envelope change --
+            # into "this key sees no accounts", which reads as a coverage problem
+            # instead of the protocol failure it actually is.
+            if "accounts" not in payload:
+                raise B2bError(
+                    "Account listing response has no 'accounts' key "
+                    f"(keys present: {sorted(payload)}). Refusing to treat an "
+                    "unrecognised response as an empty account list."
+                )
+            accounts = payload["accounts"]
+            if not isinstance(accounts, list):
+                raise B2bError(
+                    f"Account listing 'accounts' is {type(accounts).__name__}, not a list."
+                )
+            if total_declared is None and "total_count" in payload:
+                total_declared = payload["total_count"]
+                if not isinstance(total_declared, int) or isinstance(total_declared, bool):
+                    raise B2bError(
+                        "Invalid total_count in account listing: expected int, got "
+                        f"{type(total_declared).__name__} ({total_declared!r})"
+                    )
+
+            if not accounts:
+                if total_declared is not None and offset < total_declared:
+                    raise B2bError(
+                        f"Account listing ended at {offset} accounts but the server "
+                        f"declared {total_declared}. Refusing to report a partial "
+                        "account list as this key's full visibility."
+                    )
+                break
+
+            before = len(ids)
+            ids.update(str(a["id"]) for a in accounts)
+            # A server that ignores `offset` replays page one forever: the walk
+            # advances but the set does not. Abort instead of spinning until
+            # MAX_ACCOUNT_PAGES, and say which page it happened on.
+            if len(ids) == before:
+                raise B2bError(
+                    f"Account listing returned no new accounts at offset {offset} "
+                    f"({len(accounts)} rows, all already seen) -- the server appears "
+                    "to ignore `offset`. Refusing to page indefinitely."
+                )
+
+            offset += len(accounts)
+            if total_declared is not None:
+                if offset >= total_declared:
+                    break
+                continue
+            # No total to page against: a page shorter than the one requested
+            # is the only end-of-data signal left.
+            if len(accounts) < self._page_size:
+                break
+        else:
             raise B2bError(
-                f"Account listing 'accounts' is {type(accounts).__name__}, not a list."
+                f"Account listing exceeded {self.MAX_ACCOUNT_PAGES} pages "
+                f"({offset} accounts walked). Refusing to page indefinitely."
             )
 
-        # Detect truncation: if we got exactly as many accounts as we requested,
-        # the list may be incomplete.
-        if len(accounts) >= limit:
-            raise B2bError(
-                f"Account listing may be truncated: received {len(accounts)} accounts "
-                f"at limit {limit}. This key may have visibility to more accounts."
-            )
-
-        return {str(a["id"]) for a in accounts}
+        return ids
 
     def get_invoice(self, einvoice_id: str) -> InvoiceRef | None:
         """Look up ONE received invoice by id and return which account owns

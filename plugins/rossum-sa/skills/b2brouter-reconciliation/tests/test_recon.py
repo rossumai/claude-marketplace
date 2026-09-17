@@ -206,6 +206,33 @@ def test_check_coverage_returns_one_and_names_the_uncovered_ids(capsys):
     assert "900003" in captured.out
 
 
+def test_coverage_counts_only_a_channels_own_uncovered_accounts(capsys):
+    """Several channels routinely share one B2Brouter host, each owning a
+    subset of that host's accounts. Coverage is reported PER CHANNEL, so a
+    sibling channel's uncovered accounts must not be subtracted from this
+    channel's total -- doing that produced impossible counts like
+    `-20/11 accounts covered` and listed ids the channel does not own."""
+    host = "https://app.example-router.net"
+    channel_a = Channel(
+        hook_id=1, name="Region A", queue_ids=(1,), account_ids=("900001", "900002"),
+        b2b_base_url=host, active=True,
+    )
+    channel_b = Channel(
+        hook_id=2, name="Region B", queue_ids=(2,), account_ids=("900003",),
+        b2b_base_url=host, active=True,
+    )
+
+    rc = check_coverage([channel_a, channel_b], uncovered_by_host={host: ["900003"]})
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "Region A: 2/2 accounts covered" in captured.out
+    assert "Region B: 0/1 accounts covered" in captured.out
+    # Region A is fully covered, so it must not name a sibling's account.
+    region_a_line = [l for l in captured.out.splitlines() if l.startswith("Region A")]
+    assert all("900003" not in line for line in region_a_line)
+
+
 def test_main_check_coverage_exits_one_and_prints_the_uncovered_account(monkeypatch, capsys):
     monkeypatch.setenv("ROSSUM_TOKEN", "test-token")
     monkeypatch.setenv("B2B_API_KEY", "test-key")
@@ -317,3 +344,80 @@ def test_build_client_resolver_pinned_version_skips_detection():
     # Pinning goes straight to the working version -- the legacy default is
     # never tried, so there is nothing to detect or retry.
     assert calls == [NEW_API_VERSION]
+
+
+# --- UI host for annotation links -------------------------------------------
+#
+# The links in the report are built from `ui_host` alone. Nothing in the API
+# reveals it, so a wrong value is SILENT: the report looks perfect and every
+# link lands on the wrong cell. The API base URL does reveal it, though --
+# both cell shapes this tool supports serve the UI and /api/v1 on the same
+# host -- so an explicitly supplied base URL settles it.
+
+@pytest.mark.parametrize("base_url,expected", [
+    ("https://example-org.rossum.app", "example-org.rossum.app"),
+    ("https://example-org.rossum.app/", "example-org.rossum.app"),
+    ("https://elis.rossum.ai/api/v1", "elis.rossum.ai"),
+    ("https://api.elis.rossum.ai", "elis.rossum.ai"),
+    ("elis.rossum.ai", "elis.rossum.ai"),
+])
+def test_ui_host_is_read_off_the_api_base_url(base_url, expected):
+    assert recon.ui_host_from_base_url(base_url) == expected
+
+
+def test_an_explicit_base_url_supplies_the_ui_host_for_links(tmp_path, monkeypatch):
+    """An operator who names the org's own cell must not also have to repeat
+    it as --ui-host -- repeating it is where the two drift apart."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "test-token")
+    monkeypatch.setenv("B2B_API_KEY", "test-key")
+    rossum_cls = _fake_rossum_factory(
+        _HOOKS_ONE_CHANNEL,
+        index={"1": [RossumAnn(1, "exported", "einvoice1.pdf", True, "2026-01-19T10:00:00Z")]},
+    )
+    monkeypatch.setattr(recon, "RossumClient", rossum_cls)
+    monkeypatch.setattr(recon, "B2brouterClient", _fake_b2b_factory({"800001": [_inv("1", "800001")]}))
+
+    out_path = tmp_path / "out.csv"
+    rc = main(["--base-url", "https://example-org.rossum.app", "--out", str(out_path)])
+
+    assert rc == 0
+    with out_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["annotation_link"].startswith("https://example-org.rossum.app/document/")
+
+
+def test_neither_a_ui_host_nor_a_base_url_still_refuses_to_guess(monkeypatch):
+    """With no base URL either, the default is a guess about which cell the
+    org lives on -- and a wrong link is silent. Keep refusing."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "test-token")
+    monkeypatch.setenv("B2B_API_KEY", "test-key")
+
+    assert main(["--check-coverage"]) == 2
+
+
+def test_a_ui_host_on_a_different_host_than_the_api_is_flagged(tmp_path, monkeypatch, capsys):
+    """The exact Eurofins case: links built for the shared cell while the API
+    talks to the org's own. Both are reachable, so nothing else notices."""
+    monkeypatch.setenv("ROSSUM_TOKEN", "test-token")
+    monkeypatch.setenv("B2B_API_KEY", "test-key")
+    rossum_cls = _fake_rossum_factory(
+        _HOOKS_ONE_CHANNEL,
+        index={"1": [RossumAnn(1, "exported", "einvoice1.pdf", True, "2026-01-19T10:00:00Z")]},
+    )
+    monkeypatch.setattr(recon, "RossumClient", rossum_cls)
+    monkeypatch.setattr(recon, "B2brouterClient", _fake_b2b_factory({"800001": [_inv("1", "800001")]}))
+
+    out_path = tmp_path / "out.csv"
+    rc = main([
+        "--base-url", "https://example-org.rossum.app",
+        "--ui-host", "elis.rossum.ai",
+        "--out", str(out_path),
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0  # a warning, never a refusal -- both hosts can be valid
+    assert "elis.rossum.ai" in captured.err and "example-org.rossum.app" in captured.err
+    # The operator's explicit choice still wins.
+    with out_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["annotation_link"].startswith("https://elis.rossum.ai/document/")

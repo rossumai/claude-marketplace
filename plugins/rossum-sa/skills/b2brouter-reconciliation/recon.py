@@ -111,6 +111,27 @@ ACTIONABLE_EXEMPT_NOTES = CLEAN_NOTES + (DELETED, DELETED_AS_DUPLICATE)
 KEY_ENV_PREFIX = "B2B_API_KEY"
 DEFAULT_BASE_URL = "https://elis.rossum.ai"
 
+
+def ui_host_from_base_url(base_url: str) -> str:
+    """The host an operator opens Rossum in, read off the API base URL.
+
+    Every annotation link in the report is `https://{ui_host}/document/{id}`,
+    and nothing in the API announces the UI host -- so a wrong `ui_host` is
+    the one error this tool cannot catch downstream: the report renders
+    perfectly and every link lands on the wrong cell (or on a cell that
+    never held the annotation at all). The API base URL is the one thing
+    that does know: both deployment shapes this tool supports serve the UI
+    and `/api/v1` on the SAME host -- `elis.rossum.ai` for the shared cell,
+    `<org>.rossum.app` for a dedicated one -- so the base URL settles it and
+    the operator never has to state the same host twice. `api.` is stripped
+    for the `api.elis.rossum.ai` spelling of the shared cell's API.
+    """
+    host = base_url.strip().split("://", 1)[-1].split("/", 1)[0]
+    if host.startswith("api."):
+        host = host[len("api."):]
+    return host
+
+
 # I2(b): the prefix that marks an account's UNVERIFIED_SOURCE reason as a
 # direct per-id attribution -- a Rossum-side id inside the window, matched by
 # no listed invoice, that a B2Brouter lookup BY ID actually traced to THIS
@@ -1081,8 +1102,17 @@ def check_coverage(
     """
     any_uncovered = False
     for channel in channels:
-        channel_uncovered = uncovered_by_host.get(channel.b2b_base_url, [])
-        total = len(channel.account_ids)
+        # SCOPED TO THIS CHANNEL'S OWN ACCOUNTS. `uncovered_by_host` is keyed
+        # by host and unions every channel on that host (see
+        # build_client_resolver's docstring and discovery.map_accounts_to_keys)
+        # -- several channels routinely share one B2Brouter host, each owning
+        # a subset of its accounts. Subtracting the whole host's uncovered
+        # count from one channel's total produced impossible figures like
+        # `-20/11 accounts covered` and printed ids the channel does not own.
+        host_uncovered = set(uncovered_by_host.get(channel.b2b_base_url, ()))
+        own_accounts = list(dict.fromkeys(channel.account_ids))
+        channel_uncovered = [a for a in own_accounts if a in host_uncovered]
+        total = len(own_accounts)
         covered = total - len(channel_uncovered)
         print(f"{channel.name}: {covered}/{total} accounts covered")
         if channel_uncovered:
@@ -1170,6 +1200,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         base_url = args.base_url or creds.base_url or DEFAULT_BASE_URL
+        base_url_is_explicit = bool(args.base_url or creds.base_url)
         ui_host = args.ui_host or creds.ui_host
         pinned_api_version = args.b2b_api_version or creds.api_version
     else:
@@ -1182,6 +1213,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no B2Brouter key found ({KEY_ENV_PREFIX}...)", file=sys.stderr)
             return 2
         base_url = args.base_url or DEFAULT_BASE_URL
+        base_url_is_explicit = bool(args.base_url)
         ui_host = args.ui_host
         pinned_api_version = args.b2b_api_version
 
@@ -1201,13 +1233,39 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # An operator who named the org's own cell with --base-url (or
+    # rossum.base_url) has already said which host the UI lives on -- see
+    # ui_host_from_base_url. Asking them to repeat it as --ui-host is exactly
+    # where the two drift apart, and a mismatch is silent: every link in the
+    # report points at a cell that does not hold the annotation.
+    if not ui_host and base_url_is_explicit:
+        ui_host = ui_host_from_base_url(base_url)
+        print(
+            f"NOTE: no UI host given -- building annotation links against "
+            f"{ui_host}, read off the API base URL {base_url}.",
+            file=sys.stderr,
+        )
+
     if not ui_host:
         print(
-            "--ui-host is required (pass --ui-host, or supply rossum.ui_host in a "
-            "credentials file -- see --init-credentials)",
+            "--ui-host is required (pass --ui-host, or --base-url for an "
+            "organization on its own cell, or supply rossum.ui_host / "
+            "rossum.base_url in a credentials file -- see --init-credentials)",
             file=sys.stderr,
         )
         return 2
+
+    # A UI host on a different host than the API is not an error -- an older
+    # domain often keeps resolving after a migration, and some organizations
+    # genuinely open Rossum somewhere else -- but it is worth saying out loud,
+    # because it is the one way this report can be wrong while looking right.
+    if ui_host != ui_host_from_base_url(base_url):
+        print(
+            f"WARNING: annotation links will point at {ui_host} while the API "
+            f"is {base_url}. If that is not deliberate, the links in the report "
+            "will not open the annotations they name.",
+            file=sys.stderr,
+        )
 
     # None unless the operator explicitly opted in with --relax-x509-strict.
     # Passed to BOTH clients below (never just one) -- another organization's

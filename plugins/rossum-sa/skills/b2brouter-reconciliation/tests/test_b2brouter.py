@@ -168,3 +168,71 @@ def test_new_profile_lists_via_the_new_host_path_header_meta_envelope_and_sender
     assert headers["x-b2b-api-version"] == NEW_API_VERSION
     assert [i.sender for i in invoices] == ["New-Gen Sender"]
     assert [i.einvoice_id for i in invoices] == ["77"]
+
+
+# --- account listing (the coverage probe) -----------------------------------
+#
+# `visible_account_ids` enumerates every account a key can see; --check-coverage
+# gates the whole reconciliation on it. A group larger than one page must be
+# PAGED, never rejected: treating a full first page as evidence of truncation
+# made the gate unpassable for any group over the page size, which is exactly
+# the large deployments reconciliation matters most for.
+
+def _account(id_):
+    return {"id": id_, "name": f"Account {id_}"}
+
+
+def test_account_listing_pages_past_a_full_first_page():
+    def transport(path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        return {"accounts": [_account(n) for n in range(offset, min(offset + 2, 5))],
+                "total_count": 5, "offset": offset, "limit": 2}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=2)
+    assert client.visible_account_ids() == {"0", "1", "2", "3", "4"}
+
+
+def test_a_clamped_account_page_size_does_not_end_the_listing_early():
+    """The declared total, not page fullness, ends the loop -- a server that
+    clamps the page size below the one requested must still be paged out."""
+    def transport(path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        return {"accounts": [_account(n) for n in range(offset, min(offset + 1, 3))],
+                "total_count": 3, "offset": offset, "limit": 1}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=500)
+    assert client.visible_account_ids() == {"0", "1", "2"}
+
+
+def test_an_account_listing_without_a_declared_total_ends_on_a_short_page():
+    def transport(path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        return {"accounts": [_account(n) for n in range(offset, min(offset + 2, 3))],
+                "offset": offset, "limit": 2}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=2)
+    assert client.visible_account_ids() == {"0", "1", "2"}
+
+
+def test_an_account_listing_that_stops_short_of_its_declared_total_raises():
+    """Under-enumerating a key's visibility reports covered accounts as
+    uncovered, which fails the coverage gate for a reason that isn't real."""
+    def transport(path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        return {"accounts": [_account(0)] if offset == 0 else [],
+                "total_count": 5, "offset": offset, "limit": 500}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=500)
+    with pytest.raises(B2bError):
+        client.visible_account_ids()
+
+
+def test_an_account_listing_that_ignores_offset_raises_instead_of_looping():
+    """A server that replays page one forever must abort, not spin."""
+    def transport(path):
+        return {"accounts": [_account(0), _account(1)], "total_count": 9,
+                "offset": 0, "limit": 2}
+
+    client = B2brouterClient("k", BASE, transport=transport, page_size=2)
+    with pytest.raises(B2bError):
+        client.visible_account_ids()
