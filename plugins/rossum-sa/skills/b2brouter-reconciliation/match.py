@@ -46,10 +46,15 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
-# Reached processing, however it ended up.
+# Reached processing, however it ended up. `in_workflow` belongs here: an
+# annotation routed into an approval workflow has demonstrably arrived and is
+# being processed (its content is locked while the run is active). It was left
+# unclassified originally so it would surface as UNKNOWN_STATUS rather than be
+# guessed at; classifying it is the deliberate call, so a survivor sitting in
+# approval now counts as one instead of reading as absent.
 ARRIVED_STATUSES = frozenset({
     "importing", "to_review", "reviewing", "confirmed", "exporting", "exported",
-    "failed_export", "postponed", "rejected",
+    "failed_export", "postponed", "rejected", "in_workflow",
 })
 # Present in Rossum but NOT successfully processed. `split` belongs here: a
 # split annotation is a container that was divided into others, not a processed

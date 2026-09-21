@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from match import B2bInvoice, RossumAnn, classify
+from match import ARRIVED_STATUSES, B2bInvoice, RossumAnn, classify
 
 NOW = datetime(2026, 1, 20, 12, 0, tzinfo=timezone.utc)
 
@@ -48,6 +48,19 @@ CASES = [
 @pytest.mark.parametrize("anns, expected", CASES)
 def test_classify_one_representative_per_verdict(anns, expected):
     assert classify(inv(), anns, now=NOW, grace_minutes=30, source_ok=True) == expected
+
+
+def test_in_workflow_is_classified_as_arrived():
+    # Deliberately NOT a second "ok" case in CASES above — that table pins one
+    # representative per verdict. This pins the classification DECISION: an
+    # annotation in an approval workflow has arrived, so a survivor sitting in
+    # approval must not read as absent. `in_workflow` sat outside both sets
+    # originally and surfaced as UNKNOWN_STATUS; nothing else guards against it
+    # silently falling back out, and reference.md tells contributors to edit
+    # these sets by hand.
+    assert "in_workflow" in ARRIVED_STATUSES
+    assert classify(inv(), [ann("in_workflow")], now=NOW, grace_minutes=30,
+                    source_ok=True) == "ok"
 
 
 def test_classify_pending_within_grace():

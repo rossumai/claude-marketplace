@@ -250,10 +250,14 @@ class RossumClient:
         shared regardless of which id or queue the surviving copy landed
         under.
 
-        MEASURED: a single-clause query on `field.document_id.string` alone
-        -- `{"query": {"field.document_id.string": {"$eq": ...}}}` -- gets
+        MEASURED: a query whose `query` has no top-level `$and` list --
+        `{"query": {"field.document_id.string": {"$eq": ...}}}` -- gets
         HTTP 400 from this endpoint, every time, with no partial result;
-        the exact same trap as GET /documents' filename-only query. The
+        the exact same trap as GET /documents' filename-only query. This was
+        originally read as "a SINGLE-clause query 400s", which blamed the
+        wrong variable: re-measured, two bare clauses fail identically and a
+        lone clause under `$and` returns 200. The wrapper is what the
+        endpoint requires. The
         caller-side effect is worse than a loud error: recon.py's per-row
         try/except around this call treats a raised RossumError as "the
         check did not complete" and leaves the row unverified rather than
@@ -261,12 +265,16 @@ class RossumClient:
         transient failure, but on a live run it silently swallowed a 400 on
         EVERY row (0 of 222 verified) with nothing looking wrong in the
         summary beyond an unusually large "not verified" count. The fix,
-        MEASURED working: a two-clause `$and`, pairing the content clause
-        with an explicit `status.$in` naming the FULL status list
-        (`ALL_STATUSES`, not just ARRIVED_STATUSES -- a status outside the
-        healthy set still has to come back so this function can tell
-        "found a deleted copy" apart from "found nothing at all"). Do not
-        collapse this back to a single clause.
+        MEASURED working: wrap the clauses in `$and`. The paired
+        `status.$in` clause names the FULL status list (`ALL_STATUSES`, not
+        just ARRIVED_STATUSES -- a status outside the healthy set still has
+        to come back so this function can tell "found a deleted copy" apart
+        from "found nothing at all"); it is kept for that coverage reason,
+        NOT to reach a second clause. Note it cannot change this function's
+        verdict either way: ARRIVED_STATUSES is a subset of ALL_STATUSES, so
+        any row the clause hides has a status that would not have counted as
+        a survivor anyway. What it must never become is a narrower list than
+        ARRIVED_STATUSES -- that WOULD hide real survivors.
 
         Deliberately NOT scoped to any particular queue, unlike
         einvoice_index() -- the whole point is to look beyond the channel's

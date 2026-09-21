@@ -736,9 +736,14 @@ filtering gives no signal that anything went wrong.
 - **Pagination is a cursor, not a page number.** Passing `?page=N` is ignored and always returns
   the first page again. Advance by following the response's `next` link and RE-POSTing the same
   query body against it.
-- **A single-clause query is rejected with HTTP 400.** At least two clauses under `$and` are
-  required — a query with only one condition (e.g. a lone `field.document_id.string` equality on
-  its own) 400s.
+- **`query` must carry a top-level `$and` list — clause *count* is irrelevant.** A bare clause
+  object (`{"query": {"field.document_id.string": {"$eq": "…"}}}`) 400s with
+  `{"query": {"$and": ["This regex field is required."]}}`, and **two** bare clauses 400 exactly
+  the same way. Wrap them and a *single* clause is fine: `{"query": {"$and": [{…}]}}` returns 200.
+  Measured both directions. An earlier note here recorded this as "a single-clause query is
+  rejected" — that read the right 400 off the wrong variable, because the failing example happened
+  to have one clause *and* no wrapper. If you are hand-building the body, the wrapper is the thing
+  to check; `rossum_search_annotations_advanced` adds it for you.
 - **A `status` clause cuts both ways.** Supplying an explicit `status.$in` returns rows the
   default search omits — measured 17,897 rows with the clause versus 17,891 without on the same
   queue — but it also makes any status *not* named in the list invisible rather than flagged. A

@@ -586,14 +586,17 @@ of an error, so getting them wrong is silent, not loud.
   response and re-POST the same query body against it. General platform
   behaviour — see `rossum-reference` → *Annotation search — measured
   gotchas*.
-- **`/annotations/search` rejects a single-clause query with HTTP 400.**
-  Measured directly: `{"query": {"field.document_id.string": {"$eq":
-  "..."}}}` on its own always 400s — the same trap as `GET /documents`'
-  filename-only query above, just louder. The working form pairs the
-  content clause with a second one under `$and` (this tool's
-  `has_surviving_original` in `rossum.py` pairs it with an explicit
-  `status.$in` naming the full status list, `ALL_STATUSES`). This one is
-  worth flagging twice: on a live run, the 400 was swallowed by this tool's
+- **`/annotations/search` rejects a `query` with no top-level `$and` list
+  with HTTP 400.** Measured directly: `{"query": {"field.document_id.string":
+  {"$eq": "..."}}}` always 400s — the same trap as `GET /documents`'
+  filename-only query above, just louder. This was first recorded here as
+  "rejects a *single-clause* query", which attributed the 400 to the wrong
+  variable: re-measured since, **two** bare clauses fail identically and a
+  single clause under `$and` returns 200. The wrapper is the requirement;
+  the clause count never mattered. (`has_surviving_original` in `rossum.py`
+  also pairs the content clause with an explicit `status.$in` naming
+  `ALL_STATUSES` — that clause is about status *coverage*, the next bullet,
+  not about satisfying this one.) This one is worth flagging twice: on a live run, the 400 was swallowed by this tool's
   OWN per-row error handling (a failed verification search is deliberately
   treated as "not verified" rather than aborting the run — see "`DELETED`
   and `DELETED_AS_DUPLICATE`" above) into an unusually large "not verified"
