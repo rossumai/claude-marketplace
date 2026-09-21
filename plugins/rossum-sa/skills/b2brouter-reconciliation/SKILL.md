@@ -283,9 +283,12 @@ substitute for actually checking exit status and stderr.
 - Verified against one production organization, one B2Brouter deployment and
   one account-group structure; discovery is designed to generalise but that
   is a design claim, not a measurement.
-- `in_workflow` is a real Rossum annotation status that the classifier does
-  not place in either of its two sets; such rows surface as `UNKNOWN_STATUS`
-  rather than being miscounted, but they are not classified.
+- `in_workflow` counts as **arrived**: an annotation routed into an approval
+  workflow has reached processing (its content is locked while the run is
+  active), so a survivor sitting in approval is reported as one. It was
+  previously left unclassified and surfaced as `UNKNOWN_STATUS`. Any status
+  still outside both sets continues to surface that way rather than being
+  guessed at.
 - In the CSV a `DELETED` row reads the same whether its verification search
   ran and found nothing or never ran; only the run summary distinguishes
   them.
