@@ -223,7 +223,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.42.1"
+_SERVER_VERSION = "0.42.2"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -1039,6 +1039,77 @@ def _paginate(request_id, url, *, max_results=None, pick_fields=None, initial_pa
         url = next_url
         page = None
     return (all_results, api_total)
+
+
+_SEARCH_FIELD_SUFFIXES = ("string", "number", "date")
+
+# Unambiguous synonyms for the three typed suffixes, used ONLY to echo back the
+# type the caller already expressed. Anything outside this map gets all three
+# options rather than a guess — see the comment in _search_clause_error.
+_SEARCH_SUFFIX_SYNONYMS = {
+    "str": "string", "text": "string", "enum": "string",
+    "int": "number", "integer": "number", "float": "number",
+    "double": "number", "decimal": "number", "num": "number",
+    "datetime": "date", "timestamp": "date", "day": "date",
+}
+
+
+def _search_clause_error(query):
+    """Return a human-readable error for a malformed "field.*" clause, else None.
+
+    Content clauses in POST /annotations/search are keyed
+    "field.<schema_id>.<string|number|date>" and the type suffix is mandatory.
+    Drop it and the API answers with a 400 whose message
+    ("At least one definition of a field required", indexed by $and position)
+    describes neither the offending key nor the missing suffix, so the caller
+    re-guesses the whole query shape instead of adding six characters. Catch it
+    here for the same reason _closest_property catches a misnamed argument: the
+    fix is mechanical and the upstream error does not point at it.
+    """
+    bad = []
+
+    def walk(node):
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            if key in ("$and", "$or", "$nor", "$not"):
+                walk(value)
+            elif key.startswith("field."):
+                parts = key.split(".")
+                if len(parts) != 3 or parts[2] not in _SEARCH_FIELD_SUFFIXES:
+                    bad.append(key)
+
+    walk(query)
+    if not bad:
+        return None
+    lines = []
+    for key in bad:
+        parts = key.split(".")
+        schema_id = parts[1] if len(parts) > 1 else ""
+        written = parts[2].lower() if len(parts) > 2 else ""
+        # Never suggest a type the caller did not imply. Defaulting to .string
+        # would be actively harmful: "field.amount.string" is a VALID key, so
+        # the API answers 200 and compares a numeric field against its string
+        # projection — trading a loud 400 for silently wrong rows. Map only the
+        # unambiguous synonyms; otherwise list all three and let the caller pick.
+        implied = _SEARCH_SUFFIX_SYNONYMS.get(written)
+        if not schema_id:
+            hint = ""
+        elif implied:
+            hint = f" — did you mean \"field.{schema_id}.{implied}\"?"
+        else:
+            options = ", ".join(f"\"field.{schema_id}.{s}\"" for s in _SEARCH_FIELD_SUFFIXES)
+            hint = f" — use one of {options}"
+        lines.append(f"  {key!r}{hint}")
+    return (
+        "Invalid content clause key(s) in `query`. Content clauses must be keyed "
+        "\"field.<schema_id>.<string|number|date>\" — the type suffix is required:\n"
+        + "\n".join(lines)
+    )
 
 
 def _build_search_query(*, base, query, query_string, queue, queues):
@@ -3078,6 +3149,10 @@ def handle_search_annotations(request_id, arguments):
 def handle_search_annotations_advanced(request_id, arguments):
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
+        return
+    clause_error = _search_clause_error(arguments.get("query"))
+    if clause_error:
+        tool_result(request_id, clause_error, is_error=True)
         return
     max_results = min(int(arguments.get("max_results", 50)), 500)
     page_size = min(max_results, 100)
@@ -8259,7 +8334,23 @@ def main():
                         "Never edit the code field in hook JSON or the formula property in schema.json — "
                         "prd2 push syncs .py files into JSON automatically. "
                         "Do not call rossum_patch_hook or rossum_patch_schema to push code changes that "
-                        "should go through prd2 push instead."
+                        "should go through prd2 push instead. "
+                        "NAMING RULE — never infer an argument name, the conventions differ by surface: "
+                        "tools on the Rossum REST surface are snake_case (annotation_id, hook_id, "
+                        "out_file_path; rossum_list_hooks takes `queue`, NOT `queue_id`; searches take "
+                        "`max_results`, NOT `page_size`), while data_storage_* tools deliberately keep "
+                        "MongoDB's own camelCase (collectionName, indexName, nameOnly, dropTarget, "
+                        "numPartitions, searchAnalyzer) so an Atlas definition can be pasted verbatim. "
+                        "rossum_get's `path` must start with /api/v1/ or be a full org URL — it is not "
+                        "relative to the API root. Unknown keys are rejected on purpose rather than "
+                        "silently dropped, so read the tool schema before the first call instead of "
+                        "spending a round trip on a guess. "
+                        "SEARCH CLAUSE RULE — content clauses in rossum_search_annotations_advanced are "
+                        "keyed \"field.<schema_id>.<string|number|date>\": the type suffix is REQUIRED. "
+                        "\"field.document_id\" is not a valid clause — write "
+                        "\"field.document_id.string\". This is a RECOGNITION rule: get the key shape "
+                        "right as you write the query, because the suffix is easy to drop and the "
+                        "resulting error points at the wrong thing."
                     ),
                 })
             elif method == "notifications/initialized":

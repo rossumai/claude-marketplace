@@ -331,6 +331,57 @@ def test_build_search_query_empty_is_empty_body():
                                       query_string=None, queue=None, queues=None) == {}
 
 
+# --- _search_clause_error (pre-flight for "field.*" clause keys) ---
+
+def test_search_clause_error_accepts_every_typed_suffix():
+    q = {"$and": [{"field.a.string": {"$eq": "x"}},
+                  {"field.b.number": {"$gt": 1}},
+                  {"field.c.date": {"$gte": "2020-01-01"}}]}
+    assert server._search_clause_error(q) is None
+
+
+def test_search_clause_error_ignores_non_field_clauses():
+    q = {"$and": [{"status": {"$eq": "exported"}},
+                  {"queue": {"$in": ["https://x.rossum.ai/api/v1/queues/7"]}}]}
+    assert server._search_clause_error(q) is None
+    assert server._search_clause_error(None) is None
+
+
+def test_search_clause_error_flags_both_malformed_shapes_and_suggests_keys():
+    # Two rejection branches in one pin: no suffix at all, and a suffix that is
+    # not one of the three typed ones. The suggested key is the contract here —
+    # it is the whole reason the check exists — so it is asserted, unlike the
+    # surrounding phrasing. Carrying both keys also pins that every bad key is
+    # reported, not just the first.
+    err = server._search_clause_error({"$and": [{"field.document_id": {"$eq": "X"}},
+                                                {"field.amount.float": {"$gt": 1}}]})
+    assert err is not None
+    assert "field.document_id.string" in err  # no type implied -> all three offered
+    assert "field.amount.number" in err       # "float" implies number, not string
+
+
+def test_search_clause_error_never_suggests_string_for_a_numeric_suffix():
+    # Regression guard: suggesting ".string" for a numeric field would be worse
+    # than no suggestion — that key is valid, so the API returns 200 and compares
+    # the field against its string projection instead of failing loudly.
+    err = server._search_clause_error({"field.amount.float": {"$gte": 1000}})
+    assert "field.amount.number" in err
+    assert "field.amount.string" not in err
+
+
+def test_search_clause_error_offers_all_types_when_none_is_implied():
+    err = server._search_clause_error({"field.total.wat": {"$eq": 1}})
+    for suffix in ("string", "number", "date"):
+        assert f"field.total.{suffix}" in err
+
+
+def test_search_clause_error_walks_nested_boolean_groups():
+    q = {"$and": [{"$or": [{"field.a.string": {"$eq": "x"}},
+                           {"field.b": {"$eq": "y"}}]}]}
+    err = server._search_clause_error(q)
+    assert err is not None and "field.b" in err and "field.a" not in err
+
+
 # --- _content_type_for ---
 
 def test_content_type_for_known_and_unknown():
