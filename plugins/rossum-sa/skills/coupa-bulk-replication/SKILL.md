@@ -389,6 +389,7 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 | `fields` | **Exactly the bulk config's `fields` list** — record shapes then match (both sides store Coupa's hyphenated-key JSON) |
 | Coupa credentials | The new org's `coupa_base_url` / `client_id` / scope; `client_secret` via secrets (step 4) |
 | `"updated-at[gt_or_eq]"` | The delta seeding value — step 1 |
+| `dir` | **Absent.** Remove it if the reference hook carries `"dir": "desc"` — the service then processes only the first page and hangs until killed (see "A hook that fails every run"). `order_by` follows the reference (`created_at` or none) |
 
 1. **Dodge the epoch-fallback trap (delta seeding).** `${last_modified_date}` resolves to the start of the last successful operation per (org, `dataset_name`) in the scheduled-imports service's own operation log. A brand-new hook has **no history → epoch → the first activation attempts a FULL import.** Field-verified fix: where the reference hook has `${last_modified_date}` (the `"updated-at[gt_or_eq]"` query value), put the dataset's **literal** `anchor_updated_at` instead. The first activation then pulls only the post-anchor delta AND establishes operation history. After the first successful run, flip the value back to `${last_modified_date}`.
 
@@ -410,7 +411,15 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 
    Zero rows there means zero rows in Data Storage is *correct*. Only a non-empty Coupa result that fails to appear in the collection is evidence of a fault. A field run lost hours to this: repeated invokes drove several datasets' history forward, every subsequent run correctly imported nothing, and the zeros were misread as a systemic failure.
 
-   **The hook logs cannot tell you whether an import succeeded.** `GET /hooks/logs` records the *dispatch*, not the job: a run that imported thousands of records and a run that imported nothing both produce a single `INFO` row with `message: ""` and `request`/`response` null, ~0.15 s long (the webhook returning 202). Setting `config.payload_logging_enabled: true` adds the outbound request but `response` stays null. No scheduled-imports operations/job-status endpoint is exposed on the public API (probed: `/svc/scheduled-imports/api/{v1,coupa/v1}/{operations,imports,jobs,status}` → all 404/405). **Record counts in Data Storage are the only observable outcome** — plan verification around them, not around logs.
+   **The hook logs cannot tell you whether an import succeeded — the operation log can.** `GET /hooks/logs` records the *dispatch*, not the job: a run that imported thousands of records, a run that imported nothing, and a run that was killed after an hour all produce a single `INFO` row with `message: ""` and `request`/`response` null, ~0.15 s long (the webhook returning 202). Setting `config.payload_logging_enabled: true` adds the outbound request but `response` stays null. The scheduled-imports service exposes no job-status endpoint of its own (probed: `/svc/scheduled-imports/api/{v1,coupa/v1}/{operations,imports,jobs,status}` → all 404/405), but **every import job is recorded in the MDH operation log**:
+
+   ```
+   GET <org_url>/svc/master-data-hub/api/v1/operation/?dataset_name=<dataset_name>&limit=500
+   → {"operations": [{"operation_type": "update", "status": "processing" | "finished" | "failed",
+                      "create_ts": ..., "status_ts": ..., "error": {"type": ..., "text": ...} | null}, ...]}
+   ```
+
+   Newest first; the default page is 100 rows and `limit` raises it (5,000 worked). It lives outside `/api/v1`, so call it directly with the org bearer token. `create_ts` of the newest `finished` row is what `${last_modified_date}` resolves to; `status_ts - create_ts` is the job's real duration; a `processing` row's `status_ts` advances while it runs. **This is the first thing to read for any import hook that looks wrong** — see "A hook that fails every run" below. Data Storage remains the check for *what* landed (by id), the operation log is the check for *whether the job finished*.
 
 4. **Secrets.** Hook `secrets` are write-only (GET returns null) — set via `PATCH {"secrets": {"client_secret": "..."}}`. ALWAYS set `secrets_schema` too (typed properties, `additionalProperties: false`); without it the UI shows no secret field at all. A hook with secrets but no `secrets_schema` is a defect.
 
@@ -422,11 +431,11 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 
 ### Unresolved: a hook that imports nothing despite a verified non-zero delta
 
-Recorded because it cost a field run hours and a full re-load, and because the cause was **not** established — do not assume any of the eliminated candidates below.
+Recorded because it cost a field run hours and a full re-load, and because the cause was **not** established — do not assume any of the eliminated candidates below. That run predates the operation log (step 3): **read the dataset's operation log first** — a streak of `failed` / `Terminated by signal` rows means you are in "A hook that fails every run" below, which has a known mechanism and a recovery.
 
 Symptom: for two datasets (the two largest, both with deeply nested `fields` projections), Coupa demonstrably held qualifying records (verified by direct query against the hook's own filter, ids above the bulk crawl's ceiling), the hook was active with a literal anchor covering them, dispatches logged clean `INFO`, and **zero records were ever imported** across many cron firings and manual invokes. Other datasets in the same org, same OAuth client, same run, imported correctly.
 
-Eliminated with evidence, so don't re-spend time on them: the unique partial index (dropped it — no change); the projection/`fields` list (the bulk script fetched millions of records with those exact lists); `dir: desc` and `order_by` (removed/varied — no change); collection size; `__digest_md5` absence on bulk-inserted rows (the service updates digest-less rows fine and does not re-stamp the digest on updates); MDH registration; malformed source data. A clone of the failing hook, identical except for `dataset_name`, imported its delta correctly on the first try — so the hook's own configuration is not at fault.
+Eliminated with evidence, so don't re-spend time on them: the unique partial index (dropped it — no change); the projection/`fields` list (the bulk script fetched millions of records with those exact lists); `dir: desc` and `order_by` (removed/varied — no change *in this case*; `dir: desc` IS the cause of a different failure, the first-page hang below); collection size; `__digest_md5` absence on bulk-inserted rows (the service updates digest-less rows fine and does not re-stamp the digest on updates); MDH registration; malformed source data. A clone of the failing hook, identical except for `dataset_name`, imported its delta correctly on the first try — so the hook's own configuration is not at fault.
 
 If you hit this: confirm the expected delta from Coupa (step 3), confirm it is genuinely absent from the collection by id, then treat it as service-side and escalate with those two observations. Meanwhile the data itself is recoverable without the hook — a bulk re-run picks the records up, since its fresh probe re-counts from Coupa.
 
@@ -443,16 +452,54 @@ Default recipe stays verify-then-activate; use this variant deliberately.
 
 ### Restoring `${last_modified_date}` — only where a data-bearing run is confirmed
 
-Step 1 says to flip the literal anchor back to `${last_modified_date}` "after the first successful run". Be strict about what counts: the placeholder is safe once the service has recorded a successful operation for that `dataset_name`, and if it has **not**, the placeholder resolves to epoch and the next cron attempts the full import this whole skill exists to avoid. Since the job's outcome is not observable (step 3), the only evidence you actually have is **records having landed**.
+Step 1 says to flip the literal anchor back to `${last_modified_date}` "after the first successful run". Be strict about what counts: the placeholder is safe once the service has recorded a successful operation for that `dataset_name`, and if it has **not**, the placeholder resolves to epoch and the next cron attempts the full import this whole skill exists to avoid. Require both kinds of evidence: a **`finished` row in the operation log** (step 3) **and records having landed** from that job. A `finished` row alone is not enough: a job over an empty window finishes in under a second with nothing to import, and whether such a row counts as history is not established.
 
 So restore the placeholder per dataset, as each earns it:
 
-- **Confirmed data-bearing run** (you watched the collection grow, or verified specific delta ids arrived) → restore `${last_modified_date}`.
+- **Confirmed data-bearing run** (a `finished` operation, and you watched the collection grow or verified specific delta ids arrived) → restore `${last_modified_date}`. Then confirm the **next** job finishes too: on a healthy delta it takes seconds (a field run: fixed-date jobs over a ~370-record window took 22–32 s; the first job on the restored placeholder took 1 s, because its window started at the previous job's start).
 - **Not yet confirmed** → leave a literal anchor, set to the *most recent* bulk-run anchor for that dataset. It carries **zero** epoch risk and the upserts are idempotent, so it is safe *as a holding position* — but it is not a resting state: only the anchor's lower bound is fixed, so the window it re-pulls **grows with every hour that passes**. A literal anchor left in place for weeks eventually re-imports weeks of changes on every single cron firing.
 
 Treat any dataset still on a literal anchor as an open item with a deadline, not a finished state — the whole point is to earn the placeholder as soon as a delta demonstrably flows.
 
-**Artifact:** Hooks active for every dataset, first delta canary verified, and `${last_modified_date}` restored on every dataset with a confirmed data-bearing run (others explicitly parked on a literal anchor).
+### A hook that fails every run: the 60-minute kill and the frozen window
+
+Field-verified on a live org where three Coupa import hooks failed every run for weeks — one since its handoff day — while their hook logs showed nothing but clean `INFO` rows.
+
+**How the extension and the service divide the work:**
+
+1. The **hook** is only a timer. On each cron tick it posts its settings to the scheduled-imports **service**, which answers 202 at once. That is the whole hook log row.
+2. The service runs **one job per dataset at a time**. A dispatch that arrives while that dataset's job still runs is refused — recorded as a `failed` operation with `"A different operation is waiting or running already"`, or, in later observations, not recorded at all. Jobs for different datasets run in parallel (a field check: every one of 623 such refusals coincided with the same dataset's own running job; 296 jobs of one dataset overlapped another dataset's jobs without conflict).
+3. The job resolves `${last_modified_date}`, pages through Coupa, and **upserts each page into Data Storage as it goes**.
+4. The service **kills a job after 60 minutes** — operation `failed`, `error.text: "Terminated by signal"`, duration 60.0 min almost to the second. (Some kills come earlier; cause unknown.) The killed hooks carried no `job_run_settings`; the CIB 2.0 import shape in `coupa-baseline-reference` shows `job_run_settings.max_run_time_s: 36000`, so 3600 s may be the default — **unverified**, do not rely on raising it as the fix.
+5. **A killed job keeps what it wrote but does not count as a success.** `${last_modified_date}` stays put, the next job's window is wider, and it is killed again. The loop never ends on its own.
+
+**Why it hides:** each job writes its first pages before it dies, and the walk order puts the *newest-created* records first — so new records keep arriving and the collection looks fresh. What goes stale is **old records that change**: they sit at the far end of the walk, which no job reaches. A dataset can sit in this state for weeks.
+
+**Signature:** in the operation log (step 3), a long streak of `failed` rows at ~60.0 min, the newest `finished` row weeks old, and the dispatch log still all `INFO`.
+
+**Two causes seen, with different fixes:**
+
+| Cause | Evidence | Fix |
+|---|---|---|
+| **The window outgrew one job** — a Coupa-side mass change (here, ~320k records created in one month) made a single delta bigger than 60 min of paging; every failure then widened it further | `--probe` with the hook's own filter plus `updated-at[gt_or_eq]=<newest finished create_ts>` (set via `extra_params`) counted ~495k records; nothing created after the last success existed in the collection | Literal `updated-at[gt_or_eq]` close to now, so one job finishes; gap-fill the skipped interval separately (below) |
+| **`"dir": "desc"` on the hook query** — the service processed the first page and then hung until the kill, whatever the window size | A literal window of 371 records (8 pages) still ran to the 60-min kill. Records created after the job started landed within 4 s of its `create_ts` (readable from the inserted documents' ObjectId timestamps); nothing else landed for the rest of the hour. All 149 stale records were in the oldest part of the window. Removing **only** `"dir": "desc"` → the next job finished in 28 s and all 149 became current | Remove `dir` from the hook query. The bulk script's `dir=desc` is unrelated — it is its own keyset client |
+
+**Diagnosis, in order:**
+
+1. Operation log: confirm the failed streak; take the newest `finished` row's `create_ts` (the window's real start).
+2. Size that window from Coupa: `--probe` on a scratch config whose dataset has the hook's filter plus that `updated-at[gt_or_eq]` in `extra_params` (point `collection` at an unused name — the probe does not write). Time one page with the hook's exact query (2–4 s per 50-record page is normal for wide, nested projections).
+3. Compare by id: fetch `id` + `updated-at` for that window from Coupa (`fields=["id","updated_at"]`, cheap) and look each id up in Data Storage. Classify current / stale / missing, and look at *where* the stale ones sit in the hook's walk order.
+4. Rule out the hang: if the window is a few pages and the job still dies at 60 min, look for `dir` in the query.
+
+**Recovery:**
+
+1. Set a literal `updated-at[gt_or_eq]` whose window one job can finish. If the stale set is small, set it far enough back to cover the stale records — the job then **is** the backfill (the field run: a date ~4 weeks back, 371 records, all 150 stale/missing ids current after one job). If the window would be too large, set it near now and gap-fill the earlier interval separately: the bulk script with `extra_params` `updated-at[gt_or_eq]` inserts the records that are **missing**, but it skips existing ids and so does **not** apply updates — load the interval into a scratch collection and upsert by `id` from there.
+2. Wait for a `finished` operation, then verify the stale ids by `updated-at` in Data Storage.
+3. Restore `${last_modified_date}` and confirm the next job finishes in seconds (see the section above).
+
+A job that started before your PATCH runs on the old settings and blocks the dataset until it is killed — expect to wait up to an hour plus one cron interval before the first job on the new settings.
+
+**Artifact:** Hooks active for every dataset, first delta canary verified, and `${last_modified_date}` restored on every dataset with a confirmed data-bearing run (others explicitly parked on a literal anchor). A day after handoff, every dataset's operation log shows `finished` rows, not a `failed` streak.
 
 ---
 
