@@ -739,6 +739,10 @@ Each import webhook JSON has this structure in `settings.third_party_service_set
 
 Nested objects are expressed inside `query.fields` as single-key objects rather than in a separate `nested_fields` map, and the scope moves to `credentials.client_scope`.
 
+For a project-specific slice the baseline does not ship (a `lookup_values` segment, a child
+level, one currency's exchange rates), start from the `master-data/coupa-import-delta` part
+(`parts-index`).
+
 #### Status filters on incremental imports
 
 The baseline imports filter on `updated-at[gt_or_eq]: ${last_modified_date}` and nothing else.

@@ -1,0 +1,21 @@
+{
+  "name": "coupa-import-delta",
+  "axis": "master-data",
+  "summary": "Coupa endpoint -> MDH dataset as a Rossum-hosted import job (CIB 2.0 template 55; same settings run on the CIB 1.x webhook): upsert by id, order by id, incremental on updated-at - for project-specific slices CIB does not ship.",
+  "maturity": "candidate",
+  "params": {
+    "coupa_base_url":      {"required": true, "type": "string", "description": "Coupa tenant URL with trailing slash, e.g. https://<tenant>.coupacloud.com/"},
+    "client_id":           {"required": true, "type": "string", "description": "Coupa OAuth client id (the secret goes in hook secrets as client_secret, never here)"},
+    "client_scope":        {"required": true, "type": "string", "description": "OAuth scope the endpoint needs, e.g. core.common.read"},
+    "endpoint":            {"required": true, "type": "string", "description": "Coupa API path without leading slash, e.g. api/lookup_values"},
+    "dataset_name":        {"required": true, "type": "string", "description": "target MDH dataset / Data Storage collection"},
+    "delta_from":          {"default": "${last_modified_date}", "type": "string", "description": "lower bound of updated-at; a fixed ISO timestamp after a bulk load or to recover from a failure loop, then back to ${last_modified_date}"},
+    "records_per_request": {"default": 50, "type": "number", "description": "page size; 50 is the maximum the job accepts"},
+    "max_run_time_s":      {"default": 36000, "type": "number", "description": "job run limit (60-36000); a run stopped at the limit counts as failed"}
+  },
+  "produces": [],
+  "consumes": [],
+  "provenance": "Generalized from the CIB 2.0 baseline's 12 Coupa master-data import jobs (template 55; all use method update, id_keys [id], order_by id, updated-at[gt_or_eq] ${last_modified_date}) and from a live job-hook test on 2026-10-08 that imported a 234-record Coupa endpoint in 5 pages of 50 into a fresh dataset. Filter vocabulary from a production CIB 1.x project's slice hooks (2026-10). The filled fragment has not yet run as a slice import - hence candidate.",
+  "reference": "coupa-baseline-reference#42-import-configuration-pattern",
+  "notes": "Replace the literal fields list with what matching needs; keep id, the status field and updated_at. order_by must stay unique (id): the import pages by offset, and a non-unique key (created_at) duplicates and drops records on ties. Never add dir: desc (the 1.x service hangs). Do not put a status filter on this incremental import unless records cannot leave the set - see coupa-baseline-reference#status-filters-on-incremental-imports."
+}

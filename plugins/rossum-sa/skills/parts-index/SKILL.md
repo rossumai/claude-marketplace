@@ -67,14 +67,16 @@ are not yet. Read each part's `provenance` for what was measured and what was le
 
 ### Master data (`parts/master-data/`)
 
-Scheduled importers that fill the collections matching reads. Whole function hooks; they write
-MDH datasets, not schema fields, so `produces`/`consumes` are legitimately empty.
+Scheduled importers that fill the collections matching reads. Most are whole function hooks;
+`coupa-import-delta` is the `settings` of a Rossum-hosted import job. They write MDH datasets, not
+schema fields, so `produces`/`consumes` are legitimately empty.
 
 | part | summary | source shape |
 |--------|---------|-------------|
 | `mdh-import-watermark-sync` | the two-phase engine: resumable full load, then semi-open incremental windows on a persisted watermark with a clock-skew safety lag; state in its own Data Storage collection; one adaptable `SourceApi` class | any paged HTTPS API (default: token-endpoint + `RESULT_FLAG`/`DATA` envelope) |
 | `mdh-odata-import-skiptoken-sync` | the same engine with the OData-via-gateway dialect built in: creation-date full load, change-date incremental, numeric `$skiptoken`, only-empty-page-ends, optional `$expand` flatten with header-date stamping | OData v4 behind BTP / API Management |
 | `mdh-odata-filtered-full-refresh` | filtered population swept and PUT-replaced once per run; propagates deletions, refuses an empty or truncated sweep | OData v4 behind BTP / API Management |
+| `coupa-import-delta` | one Coupa endpoint or slice → one dataset as a hosted import job (template 55; same settings on the CIB 1.x webhook): upsert by id, order by id, incremental on `updated-at`; filter vocabulary for lookup / child / value / date-floor slices | Coupa REST API (CIB 2.0 job or 1.x scheduled-imports webhook) |
 
 ### Diagnostics (`parts/diagnostics/`)
 
