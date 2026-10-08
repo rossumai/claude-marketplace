@@ -185,10 +185,36 @@ For record types with no search, e.g. `{"_ns_type": "GetAllRecord", "recordType"
 - `isInactive` appears both as `"false"` (string) and `false` (boolean) in working configs.
 - `{last_modified_date}` (single braces) is filled with the last successful run's time; with
   `operator` `after` or `onOrAfter`. Without it, every run re-reads the whole record type.
-- **Never filter an incremental search on a field that can change** (`isInactive`, a status).
-  A record that changes to inactive no longer matches the filter, so it is never fetched again
-  and the dataset keeps it as active forever. Import every record with its flag and filter in
-  the matching query, or run a periodic full reload.
+### Incremental imports and status filters
+
+An incremental search returns records that **changed and still match its criteria**. Combine
+`{last_modified_date}` with `isInactive: false` and a vendor deactivated after the first load
+no longer matches, so it is never fetched again: the dataset keeps it as active, and matching
+keeps offering it. In one production vendor dataset only 1 of ~4,900 records was marked
+inactive, while vendors already deactivated in NetSuite were still marked active. Deletions
+never arrive either: the import only upserts.
+
+Ask two questions about every criterion on an incremental search:
+
+1. **Can a record leave the filtered set through an update?** (`isInactive`, a status.) If yes,
+   do not put it in the incremental search. Import the field and filter in the MDH matching
+   query instead.
+2. **Does anything downstream need the records outside the set?** (A "this vendor is inactive"
+   warning instead of "not found", a validation rule.) If yes, load them, including in the
+   first full load.
+
+A criterion is fine in the import when the field never changes for a record (type, subsidiary,
+currency, a creation-date floor), when records can only enter the set, or when the import
+re-reads everything each run (`getAll`, a search without `{last_modified_date}`) — but such a run
+still only upserts, so records that left the set stay in the dataset until it is replaced.
+
+**Detect:** search the record type with `isInactive: true` and `lastModifiedDate` on or after the
+dataset's first load, look those `internalId`s up in the dataset, and count the ones still
+`isInactive: false`.
+**Repair:** first check that every matching query filters `isInactive` itself — a query that
+relied on the import filter starts offering inactive records. Then remove the criterion and run
+the hook once with a fixed date in place of `{last_modified_date}`, reaching back to the
+earliest stale record, before restoring the placeholder.
 
 ### Advanced search (joins, selected columns)
 
@@ -498,8 +524,10 @@ A query that uses them must also carry
 validation requires it, though the import does not use it yet. A query without placeholders
 re-reads the whole table every run.
 
-The same rule as for SOAP applies: do not combine the window with a filter on a field that
-can change (`isinactive = 'F'`). Select `isinactive` as a column and filter in the matching query.
+The window has the same trap as the SOAP search: a windowed query with `isinactive = 'F'` never
+sees a record become inactive. Ask the same two questions
+([Incremental imports and status filters](#incremental-imports-and-status-filters)); usually,
+select `isinactive` as a column and filter in the matching query.
 
 ### SOAP search → SuiteQL
 
