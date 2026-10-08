@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-18 skills · 15 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+18 skills · 16 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -133,6 +133,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **TxScript & Serverless Functions** — formula fields, extension development
 - **SAP Integration** — connector setup, mapping
 - **Workday Integration** — the Rossum-hosted SOAP connector: export/import hook wiring, the mapping DSL (`@{…}`, `$IF_SCHEMA_ID$`, `$FOR_EACH_SCHEMA_ID$`, `$DATAPOINT_MAPPING$`, `$FETCH_DOCUMENT_CONTENT$`), goods-vs-service line projection, master-data sync into MDH datasets
+- **NetSuite Integration** — the SOAP connector (`svc/netsuite-v3`: search/getAll imports, upsert + File Cabinet export) and the new REST import (SuiteQL job hooks, Store template 56) with its current gaps, dataset shapes, SOAP-to-REST migration and Oracle's SOAP removal timeline
 - **Export Pipeline (Request Processor)** — multi-stage API integration engine, SFTP export, auth, response handling
 - **Coupa Integration Baseline (CIB)** — both baselines: schema, MDH matching, export pipeline, business rules, e-invoicing queues and deployment scoping
 - **prd2 CLI** — deployment and management commands
