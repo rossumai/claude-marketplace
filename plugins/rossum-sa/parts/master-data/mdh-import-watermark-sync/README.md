@@ -54,6 +54,12 @@ Read it with `data_storage_find(collectionName="«state_dataset»", query={})`.
   "request_timeout_s": 30, "changed_from": null, "changed_to": null }
 ```
 
+`filters` applies to the full load **and** every incremental window. Put only fields there that
+never change for a record (company code, plant). A status filter (active, blocked) on an
+incremental window drops every record that changes out of it: it is never fetched again and
+keeps its old status in the dataset, so matching keeps offering it. Import the status and filter
+in the matching query, or use `full_operation: replace` for a status-scoped population.
+
 Secrets: `api_key`, `user_id`, `user_pw` (or whatever your `SourceApi.authenticate` reads).
 Set `payload_logging_enabled: false` on the hook — the payload carries the secrets.
 

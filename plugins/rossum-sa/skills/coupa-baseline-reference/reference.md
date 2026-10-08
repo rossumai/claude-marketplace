@@ -722,6 +722,40 @@ Each import webhook JSON has this structure in `settings.third_party_service_set
 
 Nested objects are expressed inside `query.fields` as single-key objects rather than in a separate `nested_fields` map, and the scope moves to `credentials.client_scope`.
 
+#### Status filters on incremental imports
+
+The baseline imports filter on `updated-at[gt_or_eq]: ${last_modified_date}` and nothing else.
+Project-specific slices often add more — `active: "true"`, `status`, `lookup[name][in]` — and a
+status key in an incremental query is a trap: the import returns records that **changed and
+still match**, so a GL account deactivated after the first load no longer matches, is never
+fetched again, and stays `active: true` in the dataset. Matching keeps offering it. On one
+project, 17 GL accounts deactivated in Coupa during the previous month were still active in the
+dataset.
+Deletions never arrive either: the import only upserts.
+
+Ask two questions about every query key other than `updated-at`:
+
+1. **Can a record leave the filtered set through an update?** (`active`, `status`.) If yes, do
+   not filter on it in the import. Import the field (keep it in `fields`) and filter in the MDH
+   matching query — inside `$search` or after the `$lookup`.
+2. **Does anything downstream need the records outside the set?** (A "this PO is closed" or
+   "this account is deactivated" warning instead of "not found", a validation rule.) If yes,
+   load them, including in the first full load.
+
+A filter is fine when the field never changes for a record (`lookup[name][in]`, a parent, a
+currency, a `created-at[gt_or_eq]` floor), when records can only enter the set, and in a one-time
+seed or bulk load whose follow-up incremental import is unfiltered. Limit history by
+`created-at`, not by status.
+
+**Detect:** query the endpoint with the excluded state and `updated-at[gt_or_eq]` set to the
+dataset's first load (e.g. `active=false`), look those `id`s up in the dataset, and count the ones
+still active.
+**Repair:** first check that every matching query filters the status itself — a query that
+relied on the import filter starts offering inactive records. Then remove the filter and let
+one run use a fixed `updated-at[gt_or_eq]` date reaching back to the earliest stale record (it
+is the backfill — in the case above an 18-record window, a 3-second run, 17 of 17 corrected),
+then restore `${last_modified_date}`.
+
 ### 4.3 Dataset Naming Convention
 
 All CIB datasets use the `_test` suffix by default (e.g., `suppliers_test`). This is because CIB is always deployed first against a Coupa TEST instance. When promoting to production:
