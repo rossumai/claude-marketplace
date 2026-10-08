@@ -1,0 +1,22 @@
+{
+  "credentials": {
+    "base_api_url": "«coupa_base_url»",
+    "client_id": "«client_id»",
+    "client_scope": "«client_scope»"
+  },
+  "import_config": {
+    "endpoint": "«endpoint»",
+    "dataset_name": "«dataset_name»",
+    "method": "update",
+    "id_keys": ["id"],
+    "records_per_request": «records_per_request»,
+    "query": {
+      "fields": ["id", "name", "active", "created_at", "updated_at"],
+      "order_by": "id",
+      "updated-at[gt_or_eq]": "«delta_from»"
+    }
+  },
+  "job_run_settings": {
+    "max_run_time_s": «max_run_time_s»
+  }
+}
