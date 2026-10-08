@@ -105,6 +105,7 @@ This skill has 7 phases. Work through them in order — each phase produces conc
    | Bias | Cause | Field example |
    |---|---|---|
    | **Under-reads narrow datasets** | 3 pages is a small sample and start-up costs dominate it | predicted 63.3 rec/s → actual **115–131** |
+| **Under-reads filtered slices** | a nested-association filter (`parent[id][in]`) makes the 3 sample pages slow; the full keyset walk is not | ~660k-row slice: sampled 13.2 rec/s/worker → actual **≥34.6** across 20 workers (~2.6×), flat across old and new ids; 0 × 429 at 20 workers under a 15 req/s cap with ~14 other import hooks live on the same OAuth client |
    | **Over-reads deep/wide datasets** | older ids serve much more slowly than the newest page, and nested associations force server-side joins at depth | predicted 24.8 rec/s/worker → actual **6.9** at depth (3.6× optimistic) |
    | **Ignores the rate cap** | the estimate is pure rec/s ÷ workers; it never models the per-child cap the supervisor will impose | predicted 270.7 rec/s → actual **114**, capped at 3.33 req/s ≈ 167 rec/s ceiling |
 
@@ -129,7 +130,7 @@ This skill has 7 phases. Work through them in order — each phase produces conc
 2. **Check collections.** Call `data_storage_list_collections` for each target collection:
 
    - **Collection absent:** Create it via the Data Storage API (synchronous, returns 200). **Confirm with user before executing.**
-   - **Collection present:** Count existing records via `data_storage_aggregate [{"$count": "total"}]`. Ask the user whether to:
+   - **Collection present:** Count existing records via `data_storage_aggregate [{"$count": "total"}]`. If the **import hook** did the first sync, its row count can match Coupa exactly and still be wrong — verify it as in [A collection first-synced by the import hook](#a-collection-first-synced-by-the-import-hook) before trusting it. Ask the user whether to:
      - **Clear and start fresh** (recommended for initial load) — drop and recreate. **Confirm with user.** Note that `data_storage_drop_collection` is async; wait for completion before proceeding.
      - **Resume** a previous run — skip clearing and use the existing state file.
 
@@ -140,7 +141,7 @@ This skill has 7 phases. Work through them in order — each phase produces conc
    | `__<id_key>_unique_idx` | `{"<id_key>": 1}` | Unique partial — options `{"unique": true, "partialFilterExpression": {"<id_key>": {"$exists": true}}}` |
    | `__digest_md5_idx` | `{"__digest_md5": 1}` | Regular |
    | `__dynamic_index` | `{"$**": 1}` | Wildcard |
-   | `default` | dynamic mappings | Atlas Search |
+   | `default` | dynamic mappings | Atlas Search — **check `data_storage_list_search_indexes` first**: the scheduled-imports service declares this index itself (dynamic mappings, `default_whitespace_lowercase`), seconds after an import's last write — seen even on a collection it never wrote a row to. If it is listed and READY, do not create it |
 
    The **unique partial index on the dataset's `id_key`** is the root-cause duplicate fix: duplicates become impossible at the DB layer, even across races the script's pre-insert check cannot see (mid-run anchor-window entries, backdated writes, concurrent writers). DS support is live-verified: `POST /indexes/create` with those options returns 202 and the index lists back with both properties intact; a duplicate `id` insert is then rejected (as the usual opaque HTTP 400), while id-less documents still insert freely thanks to the partial filter. The **partial filter is not optional**: a unique-but-non-partial index on `id_key` would reject the second id-less document as a duplicate null (surfacing as poison failures) — the script flags such an index distinctly and recommends dropping and recreating it as partial. The script verifies the index at the start of every full run and **aborts when it is confirmed missing or non-partial** — override with `--no-unique-index-ok` to proceed on the per-batch check alone (concurrent-writer races unprotected; the flag is inherited by supervised children). A failed index *listing* only warns. It never auto-creates the index, because a collection loaded before this guidance may already hold duplicates that would fail the build (run the Phase 4 duplicate audit first).
 
@@ -149,11 +150,13 @@ This skill has 7 phases. Work through them in order — each phase produces conc
    ```json
    {
      "name": "default_whitespace_lowercase",
-     "charFilters": [{"type": "mapping", "mappings": {".": " ", "/": "", "\\\\": "", "-": " ", ",": " "}}],
+     "charFilters": [{"type": "mapping", "mappings": {".": " ", "/": "", "\\": "", "-": " ", ",": " "}}],
      "tokenizer": {"type": "whitespace"},
      "tokenFilters": [{"type": "lowercase"}]
    }
    ```
+
+   The `"\\"` key is JSON for **one** backslash — the same mapping the service-created index carries. (`"\\\\"` would map two backslashes, and single backslashes would survive.)
 
    See `data-storage-reference` for the full index creation API.
 
@@ -538,6 +541,15 @@ Insert-dedup is **not** upsert: a re-run over a loaded collection skips every ex
 - **Live production collection:** blue-green — load into a temp collection (indexes build instantly on empty), swap via `data_storage_rename_collection`, then drop the old one. Avoids hours of empty/partial data under live MDH matching.
 
 DS REST quirk while cleaning up: `find`/`aggregate` take `query`/`pipeline`, but `delete_one`/`delete_many` take `filter` — a 422 usually means the wrong key.
+
+### A collection first-synced by the import hook
+
+The scheduled-imports service pages with **offset** and the CIB 1.x `order_by: created_at`, which is not unique — a historical bulk load puts up to ~40 records in one second. Records that tie on `created_at` reshuffle between offset pages, so a record served twice displaces one that is never served. On one ~49k-row slice the hook landed **exactly** Coupa's row count, yet ~2.7% of ids were byte-identical pairs (written ~1 s apart in the same crawl) and the same number of records were missing. A keyset gap-fill inserted exactly the missing count, and the recovered records cluster on tied timestamps.
+
+- **Verify by distinct ids, never by row count:** compare the number of distinct `id_key` values (a `$group` on `id_key`, then `$count`) with `--probe`'s exact count, and run the Phase 4 duplicate audit. Do this **before** creating the unique partial index — its build fails on the duplicates.
+- **The unique index blocks only half of it:** it stops the duplicates, but the missing records stay silent.
+- **Prefer this script for any large first sync,** even one the hook could finish: keyset paging on `id` cannot skip or repeat records.
+- **Repair (field-verified):** delete the later `ObjectId` of each duplicate pair by `_id` `$in` (count first, as a dry run) → create the unique partial index → a fresh, non-`--resume` run of the script over the populated collection acts as the gap-fill (existing ids are skipped, missing ones inserted).
 
 ### Record identity and dedup (layered)
 

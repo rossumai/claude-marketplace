@@ -964,7 +964,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             "last_updated_at":   last_ts,
             "total_processed":   total,
             "total_inserted":    total_ins,
-            **({"completed": True} if final else {}),
+            **({"completed": True, "completed_at": time.time()} if final else {}),
         }
         save_state(state, state_path)
         print(f"   flushed → total {total:>7}  last_id {cursor}  "
@@ -1391,6 +1391,16 @@ def _terminate_children(children: dict) -> None:
             child.terminate()
 
 
+def state_completed_at(state_path: Path, key: str):
+    """Wall-clock time the child recorded with its final state write, or None
+    (missing/malformed file, or state written before completed_at existed)."""
+    try:
+        value = json.loads(state_path.read_text()).get(key, {}).get("completed_at")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, (int, float)) else None
+
+
 def state_is_completed(state_path: Path, key: str) -> bool:
     """True iff the dataset's state file carries "completed": true."""
     try:
@@ -1726,7 +1736,11 @@ def supervise(keys: list[str], args) -> int:
                 if action == "done":
                     slog(f"{label}: completed ({restarts[label]} restart(s))")
                     status[label] = "done"
-                    stats[label]["t_end"] = time.monotonic()
+                    # The poll noticed completion up to one poll_interval late; end the
+                    # unit at the child's own completed_at (mapped onto monotonic time).
+                    done_at = state_completed_at(unit["state_path"], unit["dataset"])
+                    lag = max(time.time() - done_at, 0.0) if done_at else 0.0
+                    stats[label]["t_end"] = time.monotonic() - lag
                 elif action == "relaunch":
                     restarts[label] += 1
                     slog(f"{label}: died (exit {child.returncode}) — resuming "
