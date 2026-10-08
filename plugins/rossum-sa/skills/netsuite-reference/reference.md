@@ -569,9 +569,9 @@ dataset has none of these — see [migration](#migrating-a-soap-import-to-rest).
 ### Create the hook
 
 1. The organization must see **Store template 56** ("NetSuite REST master data import (TBA)").
-   It is private: it does not appear in `GET /hook_templates`, and `GET /hook_templates/56`
-   returns 404 unless Rossum has given the organization group the **`integrations_team`**
-   visibility tag. Customers cannot set this; ask Rossum.
+   Only organization groups with the **`integrations_team`** visibility tag see it; elsewhere it
+   is missing from `GET /hook_templates` and `GET /hook_templates/56` returns 404. Customers
+   cannot set the tag; ask Rossum (`rossum-reference` → Store templates and visibility).
 2. Install from the template (UI or `POST /hooks/create` with `hook_template`), then fill in the
    settings below. The template is `type: job`, `install_action: copy`, events
    `invocation.scheduled` + `invocation.manual`, default cron `0 3 * * *`.
