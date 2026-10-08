@@ -23,6 +23,15 @@ def test_fresh_run_records_total_inserted_and_cursor(monkeypatch, tmp_path):
     assert calls["cursors"] == [None, 8, 7]        # cursor advances per page
 
 
+def test_completion_stamps_completed_at(monkeypatch, tmp_path):
+    # both completion paths: the final flush of a buffer, and an empty final
+    # page with nothing buffered (flush returns early; the fallback write)
+    for pages in ([make_records(2, 1), []], [[]]):
+        saved, _ = run_import(monkeypatch, tmp_path, pages)
+        assert saved["users"]["completed"] is True
+        assert isinstance(saved["users"]["completed_at"], float)
+
+
 # ── extra_params: the highest-stakes call site ───────────────────────────────
 
 def test_import_dataset_passes_extra_params_to_every_fetch_page_call(monkeypatch, tmp_path):

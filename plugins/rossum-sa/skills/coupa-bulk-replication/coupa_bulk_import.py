@@ -964,7 +964,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             "last_updated_at":   last_ts,
             "total_processed":   total,
             "total_inserted":    total_ins,
-            **({"completed": True} if final else {}),
+            **({"completed": True, "completed_at": time.time()} if final else {}),
         }
         save_state(state, state_path)
         print(f"   flushed → total {total:>7}  last_id {cursor}  "
@@ -993,7 +993,8 @@ def import_dataset(key: str, limit: int | None, resume: bool,
             # a non-empty final flush already wrote completed; this covers the
             # nothing-buffered case (flush returned early without saving)
             if not state.get(key, {}).get("completed"):
-                state[key] = {**state.get(key, {}), "completed": True}
+                state[key] = {**state.get(key, {}), "completed": True,
+                              "completed_at": time.time()}
                 save_state(state, state_path)
             print(f"   complete — {total} records total")
             break
@@ -1391,6 +1392,16 @@ def _terminate_children(children: dict) -> None:
             child.terminate()
 
 
+def state_completed_at(state_path: Path, key: str):
+    """Wall-clock time the child recorded with its final state write, or None
+    (missing/malformed file, or state written before completed_at existed)."""
+    try:
+        value = json.loads(state_path.read_text()).get(key, {}).get("completed_at")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, (int, float)) else None
+
+
 def state_is_completed(state_path: Path, key: str) -> bool:
     """True iff the dataset's state file carries "completed": true."""
     try:
@@ -1674,6 +1685,7 @@ def supervise(keys: list[str], args) -> int:
             start_p, start_i = _unit_progress(unit["state_path"], unit["dataset"])
             stats[label] = {
                 "t_launch":        time.monotonic(),
+                "t_launch_wall":   time.time(),
                 "log_offset":      log_path.stat().st_size if log_path.exists() else 0,
                 "start_processed": start_p,
                 "start_inserted":  start_i,
@@ -1726,7 +1738,15 @@ def supervise(keys: list[str], args) -> int:
                 if action == "done":
                     slog(f"{label}: completed ({restarts[label]} restart(s))")
                     status[label] = "done"
-                    stats[label]["t_end"] = time.monotonic()
+                    # The poll noticed completion up to one poll_interval late; end the
+                    # unit at the child's own completed_at. A stamp older than this
+                    # unit's launch is a leftover state file, not this run's end.
+                    s = stats[label]
+                    done_at = state_completed_at(unit["state_path"], unit["dataset"])
+                    if done_at is not None and done_at >= s["t_launch_wall"]:
+                        s["t_end"] = s["t_launch"] + (done_at - s["t_launch_wall"])
+                    else:
+                        s["t_end"] = time.monotonic()
                 elif action == "relaunch":
                     restarts[label] += 1
                     slog(f"{label}: died (exit {child.returncode}) — resuming "

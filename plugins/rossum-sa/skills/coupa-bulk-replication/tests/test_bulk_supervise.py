@@ -212,6 +212,44 @@ def test_supervise_run_summary_records_give_up(monkeypatch, tmp_path):
     assert unit["restarts"] == 1
 
 
+def test_run_summary_seconds_use_child_completion_not_poll_sweep(monkeypatch, tmp_path):
+    """The supervisor notices completion only on its next poll; the unit's duration
+    must come from the child's own completed_at, or every unit reads as one sweep."""
+    code_src = ("import json, time; json.dump({'users': {'completed': True, "
+                "'completed_at': time.time()}}, open('coupa_import_state_users.json', 'w'))")
+    code, _ = _run_supervise(
+        monkeypatch, tmp_path, {"users": [[sys.executable, "-c", code_src]]}, ["users"],
+        poll_interval=3.0)
+    assert code == 0
+    unit = json.loads((tmp_path / "logs/run_summary.jsonl")
+                      .read_text().splitlines()[-1])["units"][0]
+    assert unit["seconds"] < 2.5          # a poll-stamped end would read >= 3.0
+
+
+def test_run_summary_ignores_completed_at_older_than_launch(monkeypatch, tmp_path):
+    """A leftover state file from an earlier run must not be read as this
+    unit's completion time (it would compute a negative duration)."""
+    (tmp_path / "coupa_import_state_users.json").write_text(json.dumps(
+        {"users": {"completed": True, "completed_at": 1000.0}}))
+    code, _ = _run_supervise(
+        monkeypatch, tmp_path,
+        {"users": [[sys.executable, "-c", "import time; time.sleep(0.2)"]]}, ["users"],
+        poll_interval=0.5)
+    assert code == 0
+    unit = json.loads((tmp_path / "logs/run_summary.jsonl")
+                      .read_text().splitlines()[-1])["units"][0]
+    assert unit["seconds"] >= 0.4         # falls back to the poll time, not 0
+
+
+def test_completed_at_reads_state(tmp_path):
+    p = tmp_path / "s.json"
+    assert cbi.state_completed_at(p, "users") is None              # missing file
+    p.write_text(json.dumps({"users": {"completed": True}}))
+    assert cbi.state_completed_at(p, "users") is None              # older state, no stamp
+    p.write_text(json.dumps({"users": {"completed": True, "completed_at": 123.5}}))
+    assert cbi.state_completed_at(p, "users") == 123.5
+
+
 # ── partition units ──────────────────────────────────────────────────────────
 
 def _partitioned_env(monkeypatch, tmp_path, workers=2):
