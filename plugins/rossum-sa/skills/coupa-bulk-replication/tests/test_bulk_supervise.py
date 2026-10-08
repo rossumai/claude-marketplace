@@ -219,11 +219,26 @@ def test_run_summary_seconds_use_child_completion_not_poll_sweep(monkeypatch, tm
                 "'completed_at': time.time()}}, open('coupa_import_state_users.json', 'w'))")
     code, _ = _run_supervise(
         monkeypatch, tmp_path, {"users": [[sys.executable, "-c", code_src]]}, ["users"],
-        poll_interval=2.0)
+        poll_interval=3.0)
     assert code == 0
     unit = json.loads((tmp_path / "logs/run_summary.jsonl")
                       .read_text().splitlines()[-1])["units"][0]
-    assert unit["seconds"] < 1.5          # a poll-stamped end would read >= 2.0
+    assert unit["seconds"] < 2.5          # a poll-stamped end would read >= 3.0
+
+
+def test_run_summary_ignores_completed_at_older_than_launch(monkeypatch, tmp_path):
+    """A leftover state file from an earlier run must not be read as this
+    unit's completion time (it would compute a negative duration)."""
+    (tmp_path / "coupa_import_state_users.json").write_text(json.dumps(
+        {"users": {"completed": True, "completed_at": 1000.0}}))
+    code, _ = _run_supervise(
+        monkeypatch, tmp_path,
+        {"users": [[sys.executable, "-c", "import time; time.sleep(0.2)"]]}, ["users"],
+        poll_interval=0.5)
+    assert code == 0
+    unit = json.loads((tmp_path / "logs/run_summary.jsonl")
+                      .read_text().splitlines()[-1])["units"][0]
+    assert unit["seconds"] >= 0.4         # falls back to the poll time, not 0
 
 
 def test_completed_at_reads_state(tmp_path):
