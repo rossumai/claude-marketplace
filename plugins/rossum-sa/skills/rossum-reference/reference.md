@@ -912,7 +912,7 @@ Hooks extend Rossum with custom logic. Types: **webhooks**, **serverless functio
 | POST | `/v1/hooks/{id}/manual_trigger` | Manual trigger |
 | POST | `/v1/hooks/{id}/invoke` | Run a hook with `invocation.manual` (how scheduled imports are started by hand). An inactive hook answers 400 `Cannot invoke inactive hook` |
 | GET | `/v1/hooks/runs?hook={id}` | Runs of a job hook, newest first, each with a `uuid` and `status` |
-| GET | `/v1/hooks/runs/{uuid}/logs` | The run's detail log lines (status changes, progress, the failure reason) — see [Job Extension](#job-extension) |
+| GET | `/v1/hooks/runs/{uuid}/logs` | The run's detail log lines (status changes, progress, the failure reason). `rossum_list_hook_logs` with `include_run_log=true` attaches them to job rows — see [Job Extension](#job-extension) |
 | GET | `/v1/hooks/{id}/logs` | List call logs — **may return 404 depending on deployment and token**. When it does, `POST /test` is the only reliable evidence a hook executed, since it returns the hook's `log` inline |
 
 ### Hook Object Fields

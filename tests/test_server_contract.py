@@ -463,9 +463,10 @@ def _run_log_lines(n):
             for i in range(n)]
 
 
-def _fake_run_log_status(pages_by_uuid, calls):
-    """Stand-in for _http_request_status serving /hooks/runs/<uuid>/logs pages."""
-    def status(url, *, method="GET", body=None):
+def _fake_run_log_status(pages_by_uuid, calls, *, omit=(), fail_pages=()):
+    """Stand-in for _http_request_status serving /hooks/runs/<uuid>/logs pages.
+    `omit` drops pagination keys; `fail_pages` answers those page numbers with 503."""
+    def status(url, *, method="GET", body=None, timeout=None):
         calls.append(url)
         uuid = url.split("/hooks/runs/")[1].split("/")[0]
         if uuid not in pages_by_uuid:
@@ -474,7 +475,12 @@ def _fake_run_log_status(pages_by_uuid, calls):
         size = int(url.split("page_size=")[1].split("&")[0])
         page = int(url.split("page=")[-1]) if "&page=" in url else 1
         total_pages = max(1, -(-len(lines) // size))
-        return 200, {"pagination": {"total": len(lines), "total_pages": total_pages},
+        if page in fail_pages:
+            return 503, {"detail": "unavailable"}
+        pagination = {"total": len(lines), "total_pages": total_pages}
+        for key in omit:
+            pagination.pop(key)
+        return 200, {"pagination": pagination,
                      "results": lines[(page - 1) * size: page * size]}
     return status
 
@@ -525,6 +531,59 @@ def test_list_hook_logs_long_run_log_keeps_head_and_tail(monkeypatch):
     assert details[-40:] == [f"line {i}" for i in range(210, 250)]
     assert row["run_log_total"] == 250 and row["run_log_omitted"] == 200
     assert calls[-1].endswith("page_size=100&page=3")
+
+
+def _one_job_row_call(monkeypatch, status_fake, uuid="u1"):
+    monkeypatch.setattr(server, "_http_request_status", status_fake)
+    responder = lambda url, method, body: {"results": [_job_log_row(uuid)], "pagination": {}}
+    _, emitted = run_handler(monkeypatch, "rossum_list_hook_logs",
+                             {"hook": 7, "include_run_log": True}, responder)
+    return emitted_payload(emitted)["results"][0]
+
+
+def test_list_hook_logs_short_last_page_still_returns_full_tail(monkeypatch):
+    """101 lines = a full first page + 1 line: the tail must reach back into the
+    previous page, or the lines just before the failure are lost."""
+    calls = []
+    row = _one_job_row_call(monkeypatch, _fake_run_log_status({"u1": _run_log_lines(101)}, calls))
+    details = [e["details"] for e in row["run_log"]]
+    assert details[:10] == [f"line {i}" for i in range(10)]
+    assert details[-40:] == [f"line {i}" for i in range(61, 101)]
+    assert row["run_log_omitted"] == 101 - 50
+
+
+def test_list_hook_logs_failed_tail_fetch_is_reported(monkeypatch):
+    calls = []
+    row = _one_job_row_call(monkeypatch, _fake_run_log_status(
+        {"u1": _run_log_lines(250)}, calls, fail_pages=(3,)))
+    assert "tail" in row["run_log_error"] and "HTTP 503" in row["run_log_error"]
+    assert [e["details"] for e in row["run_log"]][:10] == [f"line {i}" for i in range(10)]
+
+
+def test_list_hook_logs_survives_null_total_and_missing_total_pages(monkeypatch):
+    calls = []
+    row = _one_job_row_call(monkeypatch, _fake_run_log_status(
+        {"u1": _run_log_lines(250)}, calls, omit=("total_pages",)))
+    assert row["run_log_total"] == 250                     # pages derived from total
+    assert [e["details"] for e in row["run_log"]][-1] == "line 249"
+
+    def null_total(url, *, method="GET", body=None, timeout=None):
+        return 200, {"pagination": {"total": None}, "results": _run_log_lines(3)}
+    row = _one_job_row_call(monkeypatch, null_total)
+    assert len(row["run_log"]) == 3 and "run_log_error" not in row
+
+
+def test_list_hook_logs_fetches_each_run_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_http_request_status",
+                        _fake_run_log_status({"u1": _run_log_lines(2)}, calls))
+    responder = lambda url, method, body: {"results": [_job_log_row("u1"), _job_log_row("u1")],
+                                           "pagination": {}}
+    _, emitted = run_handler(monkeypatch, "rossum_list_hook_logs",
+                             {"hook": 7, "include_run_log": True}, responder)
+    rows = emitted_payload(emitted)["results"]
+    assert len(calls) == 1
+    assert rows[0]["run_log"] == rows[1]["run_log"]
 
 
 def test_list_hook_logs_run_log_error_does_not_fail_the_listing(monkeypatch):
