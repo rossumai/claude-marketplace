@@ -1,14 +1,17 @@
 # NetSuite Integration — Configuration Reference
 
-> Derived from a production SOAP deployment (imports of 15 datasets on three cadences, plus
-> the export) and from the REST import as released for acceptance testing in October 2026,
-> verified against a live organization on 2026-10-08. The REST import is changing quickly;
-> re-check the "not there yet" table before relying on it.
+> Sources, by authority: the connector's live OpenAPI spec
+> (`https://<region host>/svc/netsuite-v3/api/openapi.json`, read 2026-10-08) for settings; a
+> production SOAP deployment (15 datasets on three cadences, plus the export) for real usage; an
+> internal SA handbook (2025) for NetSuite-side setup and NetSuite's own rules; and the REST
+> import as released for acceptance testing in October 2026. The REST import is changing
+> quickly; re-check the "not there yet" table before relying on it.
 
 ## Table of Contents
 
 - [Two Connectors at a Glance](#two-connectors-at-a-glance)
 - [SOAP Removal Timeline](#soap-removal-timeline)
+- [NetSuite-Side Setup](#netsuite-side-setup)
 - [SOAP Connector: Hook Wiring](#soap-connector-hook-wiring)
 - [SOAP Import Configuration](#soap-import-configuration)
 - [SOAP Dataset Shapes](#soap-dataset-shapes)
@@ -17,6 +20,7 @@
 - [REST Import](#rest-import)
 - [REST import: what is not there yet](#rest-import-what-is-not-there-yet)
 - [Migrating a SOAP Import to REST](#migrating-a-soap-import-to-rest)
+- [Debugging](#debugging)
 - [Gotchas](#gotchas)
 
 ---
@@ -84,11 +88,44 @@ Consequences for Rossum projects:
 
 ---
 
+## NetSuite-Side Setup
+
+TBA credentials come from four objects created by a NetSuite administrator:
+
+1. **Integration record** — Setup → Integrations → Manage Integrations → New, with
+   *Token-Based Authentication* checked. Saving shows the **Consumer Key / Consumer Secret**
+   once (`consumer_key`, `consumer_secret`).
+2. **Role** — Setup → Users/Roles → Manage Roles → New, with *SOAP Web Services*, *Log in using
+   Access Tokens*, and the record permissions the datasets need (below).
+3. **Integration user** — Lists → Employees → Employees → New, *Give Access*, the role above. Use
+   a dedicated employee: a reused one breaks the integration when it is deactivated.
+4. **Access token** — Setup → Users/Roles → Access Tokens → New, for that integration, user and
+   role. Saving shows the **Token ID / Token Secret** once (`token_key`, `token_secret`).
+
+TBA itself must be enabled (Setup → Company → Enable Features → SuiteCloud). The `account` id is
+under Setup → Company → Company Information. From NetSuite 2027.1 new TBA integrations cannot be
+created ([timeline](#soap-removal-timeline)).
+
+| Dataset | Role permission |
+|---|---|
+| accounts | Lists → Accounts |
+| currencies | Lists → Currency |
+| customers | Lists → Customers |
+| subsidiaries | Lists → Subsidiaries |
+| vendors | Lists → Vendors |
+| purchase orders | Transactions → Purchase Order (View) |
+| any advanced transaction search | Transactions → Find Transaction |
+
+---
+
 ## SOAP Connector: Hook Wiring
 
 The Store tile "NetSuite Integration" (template 6) is `install_action: request_access`: it
-does not install a working hook, it requests that Rossum set the connector up. Configured
-hooks are plain webhooks whose `config.url` points at the regional service:
+does not install a working hook. In practice the hooks are created by hand: Extensions →
+Create extension → *Webhook*, the URL below, a **token owner** under Advanced settings, then
+settings and secrets. They are plain webhooks whose `config.url` points at the regional service.
+The connector's own OpenAPI spec (`…/svc/netsuite-v3/api/openapi.json`, UI at `…/api/docs`) is
+the authoritative settings schema.
 
 | | Import | Export |
 |---|---|---|
@@ -99,7 +136,11 @@ hooks are plain webhooks whose `config.url` points at the regional service:
 | `settings.run_async` | `true` | `false` |
 | `config.timeout_s` / `retry_count` (observed) | 30 / 4 | 120 / **0** |
 
-Re-exporting an annotation is safe because the record is upserted by `externalId` (see below).
+- Rossum webhooks default to a **30 s timeout and 5 retries**. Long exports need a higher
+  `timeout_s` (the production export uses 120 s; older docs cite a 60 s cap).
+- Set **`retry_count: 0` on export hooks**: a retried export repeats the File Cabinet upload,
+  which is not idempotent ([Steps 2–3](#steps-23--upload-and-attach-the-pdf)).
+- One hook carries either `import_configs` or `export_configs`, never both.
 
 ### `netsuite_settings`
 
@@ -115,8 +156,11 @@ Shared by import and export:
 }
 ```
 
-The `account` uses the underscore form (`1234567_SB1`); the hostnames use the dash form
-(`1234567-sb1`). The concurrency limit is keyed on the exact `account` string.
+`account` and `wsdl_url` are required; `service_url` and `service_binding_name` are optional.
+The `account` uses the underscore form (`1234567_SB1`) and is case-sensitive; the hostnames use
+the dash form (`1234567-sb1`). The concurrency limit is keyed on the exact `account` string; size
+it from NetSuite's Setup → Integration → Integration Governance, which shows the account's limit
+and the peak concurrency of all its integrations.
 
 ### Secrets
 
@@ -150,9 +194,16 @@ TBA, the same set on import and export hooks:
 | `master_data_name` | target MDH dataset |
 | `payload.method_name` | SOAP operation: `search` or `getAll` |
 | `payload.method_args` | the operation's arguments; every object carries its NetSuite type in `_ns_type` |
-| `payload.method_headers` | optional SOAP headers, e.g. `searchPreferences` |
-| `async_settings` | `retries`, `max_run_time_s` (36000 = 10 h is common) |
+| `payload.method_headers` | optional request headers: `searchPreferences` (`pageSize`, `bodyFieldsOnly`, `returnSearchColumns`) and `preferences` (e.g. `runServerSuiteScriptAndTriggerWorkflows`) |
+| `async_settings` | `retries` (default 2, 1–10), `max_run_time_s` (default 7200; production uses 36000 = 10 h), `valid_for_s` (default 43200, 300–172800: a queued job older than this never runs) |
 | `advanced_search_internal_id_jmespath` | advanced searches only — where the row's id lives (below) |
+| `checkpoint_strategy` | in the spec ("checkpointed import with sub-window processing", `{"strategy": "temporal", "interval_days": N}`) — the same object the REST import uses; not seen on a production SOAP hook |
+| `fields_to_save` | in the spec, marked "CURRENTLY DOESN'T WORK" — do not rely on it |
+| `development_options` | in the spec, development only — never in production |
+
+The spec also describes an async import shape with an `import_config` list and a hook-level
+`job_run_settings`; production hooks use `import_configs` with per-config `async_settings`.
+Use the production shape unless the integration team says otherwise.
 
 All `import_configs` of one hook run on that hook's cron, so split datasets across hooks by
 cadence. A production pattern: vendors and POs every 10 minutes, reference data and
@@ -183,8 +234,10 @@ For record types with no search, e.g. `{"_ns_type": "GetAllRecord", "recordType"
   `SalesTaxItemSearchBasic`.
 - `type` takes one value or a list: `"searchValue": ["_inventoryItem", "_nonInventoryItem"]`.
 - `isInactive` appears both as `"false"` (string) and `false` (boolean) in working configs.
-- `{last_modified_date}` (single braces) is filled with the last successful run's time; with
-  `operator` `after` or `onOrAfter`. Without it, every run re-reads the whole record type.
+- `{last_modified_date}` (single braces) is filled in by the connector, with `operator` `after`
+  or `onOrAfter`. On an empty dataset it defaults to 1970-01-01, so the first run is a full
+  import. Without it, every run re-reads the whole record type.
+
 ### Incremental imports and status filters
 
 An incremental search returns records that **changed and still match its criteria**. Combine
@@ -265,6 +318,35 @@ earliest stale record, before restoring the placeholder.
   appeared two or three times, all identical tax rows. Add a tax-line filter to the criteria,
   or deduplicate in the matching query.
 
+### Custom records
+
+`CustomRecordSearchAdvanced` with `criteria.basic` `{"_ns_type": "CustomRecordSearchBasic",
+"recType": {"internalId": "<N>"}}`. Custom-record columns go in
+`columns.basic.customFieldList.customField[]` (`SearchColumnStringCustomField` + `scriptId`).
+The change-date field is **`lastModified`**, not `lastModifiedDate`.
+
+### Search errors
+
+`VendorSubsidiaryRelationshipSearch…` can fail with `UNEXPECTED_ERROR: An unexpected error
+occurred. Error ID: …`. NetSuite support's fix: remove `method_headers.searchPreferences` from
+that config.
+
+### Initial full import
+
+On an empty dataset the first incremental run reads everything, and large record types can
+take days — longer than a job may run (`max_run_time_s`), so the run fails and starts over.
+Instead:
+
+1. Ask whether the full history is needed; often the last year is enough.
+2. Partition by creation date into several `import_configs` entries writing the same dataset,
+   so they run in parallel: `"dateCreated": {"operator": "within", "searchValue":
+   "2023-01-01T00:00:00Z", "searchValue2": "2024-01-01T00:00:00Z"}`, and `onOrAfter` for the last
+   partition.
+3. Check each partition landed with an aggregate on the dataset — on **`createdDate`**: NetSuite
+   returns `createdDate` although the search argument is `dateCreated`.
+4. Re-run failed partitions with a narrower window; then catch up with a fixed
+   `lastModifiedDate` and switch to `{last_modified_date}`.
+
 ---
 
 ## SOAP Dataset Shapes
@@ -330,14 +412,20 @@ Read values as `basic.<column>[0].searchValue` (and `.internalId` for reference 
 }
 ```
 
-`payload` is an ordered list of SOAP calls. Each step's result is available to later steps as
-`{pipeline_context[N].internal_id}` — the internal id NetSuite returned for step `N`.
+`payload` is an ordered list of SOAP calls (the spec accepts only the list; older docs show a
+single object). Each step's result is available to later steps as
+`{pipeline_context[N].internal_id}` — the internal id NetSuite returned for step `N`. Each call
+can also set `response_payload_reference_key` / `response_status_reference_key`: the connector
+then saves NetSuite's response / status into a document relation under that key, so the outcome
+stays with the document. An async variant (`run_async: true`, `async_settings` per export
+config) exists; production exports run synchronously.
 
 ### The mapping language
 
 The export uses the same template language as the Workday connector — `@{schema_id}`,
 `$DATAPOINT_VALUE$` (with `value_type`), `$IF_SCHEMA_ID$`, `$FOR_EACH_SCHEMA_ID$`,
-`$DATAPOINT_MAPPING$`. See `workday-reference` → The Mapping DSL for each primitive.
+`$IF_DATAPOINT_VALUE$`, `$DATAPOINT_MAPPING$`. See `workday-reference` → The Mapping DSL for each
+primitive.
 NetSuite-specific pieces:
 
 | Piece | Use |
@@ -362,13 +450,14 @@ A `VendorBill` body seen in production:
 
 | Field | Value |
 |---|---|
-| `externalId` | a Rossum-side unique id — **makes the upsert idempotent**: re-exporting updates instead of duplicating |
+| `externalId` | a Rossum-side unique id — **makes the record upsert idempotent**: re-exporting updates the record instead of duplicating it (the File step is not idempotent) |
 | `tranId` | the invoice number |
 | `entity` | `RecordRef` type `vendor` |
 | `subsidiary`, `currency`, `department` | `RecordRef`s (`subsidiary`, `currency`, `department`) |
 | `tranDate`, `dueDate` | `$IF_SCHEMA_ID$` around `$DATAPOINT_VALUE$` with `value_type: "iso_datetime"` |
 | `memo` | free text |
-| `customForm` | `RecordRef` to the customer's form (a fixed internal id) — on `VendorCredit` here |
+| `customForm` | `RecordRef` of type `customRecord` to the customer's form (a fixed internal id) |
+| `approvalStatus` | `RecordRef` with `internalId` `1` (Pending) or `2` (Approved) |
 | `itemList` / `expenseList` | see below |
 
 Lines go either to `itemList.item[]` (inventory items: `item`, `rate`, `quantity`,
@@ -381,6 +470,44 @@ Lines go either to `itemList.item[]` (inventory items: `item`, `rate`, `quantity
 - `$FOR_EACH_SCHEMA_ID$` iterates a grouped line table, and an inner `$DATAPOINT_MAPPING$` on
   a line-type field emits either an item or an expense object;
 - `taxCode` is a `RecordRef` of type `taxType`; `class` is type `classification`.
+
+NetSuite rules the export must respect:
+
+- **No repeated items** on one bill, and a PO + `orderLine` pair may appear **only once** per
+  payload — group the lines first (the line-items grouping extension or a formula table).
+- **`VendorCredit` amounts and quantities must be positive** — add hidden formula fields that
+  flip the sign.
+- Keep big `$DATAPOINT_MAPPING$` switches high in the tree and duplicate whole sections, rather
+  than nesting many small conditions.
+
+### Custom fields
+
+Header custom fields (`custbody_…`) go in the record's `customFieldList`; line custom fields
+(`custcol_…`) go in the line's own `customFieldList` inside `itemList.item`:
+
+```json
+"customFieldList": { "_ns_type": "CustomFieldList", "customField": [
+  { "_ns_type": "StringCustomFieldRef", "scriptId": "custbody_captured_total", "value": "@{amount_total}" }
+] }
+```
+
+Wrap an entry in `$IF_SCHEMA_ID$` to send it only when the field has a value. The concrete type
+follows the field type in NetSuite: `LongCustomFieldRef` (integer), `DoubleCustomFieldRef`
+(decimal), `BooleanCustomFieldRef` (check box), `StringCustomFieldRef` (text, e-mail, phone,
+URL), `DateCustomFieldRef` (date / time), `SelectCustomFieldRef` (list / record),
+`MultiSelectCustomFieldRef` (multiple select).
+
+### Applying a vendor credit to a bill
+
+A `VendorCredit` can be applied to an **open** vendor bill, always on line `"0"`:
+
+```json
+"applyList": { "$IF_DATAPOINT_VALUE$": { "schema_id": "bill_status_match", "value": "Open", "mapping": {
+  "_ns_type": "VendorCreditApplyList",
+  "apply": { "_ns_type": "VendorCreditApply", "doc": "@{bill_internal_id_match}", "line": "0",
+             "apply": true, "amount": "@{amount_total_normalized}" }
+} } }
+```
 
 ### Steps 2–3 — upload and attach the PDF
 
@@ -408,6 +535,12 @@ Lines go either to `itemList.item[]` (inventory items: `item`, `rate`, `quantity
 
 Note the casing: the record body uses `_ns_type` `VendorBill`, but the attach target `type` is
 `vendorBill`.
+
+**These steps are not idempotent.** NetSuite requires unique file names in a folder, while Rossum
+allows duplicates. A second export of the same annotation repeats the upload: it fails on the
+duplicate name or, with a unique name, adds a second copy. Make names unique (e.g. a function
+hook that appends a timestamp to the original file name), keep `retry_count: 0`, and guard
+against exporting the same document twice (duplicate handling).
 
 ---
 
@@ -603,6 +736,19 @@ datasets, compare, then switch the matching.
 
 ---
 
+## Debugging
+
+- **Import one record** to test a search: a `TransactionSearchBasic` with `"tranId":
+  {"operator": "is", "searchValue": "<number>"}` into the usual dataset.
+- **See the SOAP traffic**: NetSuite's SOAP Web Services Usage Logs
+  (`https://system.netsuite.com/app/webservices/syncstatus.nl`) show each request and response
+  the connector sent.
+- **Call NetSuite directly** from Postman: SOAP needs a TBA signature (HMAC-SHA256 over account,
+  consumer key, token, nonce and timestamp) in the SOAP header, plus a `SOAPAction` header.
+- REST import runs: `GET /hooks/runs/<uuid>/logs` ([Run status and logs](#run-status-and-logs)).
+
+---
+
 ## Gotchas
 
 | Symptom | Cause |
@@ -617,3 +763,9 @@ datasets, compare, then switch the matching.
 | Records deactivated in NetSuite still offered in matching | incremental import filtered on `isInactive`; deactivated records are never re-fetched |
 | Duplicate rows per PO line in an advanced-search dataset | `mainLine: false` also returns tax rows |
 | Re-export creates a second bill | the upsert has no stable `externalId` |
+| Re-export fails at the file step, or the bill gets two PDFs | File Cabinet names must be unique; the upload is not idempotent |
+| Bill rejected for repeated items, or a PO line used twice | group the lines before export |
+| Vendor credit rejected | amounts / quantities must be positive |
+| `UNEXPECTED_ERROR` on the vendor–subsidiary relationship search | remove `searchPreferences` from that config |
+| Partition check finds nothing on `dateCreated` | the stored field is `createdDate` |
+| Incremental custom-record import re-reads everything or nothing | custom records use `lastModified`, not `lastModifiedDate` |
