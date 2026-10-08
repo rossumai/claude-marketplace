@@ -10,7 +10,7 @@ This skill provides the complete configuration reference for the **Request Proce
 
 For the full configuration guide, field reference, patterns, and examples, see [reference.md](reference.md).
 
-**IMPORTANT — hook setup:** The Request Processor runs as a single serverless function hook. Install it from the Store ("Request Processor"), or create the hook via the Rossum API (or prd2) from that hook template, then configure the `settings` JSON. To read the exact engine behaviour for a given deployment, pull `config.code` off the deployed hook — that is the authoritative version for that org.
+**IMPORTANT — hook setup:** The Request Processor runs as a single serverless function hook. Install it from the Store ("Request Processor"), or create the hook via the Rossum API (or prd2) from that hook template, then configure the `settings` JSON. The template (id 50) is shown only to organization groups with the `ps_eng_export_pipeline` visibility tag, which only Rossum can add; without it the organization cannot see the template (`GET /hook_templates/50` → 404). Because it is a function hook, a copy of an existing hook's `config.code` (or a prd2 deploy) works without the template — prd2 then creates it with a plain `POST /hooks` (see `rossum-reference` → Store templates and visibility, `prd-reference` → Hooks created from Store templates). To read the exact engine behaviour for a given deployment, pull `config.code` off the deployed hook — that is the authoritative version for that org.
 
 Use this knowledge when:
 - Building a new export pipeline that sends data to external APIs (Coupa, SAP, NetSuite, custom REST)

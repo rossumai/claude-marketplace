@@ -896,7 +896,7 @@ Response returns a task URL for monitoring processing status.
 
 ## Hooks (Extensions)
 
-Hooks extend Rossum with custom logic. Three types: **webhooks**, **serverless functions**, and **connectors**.
+Hooks extend Rossum with custom logic. Types: **webhooks**, **serverless functions**, **connectors**, and **jobs** (long-running background work such as master-data imports — see [Job Extension](#job-extension)).
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -908,21 +908,26 @@ Hooks extend Rossum with custom logic. Three types: **webhooks**, **serverless f
 | DELETE | `/v1/hooks/{id}` | Delete hook |
 | POST | `/v1/hooks/{id}/test` | Dry-run the hook against a payload; returns `{log, response, stacktrace}`. Wrapped by `rossum_test_hook`, which generates the payload for you and returns it alongside the result |
 | POST | `/v1/hooks/{id}/generate_payload` | Build the payload the platform would send for an `event`/`action` against a real annotation, **without executing the hook**. Wrapped by `rossum_generate_hook_payload` (any event/action, credentials redacted) and `rossum_generate_export_payload` (export action, raw token for local template rendering) |
+| POST | `/v1/hooks/create` | Create a hook **from a Store template**: `hook_template` (URL) plus `name`, `events`, `token_owner`, …; the template supplies the rest. Wrapped by `rossum_create_hook_from_template` |
 | POST | `/v1/hooks/{id}/manual_trigger` | Manual trigger |
+| POST | `/v1/hooks/{id}/invoke` | Run a hook with `invocation.manual` (how scheduled imports are started by hand). An inactive hook answers 400 `Cannot invoke inactive hook` |
+| GET | `/v1/hooks/runs?hook={id}` | Runs of a job hook, newest first, each with a `uuid` and `status` |
+| GET | `/v1/hooks/runs/{uuid}/logs` | The run's detail log lines (status changes, progress, the failure reason) — see [Job Extension](#job-extension) |
 | GET | `/v1/hooks/{id}/logs` | List call logs — **may return 404 depending on deployment and token**. When it does, `POST /test` is the only reliable evidence a hook executed, since it returns the hook's `log` inline |
 
 ### Hook Object Fields
 
 - `id` (integer): Unique identifier
 - `url` (string): API endpoint
-- `type` (string): `"webhook"`, `"function"`, or connector type
+- `type` (string): `"webhook"`, `"function"`, `"job"`, or connector type
 - `name` (string): Display name
 - `events` (array): Trigger event types
 - `config` (object): Extension-specific configuration
 - `queues` (array): Queue URLs this hook applies to
 - `active` (boolean): Enable/disable — check this (together with `queues`) before treating anything in the hook's settings as live behavior; inactive hooks are common leftovers in real implementations
 - `sideload` (array): Extra objects to embed in the payload as top-level arrays — **opt-in per hook**. Accepted values mirror the annotation hook serializer's sideload fields: `queues`, `schemas`, `modifiers`, `modified_bys`, `created_bys`, `relations`, `child_relation`, `emails`, `related_emails`, `labels`, `notes`, `automation_blockers`, `pages`, `assignees`, `suggested_edits`. Without `queues` listed here the payload still carries `annotation.queue` (a URL), just no queue *object* — a hook needing the queue's `name` must sideload it or fetch the URL
-- `token_owner` (string): User identity for API access
+- `token_owner` (string): User identity for API access. **Required for job hooks** — a job run without one fails at once with `Error in configuration: Set the token owner of the extension.` Must be a user of the organization (not an external or support account)
+- `hook_template` (string | null): The Store template the hook was created from (see [Store templates and visibility](#store-templates-and-visibility))
 - `run_after` (array): Hook URLs that must run before this one
 - `description` (string): Human-readable description of what the hook does — always fill this in and keep it up to date when creating or modifying hooks
 - `metadata` (object): Custom JSON (up to 4 KB)
@@ -1035,6 +1040,58 @@ Connectors push validated data to external systems via two endpoints:
 - **Save endpoint** (`POST /save`): Called after validation; HTTP 200 marks annotation as exported
 
 Both endpoints receive POST requests with JSON annotation data matching the queue schema. The validate endpoint returns status and optional error messages.
+
+### Job Extension
+
+A `job` hook runs long background work — master-data imports such as the Coupa (CIB 2.0) and
+NetSuite REST imports — instead of answering an event synchronously.
+
+- **Created from a Store template**, which sets (and, being private, hides) how the job runs.
+  The organization must be able to see that template ([Store templates and visibility](#store-templates-and-visibility)).
+- **Events:** `invocation.scheduled` (cron in `config.schedule.cron`) and `invocation.manual`
+  (`POST /hooks/{id}/invoke`). No queues.
+- **`token_owner` is required.**
+- **`settings.job_run_settings`:** `retries` (1–10), `max_run_time_s` (60–36,000), `valid_for_s`
+  (300–172,800; a queued run older than this never starts). A run stopped at `max_run_time_s`
+  counts as failed.
+- **Settings are validated when the job runs, not when the hook is saved** — a mistake shows up
+  as a failed run.
+- **Lifecycle:** `waiting` → `running` → `completed` / `failed`. A run can sit in `waiting` for
+  minutes before a worker takes it (3 min 20 s observed for a 234-record import that then ran in
+  6 s), so small imports spend most of their time queued.
+
+**Where the logs are.** The row in `GET /hooks/logs` carries only the status; its `message` is
+empty even for a failure. The detail is in the run log:
+
+```
+GET /api/v1/hooks/runs?hook=<id>          → [{uuid, status, start, end, …}]
+GET /api/v1/hooks/runs/<uuid>/logs        → Job run triggered
+                                            Status changed to waiting
+                                            Status changed to running
+                                            Imported 50 records …
+                                            Status changed to completed
+                                            (or: Status changed to failed (reason: …))
+```
+
+### Store templates and visibility
+
+Store extensions are created from **hook templates** (`GET /hook_templates`,
+`POST /hooks/create`).
+
+- **Visibility is per organization group.** Some templates are shown only to groups that Rossum
+  has given a visibility tag — `integrations_team` (Coupa master-data import job, template 55;
+  NetSuite REST import, template 56), `ps_eng_export_pipeline` (Request Processor, template 50).
+  An organization without the tag does not see the template at all: it is missing from
+  `GET /hook_templates` and `GET /hook_templates/{id}` returns 404. Customers cannot set the tag;
+  ask Rossum. The organization-group response does not show it.
+- **`config.private: true`** on a template (and on hooks created from it) is a separate thing: the
+  fields the template sets are hidden in API responses and **read-only** afterwards
+  (`A read_only private field, cannot update`). To change one, create a new hook. Template 50 is
+  gated by a tag but not private; templates 28, 39, 55 and 56 are private.
+- **`install_action`:** `copy` installs a working hook; `request_access` (e.g. the SOAP NetSuite
+  tile) only asks Rossum to set the integration up.
+- Deploying private hooks with prd2 needs the template visible in the target organization —
+  see `prd-reference` → Hooks created from Store templates.
 
 ### Hook Settings
 

@@ -629,6 +629,38 @@ Read `.py` only when you have a specific reason to believe the code itself is no
 jq '.settings' "<org>/<env>/hooks/<HookName>_[<id>].json"
 ```
 
+### Hooks created from Store templates
+
+How `prd2 deploy run` creates a hook whose JSON carries `hook_template`:
+
+1. **Find the template in the target.** Same organization: use it as is. Cross-organization:
+   match the target's `GET /hook_templates` list by id (local deploy) or by the source template's
+   name.
+2. **Create it in two calls:** `POST /hooks/create` with only `name`, `hook_template`,
+   `token_owner`, `events` (and `queues: []`), then an update with the rest of the local JSON.
+   If the new hook is `private`, prd2 drops `code`, `runtime`, `third_party_library_pack` and
+   `private` from that update first.
+3. **No template found:** for a **private, non-function** hook prd2 opens an interactive picker
+   ("Please select template for hook …", with an `N/A` choice). Any other hook is created with a
+   plain `POST /hooks`.
+
+What follows from it:
+
+- **A private hook needs its template visible in the target organization** — e.g. CIB 2.0's Coupa
+  import jobs need template 55, which only organization groups with the `integrations_team`
+  visibility tag see (`rossum-reference` → Store templates and visibility). Without it the
+  picker appears; in a script that pipes prd2's output nobody can answer it, and the run dies
+  (a CIB deploy tool reports `OSError [Errno 22]` behind a `Planning failed` banner, exit code 0).
+  Removing `hook_template` from the JSON does not help — prd2 then has nothing to match and opens
+  the same picker. Only making the template visible fixes it.
+- **Function hooks from a template can end up duplicated.** Rossum provisions a function
+  asynchronously, so the update in step 2 can be rejected with `Function couldn't be updated.
+  Function is in status pending`; prd2 records the create as failed and a later pass creates
+  another hook, leaving orphans without queues or `run_after`. The CIB deploy tool's workaround:
+  set `hook_template` to `null` on function hooks before deploying, so prd2 creates them
+  complete with one `POST /hooks`. Safe only for functions — never for a private non-function
+  hook.
+
 ### Prefer `jq` on absolute paths
 
 Three things reliably bite in prd2 trees:

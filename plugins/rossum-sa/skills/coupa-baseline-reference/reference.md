@@ -659,6 +659,22 @@ The datasets, endpoints and schedules below are identical in both baselines. Wha
 
 **[2.0]** Because the imports are `job` hooks they can also be triggered by hand (`invocation.manual`), which is how the init script seeds the datasets right after a deploy. `settings.job_run_settings.max_run_time_s` is `36000`.
 
+**[2.0] Running the import jobs** (job hooks in general: `rossum-reference` → Job Extension):
+
+- **Template 55 must be visible.** It is shown only to organization groups with the
+  `integrations_team` visibility tag; without it `GET /hook_templates/55` returns 404, the hooks
+  cannot be installed, and a prd2 deploy of them stalls on a template picker
+  (`prd-reference` → Hooks created from Store templates). Only Rossum can add the tag.
+- **Each hook needs a `token_owner`** — without one every run fails at once with `Set the token
+  owner of the extension.`
+- **Watch runs in the run log**, not the hook log: `GET /hooks/runs?hook=<id>`, then
+  `GET /hooks/runs/<uuid>/logs` shows `waiting` → `running`, one `Imported N records` line per
+  page, and the failure reason. Expect minutes in `waiting` before a worker picks the job up.
+- **Paging:** `records_per_request` is at most 50; `offset` and `limit` cannot appear in `query`
+  (the job pages with them itself).
+- **Records keep Coupa's field names**: `fields: ["updated_at"]` is stored as `updated-at`. Write
+  MDH queries against the stored names.
+
 | # | Dataset | Coupa Endpoint | Schedule | Notes |
 |---|---------|---------------|----------|-------|
 | 1 | `suppliers_test` | `/api/suppliers` | `0 */2 * * *` (every 2h) | Active/inactive suppliers |
