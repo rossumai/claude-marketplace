@@ -667,7 +667,8 @@ The datasets, endpoints and schedules below are identical in both baselines. Wha
   (`prd-reference` → Hooks created from Store templates). Only Rossum can add the tag.
 - **Each hook needs a `token_owner`** — without one every run fails at once with `Set the token
   owner of the extension.`
-- **Watch runs in the run log**, not the hook log: `GET /hooks/runs?hook=<id>`, then
+- **Watch runs in the run log**, not the hook log: `rossum_list_hook_logs` with
+  `include_run_log=true`, or `GET /hooks/runs?hook=<id>`, then
   `GET /hooks/runs/<uuid>/logs` shows `waiting` → `running`, one `Imported N records` line per
   page, and the failure reason. Expect minutes in `waiting` before a worker picks the job up.
 - **Paging:** `records_per_request` is at most 50; `offset` and `limit` cannot appear in `query`

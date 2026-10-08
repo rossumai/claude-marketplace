@@ -622,7 +622,8 @@ failed run.
 
 A run moves `waiting` → `running` → `completed` / `failed`. The hook log row
 (`GET /hooks/logs?hook=<id>`) carries only the status, with an empty `message`. The detail —
-progress lines and the failure reason — is in the run log:
+progress lines and the failure reason — is in the run log (`rossum_list_hook_logs` with
+`include_run_log=true` attaches it):
 
 ```
 GET /api/v1/hooks/runs?hook=<id>             → runs, each with a uuid
@@ -745,7 +746,7 @@ datasets, compare, then switch the matching.
   the connector sent.
 - **Call NetSuite directly** from Postman: SOAP needs a TBA signature (HMAC-SHA256 over account,
   consumer key, token, nonce and timestamp) in the SOAP header, plus a `SOAPAction` header.
-- REST import runs: `GET /hooks/runs/<uuid>/logs` ([Run status and logs](#run-status-and-logs)).
+- REST import runs: `rossum_list_hook_logs` with `include_run_log=true`, or `GET /hooks/runs/<uuid>/logs` ([Run status and logs](#run-status-and-logs)).
 
 ---
 
@@ -753,7 +754,7 @@ datasets, compare, then switch the matching.
 
 | Symptom | Cause |
 |---|---|
-| REST job fails instantly, log row has empty `message` | read `GET /hooks/runs/<uuid>/logs`; first suspects: missing `token_owner`, config validation |
+| REST job fails instantly, log row has empty `message` | read the run log (`rossum_list_hook_logs` with `include_run_log=true`); first suspects: missing `token_owner`, config validation |
 | `GET /hook_templates/56` → 404 | the organization group lacks `integrations_team`; only Rossum can add it |
 | REST rows skipped or duplicated between pages | query does not end with `ORDER BY id` |
 | Column `internalId` arrives as `internalid` | SuiteQL lowercases every column name |

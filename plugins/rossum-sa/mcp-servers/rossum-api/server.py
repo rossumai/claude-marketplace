@@ -223,7 +223,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.42.3"
+_SERVER_VERSION = "0.43.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -428,7 +428,7 @@ def _http_request_silent(url, *, method="GET"):
         return None
 
 
-def _http_request_status(url, *, method="GET", body=None):
+def _http_request_status(url, *, method="GET", body=None, timeout=130):
     """Make an authenticated request and return (status_code, parsed_body).
 
     Never sends a tool_result and never raises: HTTP errors return their real
@@ -446,7 +446,7 @@ def _http_request_status(url, *, method="GET", body=None):
         data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=130, context=_ssl_context) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context) as resp:
             raw = resp.read()
             # 204 No Content (e.g. DELETE) has no body — that's a success, not a parse error.
             return resp.status, (json.loads(raw.decode("utf-8")) if raw else None)
@@ -1177,8 +1177,11 @@ def _paginate_search(request_id, url, body, *, max_results):
     return (all_results, api_total)
 
 
-def _rossum_list(request_id, endpoint, params, *, pick_fields=None, max_results=None):
-    """Paginate a Rossum API list endpoint and return collected results."""
+def _rossum_list(request_id, endpoint, params, *, pick_fields=None, max_results=None,
+                 post_process=None):
+    """Paginate a Rossum API list endpoint and return collected results.
+    *post_process(results, payload, base_url)* may enrich rows or add payload keys
+    before the result is emitted."""
     base_url, _ = _ensure_connection(request_id)
     if not base_url:
         return
@@ -1188,7 +1191,10 @@ def _rossum_list(request_id, endpoint, params, *, pick_fields=None, max_results=
     )
     if result is not None:
         results, _ = result
-        tool_result(request_id, json.dumps({"total": len(results), "results": results}, indent=2))
+        payload = {"total": len(results), "results": results}
+        if post_process:
+            post_process(results, payload, base_url)
+        tool_result(request_id, json.dumps(payload, indent=2))
 
 
 # --- Tool registration ---
@@ -1289,9 +1295,16 @@ def _validate_tool_arguments(name, arguments):
 
 _USER_FIELDS = ("id", "email", "first_name", "last_name", "is_active")
 _HOOK_LOG_FIELDS = (
-    "hook_id", "annotation_id", "queue_id", "event", "action",
+    "hook_id", "hook_type", "uuid", "annotation_id", "queue_id", "event", "action",
     "status", "log_level", "message", "timestamp", "start", "end",
 )
+# A job hook's log row carries only its status; the detail lives in the run log at
+# /hooks/runs/<uuid>/logs, where <uuid> is the row's own uuid.
+_RUN_LOG_FIELDS = ("timestamp", "log_level", "details")
+_RUN_LOG_PAGE_SIZE = 100
+_RUN_LOG_HEAD, _RUN_LOG_TAIL = 10, 40
+_RUN_LOG_MAX_ROWS = 10
+_RUN_LOG_TIMEOUT_S = 15  # best-effort extras: never hold the stdio server for long
 _ANNOTATION_FIELDS = ("id", "queue", "status", "document", "modifier", "modified_at", "confirmed_at", "exported_at")
 _QUEUE_FIELDS = ("id", "name", "workspace", "schema", "hooks", "status", "engine", "dedicated_engine", "generic_engine")
 _HOOK_FIELDS = ("id", "name", "type", "events", "queues", "active", "run_after", "token_owner")
@@ -2891,7 +2904,11 @@ def handle_list_configuration_changelog(request_id, arguments):
     "lines (and, on a failure, the full traceback with line numbers) live in the row's 'output' "
     "field, which is omitted by default because it is untruncated — a hook printing in a loop "
     "produced ~296,000 characters on a single row. Pass include_output=true to fetch it, "
-    "narrowed to one hook/annotation.",
+    "narrowed to one hook/annotation.\n"
+    "JOB HOOKS (hook_type 'job', e.g. Coupa CIB 2.0 and NetSuite REST imports): 'message' is "
+    "empty even when the run failed. The run's detail — status changes, 'Imported N records' "
+    "progress, and the failure reason — is in its run log; pass include_run_log=true to attach "
+    "it to job rows as 'run_log'.",
     {
         "type": "object",
         "properties": {
@@ -2936,6 +2953,16 @@ def handle_list_configuration_changelog(request_id, arguments):
                     "annotation and a small max_results before turning this on."
                 ),
             },
+            "include_run_log": {
+                "type": "boolean",
+                "description": (
+                    "For job-hook rows, fetch the run log (GET /hooks/runs/<uuid>/logs) and "
+                    "attach it as 'run_log' [{timestamp, log_level, details}]. A long log is "
+                    f"returned as its first {_RUN_LOG_HEAD} and last {_RUN_LOG_TAIL} lines, "
+                    "with 'run_log_total' and 'run_log_omitted'. One extra request per job row, "
+                    f"at most {_RUN_LOG_MAX_ROWS} rows. Off by default."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -2954,7 +2981,62 @@ def handle_list_hook_logs(request_id, arguments):
     _rossum_list(
         request_id, "/api/v1/hooks/logs", params,
         max_results=max_results, pick_fields=pick_fields,
+        post_process=_attach_run_logs if arguments.get("include_run_log") else None,
     )
+
+
+def _attach_run_logs(results, payload, base_url):
+    """Attach each job run's log to its row(s): one fetch per distinct run uuid,
+    at most _RUN_LOG_MAX_ROWS runs."""
+    uuids = list(dict.fromkeys(r["uuid"] for r in results
+                               if r.get("hook_type") == "job" and r.get("uuid")))
+    fetched = {u: _fetch_run_log(base_url, u) for u in uuids[:_RUN_LOG_MAX_ROWS]}
+    for row in results:
+        if row.get("uuid") in fetched:
+            row.update(fetched[row["uuid"]])
+    if len(uuids) > _RUN_LOG_MAX_ROWS:
+        payload["run_log_note"] = (
+            f"run_log attached to the first {_RUN_LOG_MAX_ROWS} of {len(uuids)} job runs; "
+            "narrow with hook / timestamp filters to see the others."
+        )
+
+
+def _run_log_page(url):
+    """(lines, pagination, error) for one run-log page; never raises or emits."""
+    status, body = _http_request_status(url, timeout=_RUN_LOG_TIMEOUT_S)
+    if status == 200 and isinstance(body, dict):
+        return body.get("results") or [], body.get("pagination") or {}, None
+    label = f"HTTP {status}" if status is not None else "Error"
+    return [], {}, f"{label}: {str(body)[:200]}"
+
+
+def _fetch_run_log(base_url, uuid):
+    """Fields to merge into the row: run_log (+ run_log_total / run_log_omitted when
+    trimmed) and/or run_log_error. A long log keeps its first _RUN_LOG_HEAD and last
+    _RUN_LOG_TAIL lines — the failure reason is last."""
+    url = f"{base_url}/api/v1/hooks/runs/{uuid}/logs?page_size={_RUN_LOG_PAGE_SIZE}"
+    first, pagination, error = _run_log_page(url)
+    if error:
+        return {"run_log_error": error}
+    total = pagination.get("total") or len(first)
+    total_pages = pagination.get("total_pages") or -(-total // _RUN_LOG_PAGE_SIZE) or 1
+    out = {}
+    lines = first
+    if total_pages > 1:
+        tail, _, error = _run_log_page(f"{url}&page={total_pages}")
+        if not error and len(tail) < _RUN_LOG_TAIL:
+            if total_pages == 2:
+                tail = first + tail
+            else:
+                prev, _, error = _run_log_page(f"{url}&page={total_pages - 1}")
+                tail = prev + tail
+        if error:
+            out["run_log_error"] = f"tail of the log not fetched — {error}"
+        lines = first[:_RUN_LOG_HEAD] + tail[-_RUN_LOG_TAIL:]
+        out["run_log_total"] = total
+        out["run_log_omitted"] = total - len(lines)
+    out["run_log"] = [{k: line.get(k) for k in _RUN_LOG_FIELDS} for line in lines]
+    return out
 
 
 @_tool(
