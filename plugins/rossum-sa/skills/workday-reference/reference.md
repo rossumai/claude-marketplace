@@ -623,6 +623,24 @@ Differential entries use `method: update` + `id_keys`; pair them with an occasio
 `method: replace` full-rebuild job (e.g. weekends) so deletions in Workday — which a
 differential window can never observe — do not accumulate in the dataset forever.
 
+**Status criteria on a differential entry.** A differential window returns records that
+**changed and still match** the request. Add a criterion on a field that can change — an
+active/inactive or status flag — and a record that changes out of the set is never fetched
+again: the dataset keeps the old copy, still marked active, and matching keeps offering it
+(measured on other connectors: deactivated GL accounts and vendors still offered). Ask two
+questions about every such criterion:
+
+1. **Can a record leave the filtered set through an update?** If yes, keep the criterion off
+   the differential entry: import the field and filter in the MDH matching query.
+2. **Does anything downstream need the records outside the set?** (An "inactive supplier"
+   warning instead of "not found", a validation rule.) If yes, load them in the full load too.
+
+A criterion is fine when the field never changes for a record, when records can only enter
+the set, or on a `replace` entry (each run rewrites the dataset with the current population).
+To repair, check first that every matching query filters the status itself, then remove the
+criterion and run once with a fixed `Updated_From_Date` reaching back to the earliest stale
+record before restoring `${last_modified_date}`.
+
 > **KB dialect warning:** the public
 > [Import Configuration](https://knowledge-base.rossum.ai/docs/import-configuration-1)
 > page shows an older key set — `ds_collection_name`, `request.replication.id_key_name` +
