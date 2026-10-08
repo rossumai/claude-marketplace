@@ -1061,7 +1061,8 @@ NetSuite REST imports — instead of answering an event synchronously.
   6 s), so small imports spend most of their time queued.
 
 **Where the logs are.** The row in `GET /hooks/logs` carries only the status; its `message` is
-empty even for a failure. The detail is in the run log:
+empty even for a failure. The detail is in the run log — `rossum_list_hook_logs` with
+`include_run_log=true` attaches it to each job row (head and tail of a long log); by hand:
 
 ```
 GET /api/v1/hooks/runs?hook=<id>          → [{uuid, status, start, end, …}]

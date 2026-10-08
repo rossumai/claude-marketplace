@@ -453,6 +453,108 @@ def test_list_hook_logs_output_is_opt_in(monkeypatch):
     assert opted_in["results"][0]["output"] == "PRINTED LINE\n"
 
 
+def _job_log_row(uuid, hook_type="job"):
+    return {"hook_id": 7, "hook_type": hook_type, "uuid": uuid, "status": "failed",
+            "message": "", "timestamp": "2026-01-01T00:00:00Z"}
+
+
+def _run_log_lines(n):
+    return [{"timestamp": f"t{i}", "log_level": "INFO", "details": f"line {i}", "extra": "x"}
+            for i in range(n)]
+
+
+def _fake_run_log_status(pages_by_uuid, calls):
+    """Stand-in for _http_request_status serving /hooks/runs/<uuid>/logs pages."""
+    def status(url, *, method="GET", body=None):
+        calls.append(url)
+        uuid = url.split("/hooks/runs/")[1].split("/")[0]
+        if uuid not in pages_by_uuid:
+            return 404, {"detail": "Not found."}
+        lines = pages_by_uuid[uuid]
+        size = int(url.split("page_size=")[1].split("&")[0])
+        page = int(url.split("page=")[-1]) if "&page=" in url else 1
+        total_pages = max(1, -(-len(lines) // size))
+        return 200, {"pagination": {"total": len(lines), "total_pages": total_pages},
+                     "results": lines[(page - 1) * size: page * size]}
+    return status
+
+
+def test_list_hook_logs_keeps_run_identity_without_fetching_run_logs(monkeypatch):
+    """hook_type and uuid are the only way to reach a job run's log, so they stay in
+    every row — but run logs are fetched only on request."""
+    calls = []
+    monkeypatch.setattr(server, "_http_request_status", _fake_run_log_status({}, calls))
+    responder = lambda url, method, body: {"results": [_job_log_row("u1")], "pagination": {}}
+
+    _, emitted = run_handler(monkeypatch, "rossum_list_hook_logs", {"hook": 7}, responder)
+    row = emitted_payload(emitted)["results"][0]
+    assert row["hook_type"] == "job" and row["uuid"] == "u1"
+    assert "run_log" not in row
+    assert calls == []
+
+
+def test_list_hook_logs_attaches_run_log_to_job_rows_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_http_request_status",
+                        _fake_run_log_status({"u1": _run_log_lines(3)}, calls))
+    rows = [_job_log_row("u1"), _job_log_row("w1", hook_type="webhook")]
+    responder = lambda url, method, body: {"results": rows, "pagination": {}}
+
+    _, emitted = run_handler(monkeypatch, "rossum_list_hook_logs",
+                             {"hook": 7, "include_run_log": True}, responder)
+    job, webhook = emitted_payload(emitted)["results"]
+    assert job["run_log"] == [{"timestamp": f"t{i}", "log_level": "INFO", "details": f"line {i}"}
+                              for i in range(3)]
+    assert "run_log" not in webhook
+    assert calls == [f"{BASE}/api/v1/hooks/runs/u1/logs?page_size=100"]
+
+
+def test_list_hook_logs_long_run_log_keeps_head_and_tail(monkeypatch):
+    """A long import logs one line per page; the failure reason is last, so a long
+    log is returned as its first and last lines with the gap counted."""
+    calls = []
+    monkeypatch.setattr(server, "_http_request_status",
+                        _fake_run_log_status({"u1": _run_log_lines(250)}, calls))
+    responder = lambda url, method, body: {"results": [_job_log_row("u1")], "pagination": {}}
+
+    _, emitted = run_handler(monkeypatch, "rossum_list_hook_logs",
+                             {"hook": 7, "include_run_log": True}, responder)
+    row = emitted_payload(emitted)["results"][0]
+    details = [e["details"] for e in row["run_log"]]
+    assert details[:10] == [f"line {i}" for i in range(10)]
+    assert details[-40:] == [f"line {i}" for i in range(210, 250)]
+    assert row["run_log_total"] == 250 and row["run_log_omitted"] == 200
+    assert calls[-1].endswith("page_size=100&page=3")
+
+
+def test_list_hook_logs_run_log_error_does_not_fail_the_listing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_http_request_status", _fake_run_log_status({}, calls))
+    responder = lambda url, method, body: {"results": [_job_log_row("gone")], "pagination": {}}
+
+    _, emitted = run_handler(monkeypatch, "rossum_list_hook_logs",
+                             {"hook": 7, "include_run_log": True}, responder)
+    row = emitted_payload(emitted)["results"][0]
+    assert "run_log" not in row
+    assert row["run_log_error"].startswith("HTTP 404")
+
+
+def test_list_hook_logs_caps_run_log_fetches(monkeypatch):
+    calls = []
+    uuids = [f"u{i}" for i in range(12)]
+    monkeypatch.setattr(server, "_http_request_status",
+                        _fake_run_log_status({u: _run_log_lines(1) for u in uuids}, calls))
+    responder = lambda url, method, body: {"results": [_job_log_row(u) for u in uuids],
+                                           "pagination": {}}
+
+    _, emitted = run_handler(monkeypatch, "rossum_list_hook_logs",
+                             {"hook": 7, "include_run_log": True, "max_results": 50}, responder)
+    payload = emitted_payload(emitted)
+    assert sum("run_log" in r for r in payload["results"]) == 10
+    assert len(calls) == 10
+    assert "10" in payload["run_log_note"]
+
+
 def test_refire_reupload_uses_modern_uploads_endpoint(monkeypatch):
     monkeypatch.setattr(server, "_http_get_bytes", lambda rid, url: b"PDFBYTES")
     raw = {}

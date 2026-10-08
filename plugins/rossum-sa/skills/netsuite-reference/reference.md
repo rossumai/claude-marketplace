@@ -622,7 +622,8 @@ failed run.
 
 A run moves `waiting` → `running` → `completed` / `failed`. The hook log row
 (`GET /hooks/logs?hook=<id>`) carries only the status, with an empty `message`. The detail —
-progress lines and the failure reason — is in the run log:
+progress lines and the failure reason — is in the run log (`rossum_list_hook_logs` with
+`include_run_log=true` attaches it):
 
 ```
 GET /api/v1/hooks/runs?hook=<id>             → runs, each with a uuid
