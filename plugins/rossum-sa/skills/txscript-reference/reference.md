@@ -554,6 +554,7 @@ A subset of Python. The expression evaluates to a boolean; the rule fires when i
 | `date.today()` | Today's date for comparisons | `field.date_issue > date.today()` |
 | `context.annotation.automated` | `True` when the document was automated. Meaningful on `annotation_import_succeeded` and later events | `not context.annotation.automated` |
 | `context.annotation.metadata` | The annotation's `metadata` as a dict | `context.annotation.metadata.get('source') == 'sftp'` |
+| `context.annotation.status` | The annotation status at evaluation time (`reviewing` during the confirm validation, `exporting` on `annotation_confirmed` / `annotation_exported` in a queue without the confirmed state) | `context.annotation.status == 'exporting'` |
 | `context.email` | The source email, when the document came by email (documented; not probed live) | — |
 
 `field.<id>` resolves to:

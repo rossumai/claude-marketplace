@@ -149,7 +149,7 @@ decides **when** each action may run. One rule can mix events (e.g. an `add_labe
 | `validation` | Every validation of the content (import, user edits, confirm) | The only event for UI-facing actions (`show_message`, blockers, show/hide) |
 | `annotation_imported` | Inside the import pipeline, right after extraction | Before the import outcome is known. Also shared with legacy Trigger objects |
 | `annotation_confirmed` | On confirm, by a user or by automation | Shared with Trigger objects |
-| `annotation_exported` | Inside the export pipeline | Runs **before** the export result is known — its actions run **even when the export then fails** (verified live). The Trigger docs limit this event to non-automated annotations with an email; for Rules it also fired on an automated, uploaded document (verified live) |
+| `annotation_exported` | Inside the export pipeline | Runs **before** the export result is known. `validation` actions also execute here, so a rule `error` message at this step **fails the export** — see below — its actions run **even when the export then fails** (verified live). The Trigger docs limit this event to non-automated annotations with an email; for Rules it also fired on an automated, uploaded document (verified live) |
 | `annotation_import_succeeded` | After the import outcome is saved: the annotation reached `to_review`, was automated, or a rule changed its status | Rules only. Sees the final status, so `context.annotation.automated` is meaningful here |
 | `annotation_import_failed` | The annotation ended in `failed_import` — extraction or extension error, upload crash, or an upload rejected by an `upload.created` hook | Rules only. Before these events, nothing ran on a failed import. Content is usually empty or absent — see below |
 | `annotation_export_succeeded` | The annotation reached `exported` | Rules only. Use for "notify only when export really worked" |
@@ -244,6 +244,39 @@ annotation's `messages` instead. Verified live: `send_email` on `annotation_expo
 failed (the org had an email limit of 0 per day); the annotation still ended `exported`, and the
 **other actions in the same rule still ran** (its `add_label` succeeded).
 
+#### …but a rule's `error` message CAN fail an export
+
+`validation`-event actions do not run only at validation. Rules are evaluated again on
+`annotation_confirmed` and `annotation_exported`, and a `show_message` / `add_automation_blocker`
+configured for `validation` **executes there too** — the execution log records it under that
+trigger event. If such a `show_message` has `type: "error"`, the annotation gets an error message
+inside the export pipeline, and the export ends `failed_export` — exactly as if an export hook had
+returned an error. The export hooks themselves all report `completed`.
+
+Seen on a UAT deployment: every export hook completed (warnings only); one second later, on
+`annotation_exported`, a rule flagging PO-backed invoices without line items emitted its
+`error` message; the next second the annotation was `failed_export` and the
+`annotation_export_failed` rules ran. Reproduced on a clean queue with no hooks: a rule whose
+condition was `context.annotation.status == 'exporting'` (False at validation, True from confirm on)
+let the confirm through and then failed the export with its error message.
+
+How to diagnose a `failed_export` with no failing hook:
+
+1. `GET /v1/annotations/{id}` → `messages`: look for `type: "error"` entries with
+   `detail.hook_name: "rules"` and the `rule_id`.
+2. `GET /v1/rules_execution_logs?annotation=<id>&trigger_event=annotation_exported` (and
+   `annotation_confirmed`): find the rule whose `actions` show a `show_message` of type `error`.
+3. Fix the rule's condition, or downgrade the message to `warning` if it should not stop export.
+
+Normally such an error also shows at validation and blocks confirm: an API confirm returns
+`HTTP 400 {"detail": "Error during actions evaluation"}`. The export-time failure happens when the
+condition only becomes `True` at confirm/export time, or when the document got confirmed despite
+the message.
+
+`context.annotation.status` is readable in a condition. During the confirm-time validation it was
+`reviewing`; on `annotation_confirmed` and `annotation_exported` (queue without the confirmed state)
+it was already `exporting`.
+
 ### Debugging rules on lifecycle events
 
 There is no validate response to read for the non-`validation` events. Use these instead:
@@ -255,6 +288,8 @@ There is no validate response to read for the non-`validation` events. Use these
   `[[{action_type, success, payload, error?}, ...]]` = actions ran. A failed action sets
   `execution_result: "failure"` and puts the reason in `execution_error`
   (e.g. `send_email: Sending email by user None failed: exceeded the limit of 0 emails per day.`).
+  `send_email` reports `success: true` once the email is handed off — verified on a second org
+  for import-failed, export-succeeded and export-failed emails.
 - **A condition that raises is not visible in the log.** The row says `trigger_match: false`,
   `execution_result: "success"`, `execution_error: null`. The real error is only in the
   annotation's `messages` (`detail.rule_id`, `detail.is_exception: true`). Check both.
