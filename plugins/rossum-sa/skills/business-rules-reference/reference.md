@@ -149,7 +149,7 @@ decides **when** each action may run. One rule can mix events (e.g. an `add_labe
 | `validation` | Every validation of the content (import, user edits, confirm) | The only event for UI-facing actions (`show_message`, blockers, show/hide) |
 | `annotation_imported` | Inside the import pipeline, right after extraction | Before the import outcome is known. Also shared with legacy Trigger objects |
 | `annotation_confirmed` | On confirm, by a user or by automation | Shared with Trigger objects |
-| `annotation_exported` | Inside the export pipeline | Runs **before** the export result is known. `validation` actions also execute here, so a rule `error` message at this step **fails the export** — see below — its actions run **even when the export then fails** (verified live). The Trigger docs limit this event to non-automated annotations with an email; for Rules it also fired on an automated, uploaded document (verified live) |
+| `annotation_exported` | Inside the export pipeline | Runs **before** the export result is known — its actions run **even when the export then fails** (verified live). `validation` actions also execute here, so a rule `error` message at this step **fails the export** (see below). The Trigger docs limit this event to non-automated annotations with an email; for Rules it also fired on an automated, uploaded document (verified live) |
 | `annotation_import_succeeded` | After the import outcome is saved: the annotation reached `to_review`, was automated, or a rule changed its status | Rules only. Sees the final status, so `context.annotation.automated` is meaningful here |
 | `annotation_import_failed` | The annotation ended in `failed_import` — extraction or extension error, upload crash, or an upload rejected by an `upload.created` hook | Rules only. Before these events, nothing ran on a failed import. Content is usually empty or absent — see below |
 | `annotation_export_succeeded` | The annotation reached `exported` | Rules only. Use for "notify only when export really worked" |
@@ -166,10 +166,11 @@ annotation_exported → annotation_export_succeeded`. Note that `annotation_impo
 
 #### Which action accepts which event
 
-Verified live by creating one rule per action × event (`201` = accepted, `400` = rejected with
+Verified live on 2026-10-13 by creating one rule per action × event (`201` = accepted, `400` = rejected with
 `"<event>" is not a valid choice`). This matches the per-action prose of the API docs' Rule page.
-The OpenAPI component schemas for `add_label` / `remove_label` still say "`validation` event
-only" — that text is stale; trust this table.
+As of 2026-10-13, the OpenAPI component schemas for `add_label` / `remove_label` still said
+"`validation` event only" — stale at that date; trust this table, and re-check the docs if they
+have changed since.
 
 | Action type | `validation` | `annotation_imported` | `annotation_import_succeeded` | `annotation_import_failed` | `annotation_confirmed` | `annotation_exported` | `annotation_export_succeeded` | `annotation_export_failed` |
 |---|---|---|---|---|---|---|---|---|
@@ -187,7 +188,7 @@ only" — that text is stale; trust this table.
 #### Payload shapes for the side-effect actions
 
 - **`change_queue`** — `{"queue": "<queue URL>", "reimport": false}`. The key is **`queue`, a
-  URL**. The docs' prose table says `queue_id` (integer); the API rejects that with
+  URL**. As of 2026-10-13 the docs' prose table said `queue_id` (integer); the API rejects that with
   `payload.queue: This field is required.` At most one per rule.
 - **`change_status`** — `{"method": "postpone" | "export" | "delete" | "confirm" | "reject"}`.
   At most one per rule.
@@ -251,7 +252,9 @@ failed (the org had an email limit of 0 per day); the annotation still ended `ex
 configured for `validation` **executes there too** — the execution log records it under that
 trigger event. If such a `show_message` has `type: "error"`, the annotation gets an error message
 inside the export pipeline, and the export ends `failed_export` — exactly as if an export hook had
-returned an error. The export hooks themselves all report `completed`.
+returned an error. The export hooks themselves all report `completed`. As of 2026-10-13 the API
+docs did not describe this: they document the export-hook error case only, and say nothing about
+`validation` actions running on confirm/export.
 
 Seen on a UAT deployment: every export hook completed (warnings only); one second later, on
 `annotation_exported`, a rule flagging PO-backed invoices without line items emitted its
