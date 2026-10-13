@@ -529,7 +529,7 @@ The `rir_field_names` attribute in schema maps OCR predictions to internal field
 
 > This section covers how to **write a Rule `trigger_condition` expression** — a subset of Python shared with schema-field formulas. For the Rule *entity* (the `/v1/rules` JSON shape, `actions[]` types, FIRE-vs-PASS polarity, and conventional action pairings), see the `business-rules-reference` skill, which owns the rule/validation *feature* (native Rules and the legacy Business Rules Validation extension). Native Rules use Python-style `field.X` access — distinct from the Business Rules Validation extension's `{field}`-brace engine (also documented in `business-rules-reference`).
 
-A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition` at validation time; when it is `True`, the rule emits its `actions`.
+A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition` on each event its actions are configured for (`validation`, or a lifecycle event such as `annotation_export_succeeded` — see `business-rules-reference` → *Rule events*); when it is `True`, the rule emits its `actions`.
 
 ## trigger_condition expression language
 
@@ -552,11 +552,16 @@ A subset of Python. The expression evaluates to a boolean; the rule fires when i
 | `bool(x)`, `str(x)`, `int(x)`, `float(x)` | Type coercion | `bool(re.search(p, str(field.x)))` |
 | `re.search(pattern, string)` | Regex search (returns Match or None) | `re.search('^AU.{4,}', str(field.x))` |
 | `date.today()` | Today's date for comparisons | `field.date_issue > date.today()` |
+| `context.annotation.automated` | `True` when the document was automated. Meaningful on `annotation_import_succeeded` and later events | `not context.annotation.automated` |
+| `context.annotation.metadata` | The annotation's `metadata` as a dict | `context.annotation.metadata.get('source') == 'sftp'` |
+| `context.email` | The source email, when the document came by email (documented; not probed live) | — |
 
 `field.<id>` resolves to:
 - A scalar (str / int / float / date) for header fields
 - Inside a line-item rule context: the current row's scalar
 - `field.<line_item_id>.all_values`: a list across all line items (use for header rules that aggregate over the table)
+
+**`context.*` versus `field.*`.** `context.*` reads the annotation itself, not its extracted content. Use it on `annotation_import_failed`, where content is usually empty or absent: there a schema field reads as an empty value, and a `field.X` that is not in the schema raises `AttributeError: Field 'X' is not defined` (the rule is skipped and the error lands in the annotation's `messages`). Both behaviours were verified live.
 
 **Line-item rule semantics.** When a rule is attached to a line-item field (e.g. `schema_id: "item_order_id"` in the message payload), the trigger evaluates **once per line item** and fires per row. `field.item_X` is the current row. Aggregations require `.all_values`.
 

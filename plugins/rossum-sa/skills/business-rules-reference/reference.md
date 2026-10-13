@@ -1,6 +1,6 @@
 # Rossum Business Rules & Validation — Full Reference
 
-Rossum validates extracted data and blocks automation in two ways, both covered here: the modern **native Rossum Rules** (`POST /v1/rules`) and the **legacy Business Rules Validation Store extension**. Both run at validation time to surface messages and block confirmation/automation of invalid documents.
+Rossum validates extracted data and blocks automation in two ways, both covered here: the modern **native Rossum Rules** (`POST /v1/rules`) and the **legacy Business Rules Validation Store extension**. Both run at validation time to surface messages and block confirmation/automation of invalid documents. Native Rules can also act on lifecycle events — import, confirm, export and their success/failure outcomes — to send email, label, move, delete or exclude from training; see [Rule events](#rule-events--when-actions-run).
 
 ## Contents
 - [Overview: two ways to validate](#overview-two-ways-to-validate)
@@ -22,7 +22,7 @@ Both surfaces evaluate at validation time, emit messages (error/warning/info), a
 
 ## Native Rossum Rules
 
-A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition` at validation time; when it is `True`, the rule emits one or more `actions` (messages, automation blockers, show/hide toggles). The `trigger_condition` is a TxScript expression using Python-style `field.X` access — for the expression language, helpers, and the defensive `not is_empty(field.X)` guard convention, see the `txscript-reference` skill. This is a different surface from the Business Rules Validation extension's `{field}`-brace engine below; do not mix syntaxes.
+A native Rule (`POST /v1/rules`) evaluates a single boolean `trigger_condition`; when it is `True`, the rule emits one or more `actions` (messages, automation blockers, show/hide toggles). Each action names the `event` it runs on — `validation` for the validation-time workhorses, or a lifecycle event (import, confirm, export, and their outcomes) for side-effect actions such as `send_email`, `change_queue` or `add_label`; see [Rule events](#rule-events--when-actions-run). The `trigger_condition` is a TxScript expression using Python-style `field.X` access — for the expression language, helpers, and the defensive `not is_empty(field.X)` guard convention, see the `txscript-reference` skill. This is a different surface from the Business Rules Validation extension's `{field}`-brace engine below; do not mix syntaxes.
 
 ### Rule JSON shape
 
@@ -93,6 +93,8 @@ annotation to another queue; its `reimport` flag decides whether the target re-e
 document or inherits the existing content, and `reimport: false` is the case where the target
 schema's formulas do **not** re-evaluate — see `txscript-reference` → *A queue move does NOT
 recompute formulas*). Treat the three below as the validation-time workhorses, not an inventory.
+The full type list, and which `event` each type accepts, is in
+[Rule events](#rule-events--when-actions-run).
 
 **`show_message`** — surface a message in the validation UI (**not** on the annotation object;
 see [Verifying a rule actually fired](#verifying-a-rule-actually-fired)):
@@ -136,10 +138,139 @@ The patterns that recur across well-formed Rossum rules:
 
 A single rule may combine pairings (e.g. a tag-fire rule with a message+blocker+reveal triplet). Pair conventions are additive — pick whichever apply.
 
+### Rule events — when actions run
+
+Every action carries an `event`. The `trigger_condition` is shared by the whole rule; the `event`
+decides **when** each action may run. One rule can mix events (e.g. an `add_label` on
+`annotation_export_succeeded` next to a `send_email` on the same event).
+
+| Event | When it fires | Notes |
+|---|---|---|
+| `validation` | Every validation of the content (import, user edits, confirm) | The only event for UI-facing actions (`show_message`, blockers, show/hide) |
+| `annotation_imported` | Inside the import pipeline, right after extraction | Before the import outcome is known. Also shared with legacy Trigger objects |
+| `annotation_confirmed` | On confirm, by a user or by automation | Shared with Trigger objects |
+| `annotation_exported` | Inside the export pipeline | Runs **before** the export result is known — its actions run **even when the export then fails** (verified live). The Trigger docs limit this event to non-automated annotations with an email; for Rules it also fired on an automated, uploaded document (verified live) |
+| `annotation_import_succeeded` | After the import outcome is saved: the annotation reached `to_review`, was automated, or a rule changed its status | Rules only. Sees the final status, so `context.annotation.automated` is meaningful here |
+| `annotation_import_failed` | The annotation ended in `failed_import` — extraction or extension error, upload crash, or an upload rejected by an `upload.created` hook | Rules only. Before these events, nothing ran on a failed import. Content is usually empty or absent — see below |
+| `annotation_export_succeeded` | The annotation reached `exported` | Rules only. Use for "notify only when export really worked" |
+| `annotation_export_failed` | The annotation reached `failed_export` (e.g. an export extension returned an error message) | Rules only. Use for alerting |
+
+The four `*_succeeded` / `*_failed` events are the **outcome events**. They are rule-only: Trigger
+objects (`/v1/triggers`) do not accept them.
+
+**Observed order on an automated document** (one upload into a queue with `automation_level:
+always`, read from `rules_execution_logs` timestamps):
+`validation → annotation_imported → annotation_confirmed → annotation_import_succeeded →
+annotation_exported → annotation_export_succeeded`. Note that `annotation_import_succeeded` comes
+**after** `annotation_confirmed` when the document is automated.
+
+#### Which action accepts which event
+
+Verified live by creating one rule per action × event (`201` = accepted, `400` = rejected with
+`"<event>" is not a valid choice`). This matches the per-action prose of the API docs' Rule page.
+The OpenAPI component schemas for `add_label` / `remove_label` still say "`validation` event
+only" — that text is stale; trust this table.
+
+| Action type | `validation` | `annotation_imported` | `annotation_import_succeeded` | `annotation_import_failed` | `annotation_confirmed` | `annotation_exported` | `annotation_export_succeeded` | `annotation_export_failed` |
+|---|---|---|---|---|---|---|---|---|
+| `show_message`, `add_automation_blocker`, `show_hide_field`, `show_field`, `hide_field`, `add_validation_source` | ✅ | — | — | — | — | — | — | — |
+| `add_label`, `remove_label`, `add_remove_label` | ✅ | — | ✅ | ✅ | — | — | ✅ | ✅ |
+| `send_email` | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `change_queue` | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `exclude_from_training` | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `change_status` | — | ✅ (any method) | — | ✅ (`delete` only) | — | — | — | — |
+
+(`show_field`, `hide_field` and `add_validation_source` are listed from the docs, not probed.)
+`change_status` with another method on `annotation_import_failed` is rejected with
+`"confirm" is not allowed on the annotation_import_failed event.`
+
+#### Payload shapes for the side-effect actions
+
+- **`change_queue`** — `{"queue": "<queue URL>", "reimport": false}`. The key is **`queue`, a
+  URL**. The docs' prose table says `queue_id` (integer); the API rejects that with
+  `payload.queue: This field is required.` At most one per rule.
+- **`change_status`** — `{"method": "postpone" | "export" | "delete" | "confirm" | "reject"}`.
+  At most one per rule.
+- **`send_email`** — either `{"email_template": "<email_template URL>", "attach_document": bool}`
+  or an inline email `{"to": [...], "subject": "...", "body": "...", "cc": [...], "bcc": [...]}`.
+  The API stores the inline form with `email_template: null` and `attach_document: false` added.
+  In line-item mode, identical emails are de-duplicated and one action sends at most five emails.
+- **`add_label` / `remove_label` / `add_remove_label`** — `{"labels": ["<label URL>", ...]}`.
+  `add_remove_label` adds the labels when the condition is `True` and removes them otherwise.
+- **`exclude_from_training`** — no payload (the API stores `payload: null`). Sets the
+  annotation's `training_enabled` to `false`.
+
+#### What the outcome events change in practice
+
+- **`change_queue` keeps the status on outcome events.** Without `reimport`, a move on
+  `annotation_imported`, `annotation_confirmed` or `annotation_exported` puts the annotation into
+  `to_review`. On the four outcome events the annotation **keeps its current status**. Verified
+  live: a `failed_import` document moved to a quarantine queue stayed `failed_import`, and an
+  `exported` document moved to a follow-up queue stayed `exported`.
+- **`change_status: delete` on `annotation_import_failed`** cleans spam and unsupported files out
+  of the queue automatically. Verified live: a corrupt PDF ended in `deleted`. Deleted documents
+  stay recoverable until they are purged (manually or by the queue's `document_lifetime`).
+- **Branching on automation.** On `annotation_import_succeeded`, `context.annotation.automated`
+  is `True` for an automated document and `False` for one that went to `to_review`. Verified live
+  with two rules (`context.annotation.automated` / `not context.annotation.automated`), each
+  adding a different label.
+- **Email only on real success.** Put `send_email` on `annotation_export_succeeded` (or
+  `annotation_export_failed` for alerts), not on `annotation_exported`.
+
+#### Conditions on `annotation_import_failed`
+
+A failed import usually has empty document content, and sometimes none at all. Prefer
+`context.*` references or a constant condition:
+
+```python
+context.annotation.metadata.get('source') == 'sftp'    # metadata is a dict; .get works (verified)
+True                                                     # act on every failed import
+```
+
+What happened live with `field.*` on a failed import (corrupt PDF, no content extracted):
+
+- A field that **exists in the schema** read as an empty string: `is_empty(field.order_id)` was
+  `True` and the rule fired.
+- A field that **does not exist in the schema** raised
+  `AttributeError: Field '<id>' is not defined`. The rule was skipped, and the error was written
+  to the annotation's `messages`.
+
+The docs also name `context.email` as usable here; that one was not probed.
+
+#### A failing rule does not break the import or export
+
+If a rule fails on an outcome event, the import or export result stands. The error goes to the
+annotation's `messages` instead. Verified live: `send_email` on `annotation_export_succeeded`
+failed (the org had an email limit of 0 per day); the annotation still ended `exported`, and the
+**other actions in the same rule still ran** (its `add_label` succeeded).
+
+### Debugging rules on lifecycle events
+
+There is no validate response to read for the non-`validation` events. Use these instead:
+
+- **`GET /v1/rules_execution_logs?annotation=<id>`** has one row per rule **per event** — every
+  rule attached to the queue is evaluated and logged on every event, even when it has no action
+  for that event. Read `actions`:
+  `null` = condition `False`; `[null]` = condition `True` but no action on this event;
+  `[[{action_type, success, payload, error?}, ...]]` = actions ran. A failed action sets
+  `execution_result: "failure"` and puts the reason in `execution_error`
+  (e.g. `send_email: Sending email by user None failed: exceeded the limit of 0 emails per day.`).
+- **A condition that raises is not visible in the log.** The row says `trigger_match: false`,
+  `execution_result: "success"`, `execution_error: null`. The real error is only in the
+  annotation's `messages` (`detail.rule_id`, `detail.is_exception: true`). Check both.
+- **Annotation `messages` do carry rule output for lifecycle events** — condition errors, and a
+  generic `"Rules could not be executed for the annotation_export_succeeded event."` (with
+  `detail: null`) when an action fails. This differs from `show_message` at `validation`, which
+  never lands there (see the next section). The specific reason is in the execution log.
+- **The log's `queue_id` is the queue after any `change_queue`.** A log row for a document that
+  a rule moved shows the target queue. Filter by `annotation`, not by `queue`, when tracing moves.
+
 ### Verifying a rule actually fired
 
 **Do not look for the message on the annotation.** `GET /v1/annotations/{id}` reports
-`messages: []` regardless — a fired `show_message` never lands there. Reading the annotation is
+`messages: []` regardless — a fired `show_message` never lands there. (This is about `show_message` at
+`validation`. Rule *errors* on lifecycle events do land in `messages` — see
+[Debugging rules on lifecycle events](#debugging-rules-on-lifecycle-events).) Reading the annotation is
 the natural first move and it produces a false negative every time, which then gets misdiagnosed
 as a broken `trigger_condition`.
 

@@ -223,7 +223,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.43.0"
+_SERVER_VERSION = "0.43.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -5808,8 +5808,10 @@ def handle_invoke_hook(request_id, arguments):
 @_tool(
     "rossum_list_rules",
     "Lists Rossum business rules (/v1/rules). A rule evaluates a boolean trigger_condition (a Rossum "
-    "formula) at validation time and, when True, emits actions such as automation blockers, messages, "
-    "or field show/hide toggles. Filter by queue to see only rules attached to a specific queue.",
+    "formula) and, when True, runs its actions — at validation time (automation blockers, messages, "
+    "field show/hide toggles) or on a lifecycle event such as annotation_import_failed or "
+    "annotation_export_succeeded (emails, queue moves, labels, delete). Filter by queue to see only "
+    "rules attached to a specific queue.",
     {
         "type": "object",
         "properties": {
@@ -5853,8 +5855,10 @@ def handle_get_rule(request_id, arguments):
 @_tool(
     "rossum_create_rule",
     "Creates a new Rossum business rule (/v1/rules). The rule evaluates trigger_condition (a Rossum "
-    "formula — a boolean Python expression) at validation time and, when it is True, emits its actions "
-    "(e.g. add_automation_blocker, show_message, show_hide_field). This is a write operation.",
+    "formula — a boolean Python expression) on each event its actions are set for and, when it is True, "
+    "runs those actions: at validation time (add_automation_blocker, show_message, show_hide_field) or "
+    "on a lifecycle event (send_email, change_queue, change_status, labels, exclude_from_training). "
+    "This is a write operation.",
     {
         "type": "object",
         "required": ["name"],
@@ -5875,9 +5879,10 @@ def handle_get_rule(request_id, arguments):
             "trigger_condition": {
                 "type": "string",
                 "description": (
-                    "A Rossum formula — a boolean Python expression evaluated at validation time. "
-                    "The rule fires (emits its actions) when this evaluates to True, e.g. "
-                    "\"not is_empty(field.duplicate_order_match)\"."
+                    "A Rossum formula — a boolean Python expression, evaluated on each event the actions "
+                    "are set for. The rule fires (emits its actions) when this evaluates to True, e.g. "
+                    "\"not is_empty(field.duplicate_order_match)\". On annotation_import_failed the content "
+                    "is usually empty: prefer context.* (context.annotation.metadata.get('k')) or \"True\"."
                 ),
             },
             "actions": {
@@ -5886,10 +5891,18 @@ def handle_get_rule(request_id, arguments):
                 "description": (
                     "Actions emitted when the rule fires. Each action is "
                     "{\"id\": <unique non-empty string>, \"enabled\": true, \"type\": <action type>, "
-                    "\"event\": \"validation\", \"payload\": {...}}. type is one of add_automation_blocker, "
+                    "\"event\": <event>, \"payload\": {...}}. validation-only types: add_automation_blocker, "
                     "show_message, show_hide_field. payload for show_message / add_automation_blocker: "
                     "{\"content\": <text>, \"schema_id\": <field id>}; for show_hide_field: "
-                    "{\"schema_ids\": [<field id>, ...]} (fields are shown when the rule fires, hidden otherwise)."
+                    "{\"schema_ids\": [<field id>, ...]} (fields are shown when the rule fires, hidden otherwise). "
+                    "Lifecycle types: send_email ({\"to\", \"subject\", \"body\"} or {\"email_template\": <url>}), "
+                    "change_queue ({\"queue\": <queue URL>, \"reimport\": bool} — a URL, not queue_id), "
+                    "change_status ({\"method\": ...}; on annotation_import_failed only \"delete\"), "
+                    "add_label / remove_label / add_remove_label ({\"labels\": [<label URL>]}), "
+                    "exclude_from_training (no payload). Events: validation, annotation_imported, "
+                    "annotation_confirmed, annotation_exported, annotation_import_succeeded, "
+                    "annotation_import_failed, annotation_export_succeeded, annotation_export_failed. Not every "
+                    "type accepts every event — see business-rules-reference → Rule events."
                 ),
             },
             "queue_ids": {
@@ -6023,7 +6036,11 @@ def handle_delete_rule(request_id, arguments):
             },
             "trigger_event": {
                 "type": "string",
-                "description": "Filter by trigger event (e.g. 'validation').",
+                "description": (
+                    "Filter by trigger event: 'validation', 'annotation_imported', 'annotation_confirmed', "
+                    "'annotation_exported', 'annotation_import_succeeded', 'annotation_import_failed', "
+                    "'annotation_export_succeeded' or 'annotation_export_failed'."
+                ),
             },
             "execution_result": {
                 "type": "string",
