@@ -1387,7 +1387,7 @@ curl -X POST -H 'Authorization: Bearer TOKEN' \
 | PATCH | `/v1/rules/{id}` | Partial update |
 | DELETE | `/v1/rules/{id}` | Delete rule |
 
-**Rule actions**: Send email, update fields, change status, assign to user, add labels, trigger webhooks.
+**Rule actions** (`type`): `show_message`, `add_automation_blocker`, `show_hide_field`, `show_field`, `hide_field`, `add_validation_source` (all `validation`-only), plus `send_email`, `change_queue`, `change_status`, `add_label`, `remove_label`, `add_remove_label`, `exclude_from_training` and `custom`. Each action names an `event`: `validation`, `annotation_imported`, `annotation_confirmed`, `annotation_exported`, or the rule-only outcome events `annotation_import_succeeded`, `annotation_import_failed`, `annotation_export_succeeded`, `annotation_export_failed`. Which type accepts which event: `business-rules-reference` → *Rule events*.
 
 **Queue attachment**: the create/update field is `queues` — a list of queue **URLs**. `queue_ids` is a parameter of the MCP wrappers (`rossum_create_rule` / `rossum_patch_rule`), which expand it into `queues` URLs before sending; it is not an API field. A raw `POST /v1/rules` carrying `queue_ids` was observed being accepted with the unknown key ignored, creating a rule with `queues: []` — attached to nothing. Read `queues` back after any raw create.
 
