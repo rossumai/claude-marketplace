@@ -4,7 +4,8 @@ Verified against `rdc 0.9.0` (`rdc --help`, every subcommand's `--help`, and the
 
 ## Install and version
 
-- Single binary, normally at `~/.local/bin/rdc`. Check with `which rdc` and `rdc --version`.
+- Install with `brew install mrtnzlml/tap/rdc`, or download a release from <https://github.com/mrtnzlml/rdc/releases> — a single binary with no other dependencies. Check with `which rdc` and `rdc --version`.
+- git is recommended (commit before every sync and migrate) but rdc does not require it.
 - `rdc upgrade` replaces the binary in place and keeps the previous one as `<install_dir>/rdc.bak` (one-shot rollback). `rdc upgrade --check` only reports; `rdc upgrade --version <v>` pins / downgrades (may need a re-sync afterwards).
 - Every project's scaffold (`CLAUDE.md`, `README.md`, `.gitlab-ci.yml`) is generated from the binary's templates. `rdc init --force` (no `--env`) refreshes them — `CLAUDE.md`, `README.md` and `.gitlab-ci.yml` are **overwritten**, so commit hand edits first.
 
@@ -114,6 +115,10 @@ The canonical chain (generated into each multi-env project's `CLAUDE.md`):
 ```sh
 rdc sync <src> && rdc migrate <src> <tgt> --mirror && rdc sync <tgt> --allow-deletes
 ```
+
+**Promotion order is a project rule, not an rdc rule.** A typical project promotes one hop at a time — `dev → test`, then `test → prod` — and forbids `dev → prod`: everything reaching prod must have passed through test. rdc will happily migrate any pair, so read the project's `README.md` / `CLAUDE.md` / team guide for the allowed chain and refuse to skip a stage. When the project documents nothing, assume `dev → test → prod` and ask before promoting anything else.
+
+Team guides often write the push step as a bare `rdc sync <tgt>`. That works for a human on a TTY, because rdc asks before each batch of deletes. From an agent shell (non-TTY) the same command **refuses** when `--mirror` left deletions — report the listed deletions to the user and add `--allow-deletes` only when they approve them.
 
 That chain **deletes** objects in `<tgt>` that `<src>` lacks. As an agent: run `rdc sync <src> --no-push`, then `rdc migrate <src> <tgt> --dry-run`, show it, then the real migrate, stop and show `git diff envs/<tgt>/`, then `rdc sync <tgt> --dry-run`, and only on approval the real sync. Drop `--mirror` / `--allow-deletes` when the target legitimately has extra objects.
 

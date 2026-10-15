@@ -24,6 +24,7 @@ Never run `prd2` in an rdc project or `rdc` in a prd2 project. If both markers e
 - **`rdc sync <env>` writes to the remote.** Without flags it pulls *and* pushes. Treat it like `prd2 push`: run `rdc sync <env> --dry-run` first, show the plan, and wait for explicit approval before the real run.
 - **Read-only against the remote:** `rdc sync <env> --dry-run`, and `rdc sync <env> --no-push` (pulls remote changes into local files, never writes the org — the rdc equivalent of `prd2 pull`). Both are fine without asking; `--no-push` does rewrite local files, so check `git status` first.
 - **Never pass `--allow-deletes` or `--conflict keep-local` / `use-remote` on your own.** Deletes and conflict resolution each need the user's explicit say-so. `--yes` does not authorise deletes.
+- **Follow the project's promotion chain.** Typically `dev → test → prod`, one hop at a time, with no `dev → prod`. rdc won't stop a skipped stage, so check the project's README / CLAUDE.md before any `rdc migrate`, and ask when the chain isn't written down.
 - `rdc migrate` and `rdc doctor` make **zero remote calls** but rewrite local files — preview with `--dry-run`, review with `git diff`.
 - Claude's shell is non-TTY, so rdc behaves as if `--yes` were passed: conflicts fall back to shadow files (`<file>.<env>`), pending deletes make the sync refuse. Report those; do not resolve them silently.
 
