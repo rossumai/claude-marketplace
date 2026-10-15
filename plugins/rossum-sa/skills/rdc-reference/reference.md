@@ -2,9 +2,9 @@
 
 Verified against `rdc 0.9.0` (`rdc --help`, every subcommand's `--help`, and the scaffold files `rdc init` writes). rdc is moving fast: when a flag below is missing or behaves differently, trust `rdc <command> --help` over this page, and say so.
 
-## Install and version
+## Version
 
-- Install with `brew install mrtnzlml/tap/rdc`, or download a release from <https://github.com/mrtnzlml/rdc/releases> — a single binary with no other dependencies. Check with `which rdc` and `rdc --version`.
+- Single binary. Check with `which rdc` and `rdc --version`.
 - git is recommended (commit before every sync and migrate) but rdc does not require it.
 - `rdc upgrade` replaces the binary in place and keeps the previous one as `<install_dir>/rdc.bak` (one-shot rollback). `rdc upgrade --check` only reports; `rdc upgrade --version <v>` pins / downgrades (may need a re-sync afterwards).
 - Every project's scaffold (`CLAUDE.md`, `README.md`, `.gitlab-ci.yml`) is generated from the binary's templates. `rdc init --force` (no `--env`) refreshes them — `CLAUDE.md`, `README.md` and `.gitlab-ci.yml` are **overwritten**, so commit hand edits first.
