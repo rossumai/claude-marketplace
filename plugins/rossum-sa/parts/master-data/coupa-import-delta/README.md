@@ -72,9 +72,7 @@ afterwards — to change one, create a new hook.
 
 ## `delta_from`
 
-- **`${last_modified_date}`** (default) — the service fills in the start of the dataset's last
-  successful import. With **no history** (a new hook, a new dataset) it falls back to the epoch, so
-  the **first run is a full import** (verified on the 1.x service; assume the same for the job).
+- **`${last_modified_date}`** (default) — the service fills in the start of the dataset's last successful import, read from the org's MDH operation log for that `dataset_name`. With **no history** — no successful operation for that dataset name in that org — it falls back to the epoch, so the **first run is a full import** (verified on the 1.x service; assume the same for the job). A new hook or a dropped and recreated collection does **not** reset it: the operation log survives both, so a redeploy into an org that imported the dataset before resumes from the old watermark against an empty collection and imports nothing. Run one import from a fixed `1970-01-01T00:00:00Z`, then restore `${last_modified_date}`.
 - **A fixed ISO timestamp** — when the first run would be too big: after a bulk load
   (`coupa-bulk-replication`, Phase 5: use the bulk run's `anchor_updated_at`), or to break a
   failure loop where every run is killed before it succeeds and the window never moves
