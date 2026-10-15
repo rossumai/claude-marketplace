@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-18 skills · 16 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+18 skills · 17 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -137,6 +137,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **Export Pipeline (Request Processor)** — multi-stage API integration engine, SFTP export, auth, response handling
 - **Coupa Integration Baseline (CIB)** — both baselines: schema, MDH matching, export pipeline, business rules, e-invoicing queues and deployment scoping
 - **prd2 CLI** — deployment and management commands
+- **rdc CLI** — Rossum Deployment as Code, the newer prd2 alternative: `sync`, `migrate` promotion, overlays, testkit; Claude picks rdc or prd2 from the project's root marker (`rdc.toml` vs `prd_config.yaml`)
 - **Structured Formats Import (SFI)** — XML/JSON import setup, XPath/JMESPath selectors, e-invoicing (ZUGFeRD, X-Rechnung)
 - **Approval workflows** — read-only workflow/step/run/activity API + the `reset` action, step modes & conditions, approver assignees (a paid, Rossum-configured feature)
 - **Business rules & validation** — native Rules vs. the legacy Business Rules Validation extension, conditions, actions, automation blocking

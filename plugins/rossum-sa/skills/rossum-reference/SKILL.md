@@ -16,9 +16,11 @@ Which Rossum API operations the `rossum-api` MCP server wraps is tracked in [api
 
 ## Safety Rules
 
-**Do not call write/mutating API tools without explicit user approval.** This applies to all `rossum_create_*`, `rossum_patch_*`, `rossum_delete_*` tools, all `data_storage` write tools (insert, update, delete, replace, bulk_write, drop), and `prd2 push`/`prd2 deploy` commands. Read-only tools (list, get, find, aggregate, whoami) are fine without confirmation. When in doubt, describe what you intend to do and ask first.
+**Do not call write/mutating API tools without explicit user approval.** This applies to all `rossum_create_*`, `rossum_patch_*`, `rossum_delete_*` tools, all `data_storage` write tools (insert, update, delete, replace, bulk_write, drop), and `prd2 push`/`prd2 deploy` / `rdc sync` (without `--dry-run` or `--no-push`) commands. Read-only tools (list, get, find, aggregate, whoami) are fine without confirmation. When in doubt, describe what you intend to do and ask first.
 
 **Edit local `.py` files, not JSON.** When modifying hook code or formula logic in a prd project, only edit the `.py` file. Never edit the `code` field in hook JSON or the `formula` property in `schema.json` — `prd2 push` syncs `.py` files into JSON automatically. Do not use `rossum_patch_hook` or `rossum_patch_schema` to push code changes that should go through `prd2 push` instead.
+
+**Two deployment tools — detect which one the project uses.** `prd_config.yaml` at the root → **prd2** (see `prd-reference`). `rdc.toml` at the root → **rdc** (see `rdc-reference`): code lives in sidecar `.py` files the same way, but references are `rdc://<kind>/<slug>`, pull is `rdc sync <env> --no-push`, push is `rdc sync <env>` after a `--dry-run`, and promotion is `rdc migrate`. Never run one tool against the other's project.
 
 ## Customer-facing terminology
 
