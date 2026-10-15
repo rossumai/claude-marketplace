@@ -8,6 +8,8 @@ user-invocable: false
 
 This skill provides a comprehensive reference for the prd2 deployment CLI used to manage Rossum.ai configurations across environments. For complete details, see [reference.md](reference.md).
 
+**Check the project's tool first.** A project with `rdc.toml` at its root is managed by **rdc**, not prd2 — load `rdc-reference` and do not run any `prd2` command there. prd2 projects are marked by `prd_config.yaml`.
+
 IMPORTANT: Always use prd2 (v2). The original prd (v1) from the `deployment-manager` package is deprecated and should not be used. prd2 uses a different project structure, configuration format, and deployment model.
 
 ## Safety Rules
