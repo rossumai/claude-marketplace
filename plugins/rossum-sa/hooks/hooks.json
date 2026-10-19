@@ -3,27 +3,27 @@
     "PostToolUse": [
       { "hooks": [ { "type": "command",
         "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
-        "timeout": 5 } ] },
+        "timeout": 30 } ] },
       { "matcher": "mcp__plugin_rossum-sa_rossum-api__.*",
         "hooks": [ { "type": "command",
         "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/rossum_auth_guard.py",
-        "timeout": 5,
+        "timeout": 30,
         "statusMessage": "rossum auth guard" } ] }
     ],
     "PostToolUseFailure": [
       { "hooks": [ { "type": "command",
         "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
-        "timeout": 5 } ] }
+        "timeout": 30 } ] }
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command",
         "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
-        "timeout": 5 } ] }
+        "timeout": 30 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command",
         "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/detect_friction.py",
-        "timeout": 5 } ] }
+        "timeout": 30 } ] }
     ]
   }
 }
