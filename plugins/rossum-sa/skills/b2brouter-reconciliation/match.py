@@ -1,7 +1,7 @@
 """Pure reconciliation logic: join one B2Brouter invoice to its Rossum
 annotations and produce a verdict. No I/O, no HTTP, no client imports.
 
-The classify() function returns one of these twelve note strings:
+The classify() function returns one of these thirteen note strings:
   - "ok": Single healthy annotation (imported, confirmed, exported, etc.)
   - "ok +xml_twin": Single healthy annotation plus a failed_import sibling
   - "DUPLICATE": Multiple healthy annotations for one invoice
@@ -12,6 +12,8 @@ The classify() function returns one of these twelve note strings:
   - "DELETED": Every annotation for this invoice is deleted/purged -- neutral,
     says nothing about why (see below)
   - "MISSING_IN_ROSSUM": No trace in Rossum, outside grace period
+  - "MISSING_EMPTY_SOURCE": No trace in Rossum, and the B2Brouter record has
+    no number, no sender and a zero total -- nothing to identify it by
   - "PENDING": No trace yet, within grace period (recent invoice)
   - "UNVERIFIED_SOURCE": Source side incomplete, verdict untrustworthy
   - "UNKNOWN_STATUS:<status>": Annotation has unexpected status (development error)
@@ -29,6 +31,13 @@ DELETED: the word "duplicate" is never used on the strength of an assumption,
 only on the strength of a confirmed second copy. Neither this tool nor its
 report reasons about *why* an annotation was deleted -- these two notes are
 distinguished purely by whether a surviving copy was found, nothing else.
+
+"MISSING_RESENT" and "MISSING_FOUND_BY_NUMBER" are earned the same way, in
+recon.py's `_verify_missing_rows`, for a MISSING_IN_ROSSUM row: a resend of
+the same invoice is in the same report with a healthy note (see
+`same_invoice`), or a Rossum search found a healthy annotation for the same
+number elsewhere. A resend gets a NEW e-invoice id from B2Brouter, so
+pairing by id alone flags the first delivery as missing.
 
 A `split` annotation is a CONTAINER, not a processed document: the invoice was
 divided into child annotations, which are the real documents. SPLIT_CONTAINER
@@ -146,6 +155,14 @@ LOOKUP_FAILED = "lookup failed"
 DELETED = "DELETED"
 DELETED_AS_DUPLICATE = "DELETED_AS_DUPLICATE"
 
+MISSING_IN_ROSSUM = "MISSING_IN_ROSSUM"
+MISSING_EMPTY_SOURCE = "MISSING_EMPTY_SOURCE"
+MISSING_RESENT = "MISSING_RESENT"
+MISSING_FOUND_BY_NUMBER = "MISSING_FOUND_BY_NUMBER"
+# The notes that mean "a healthy annotation holds this invoice" -- what a
+# resend must match to turn a MISSING_IN_ROSSUM row into MISSING_RESENT.
+HEALTHY_NOTES = ("ok", "ok +xml_twin")
+
 
 @dataclass(frozen=True)
 class Row:
@@ -172,6 +189,42 @@ def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+def _same_amount(a: str, b: str) -> bool:
+    try:
+        return float(a) == float(b)
+    except ValueError:
+        return a.strip() == b.strip()
+
+
+def _is_empty_source(invoice: B2bInvoice) -> bool:
+    """No number, no sender, total 0 or absent: B2Brouter holds only the
+    attachment. Measured on a production deployment: such a record has no
+    date and no lines either, so the operator cannot tell which invoice it
+    is without opening the attachment."""
+    if invoice.number or invoice.sender:
+        return False
+    return not invoice.total or _same_amount(invoice.total, "0")
+
+
+def same_invoice(a: Row, b: Row) -> bool:
+    """True when two rows carry the same invoice number AND agree on the
+    sender or the total.
+
+    A number alone is weak: generic numbers such as `INV/2025/00001` collide
+    across suppliers. Both rows come from B2Brouter, so a resend carries the
+    same sender name and total as the first delivery. Every field both rows
+    have must agree, and at least one of sender/total must be compared.
+    """
+    if not a.invoice_number or a.invoice_number.strip() != b.invoice_number.strip():
+        return False
+    checks = []
+    if a.sender and b.sender:
+        checks.append(a.sender.strip().casefold() == b.sender.strip().casefold())
+    if a.total and b.total:
+        checks.append(_same_amount(a.total, b.total))
+    return bool(checks) and all(checks)
+
+
 def classify(
     invoice: B2bInvoice,
     anns: Sequence[RossumAnn],
@@ -195,7 +248,9 @@ def classify(
     if not anns:
         if _parse_iso(invoice.created_at) > now - timedelta(minutes=grace_minutes):
             return "PENDING"
-        return "MISSING_IN_ROSSUM"
+        if _is_empty_source(invoice):
+            return MISSING_EMPTY_SOURCE
+        return MISSING_IN_ROSSUM
 
     healthy = [a for a in anns if a.status in ARRIVED_STATUSES]
     has_failed_import = any(a.status == "failed_import" for a in anns)

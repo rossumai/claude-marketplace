@@ -96,3 +96,64 @@ def test_the_two_queries_are_deduplicated_by_annotation_id():
     index = client.einvoice_index([111], since=SINCE)
 
     assert [a.annotation_id for a in index["3003"]] == [701]
+
+
+# --- base URL --------------------------------------------------------------
+
+def test_a_base_url_ending_in_api_v1_does_not_double_the_path():
+    """Users copy `https://<org>.rossum.app/api/v1` from other Rossum
+    tooling; every request path already starts with /api/v1."""
+    urls = []
+    client = RossumClient("tok", "https://rossum.invalid/api/v1/")
+    client._request = lambda url, body, method: urls.append(url) or {}
+
+    client.list_hooks()
+
+    assert urls == ["https://rossum.invalid/api/v1/hooks?page_size=200"]
+
+
+# --- survivor search by number and total ------------------------------------
+
+def _store_searcher(annotations):
+    """A fake search endpoint that answers $and of $eq/$in clauses from a
+    store of annotations: {"id", "status", "field.<id>.<type>": value, ...}."""
+    def matches(annotation, clause):
+        (key, condition), = clause.items()
+        if "$eq" in condition:
+            return annotation.get(key) == condition["$eq"]
+        return annotation.get(key) in condition["$in"]
+
+    def searcher(path, body):
+        clauses = body["query"]["$and"]
+        return {"pagination": {"next": None},
+                "results": [a for a in annotations if all(matches(a, c) for c in clauses)]}
+    return searcher
+
+
+def test_a_survivor_must_carry_the_same_total_when_a_total_field_is_given():
+    store = [{"id": 5, "status": "exported",
+              "field.document_id.string": "INV-7", "field.amount_total.number": 99.0}]
+    client = RossumClient("tok", "https://rossum.invalid", searcher=_store_searcher(store))
+
+    assert client.surviving_annotation_id("INV-7") == 5
+    assert client.surviving_annotation_id("INV-7", total="99.00", total_field="amount_total") == 5
+    assert client.surviving_annotation_id("INV-7", total="10.0", total_field="amount_total") is None
+
+
+def test_schema_datapoints_reads_nested_fields_of_the_queue_schemas():
+    payloads = {
+        "/api/v1/queues/111": {"schema": "https://rossum.invalid/api/v1/schemas/9"},
+        "https://rossum.invalid/api/v1/schemas/9": {"content": [{
+            "category": "section", "id": "header", "children": [
+                {"category": "datapoint", "id": "document_id", "type": "string"},
+                {"category": "multivalue", "id": "items", "children": {
+                    "category": "tuple", "id": "item", "children": [
+                        {"category": "datapoint", "id": "item_total", "type": "number"},
+                    ],
+                }},
+            ],
+        }]},
+    }
+    client = RossumClient("tok", "https://rossum.invalid", transport=payloads.__getitem__)
+
+    assert client.schema_datapoints([111]) == {"document_id": "string", "item_total": "number"}

@@ -73,3 +73,14 @@ def test_classify_unverified_source_outranks_every_other_verdict():
     # an incomplete left-hand side makes every other verdict untrustworthy.
     assert classify(inv(), [ann("exported")], now=NOW, grace_minutes=30, source_ok=False) == \
         "UNVERIFIED_SOURCE"
+
+
+def test_classify_an_empty_source_row_without_a_trace():
+    # No number, no sender, total 0: B2Brouter holds only an attachment, so
+    # there is nothing to search Rossum by -- a different action than
+    # MISSING_IN_ROSSUM.
+    empty = B2bInvoice(
+        einvoice_id="1001", account_id="900001", number=None, sender=None,
+        total="0.0", currency=None, state="new", created_at="2026-01-18T19:00:00Z", ack_at=None,
+    )
+    assert classify(empty, [], now=NOW, grace_minutes=30, source_ok=True) == "MISSING_EMPTY_SOURCE"

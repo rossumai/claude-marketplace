@@ -159,6 +159,12 @@ def test_main_uses_the_credentials_files_token_keys_and_ui_host(tmp_path, monkey
         def has_surviving_original(self, invoice_number):
             return False
 
+        def surviving_annotation_id(self, invoice_number, *, total=None, total_field=None):
+            return None
+
+        def schema_datapoints(self, queue_ids):
+            return {"document_id": "string", "amount_total": "number"}
+
     class _FakeB2bClient:
         def __init__(self, api_key, base_url, api_version=None):
             assert api_key == "file-key"  # the placeholder-labelled key must
@@ -248,6 +254,12 @@ def test_a_credentials_file_at_the_default_path_is_picked_up_without_the_flag(
 
         def has_surviving_original(self, invoice_number):
             return False
+
+        def surviving_annotation_id(self, invoice_number, *, total=None, total_field=None):
+            return None
+
+        def schema_datapoints(self, queue_ids):
+            return {"document_id": "string", "amount_total": "number"}
 
     class _FakeB2bClient:
         def __init__(self, api_key, base_url, api_version=None):

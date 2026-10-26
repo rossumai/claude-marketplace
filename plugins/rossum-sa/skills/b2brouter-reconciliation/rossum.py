@@ -66,7 +66,10 @@ class RossumClient:
         ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         self._token = token
-        self._base = base_url.rstrip("/")
+        # Users copy `https://<org>.rossum.app/api/v1` from other Rossum
+        # tooling. Every request path below already starts with /api/v1, so
+        # keeping the suffix requested /api/v1/api/v1/hooks -> HTTP 404.
+        self._base = re.sub(r"/api/v1$", "", base_url.rstrip("/"))
         self._transport = transport or self._get
         self._searcher = searcher or self._search
         # Opt-in only, via --relax-x509-strict in recon.py. None (the default)
@@ -236,9 +239,49 @@ class RossumClient:
 
         return index
 
+    def schema_datapoints(self, queue_ids: Sequence[int]) -> dict[str, str]:
+        """schema_id -> datapoint type, over the schemas of the given queues.
+
+        Lets the operator see which fields the by-number search can use
+        (`--show-discovery`), and lets recon.py refuse a `--match-by` whose
+        field no schema has: a search on an absent field returns nothing,
+        so every row would stay MISSING_IN_ROSSUM with no sign of a problem.
+        """
+        schema_urls = dict.fromkeys(
+            self._transport(f"/api/v1/queues/{queue_id}").get("schema")
+            for queue_id in queue_ids
+        )
+        fields: dict[str, str] = {}
+
+        def walk(node) -> None:
+            if isinstance(node, list):
+                for child in node:
+                    walk(child)
+            elif isinstance(node, dict):
+                if node.get("category") == "datapoint":
+                    fields[node["id"]] = node.get("type", "string")
+                walk(node.get("children"))
+
+        for url in schema_urls:
+            if url:
+                walk(self._transport(url).get("content"))
+        return fields
+
     def has_surviving_original(self, invoice_number: str) -> bool:
-        """True if a healthy annotation exists ANYWHERE in the organization
-        whose extracted content carries this invoice number.
+        """True if a healthy annotation for this invoice number exists
+        anywhere in the organization -- see surviving_annotation_id."""
+        return self.surviving_annotation_id(invoice_number) is not None
+
+    def surviving_annotation_id(
+        self,
+        invoice_number: str,
+        *,
+        total: str | None = None,
+        total_field: str | None = None,
+    ) -> int | None:
+        """The id of a healthy annotation ANYWHERE in the organization whose
+        extracted content carries this invoice number -- and, when
+        `total_field` is given, this total in that number field -- or None.
 
         Used to decide whether a DELETED row EARNS the DELETED_AS_DUPLICATE
         label -- this tool never asserts a duplicate exists, it confirms
@@ -280,23 +323,35 @@ class RossumClient:
         einvoice_index() -- the whole point is to look beyond the channel's
         own queues for a survivor elsewhere in the organization. Uses the
         SAME guarded search helper as einvoice_index(), never a new POST
-        path. Returns True on the first healthy (ARRIVED_STATUSES) hit
-        rather than paging to exhaustion once one is found; only a fully
-        paged-through result set with no healthy hit at all counts as "not
-        found" (an empty result set included).
+        path. Returns the first healthy (ARRIVED_STATUSES) hit rather than
+        paging to exhaustion once one is found; only a fully paged-through
+        result set with no healthy hit at all counts as "not found" (an
+        empty result set included).
+
+        The total clause exists for MISSING_IN_ROSSUM rows: a number alone
+        collides across suppliers (generic numbers such as `INV/2025/00001`),
+        so the copy must also carry the same total. Raises ValueError when
+        `total` is not a number -- the caller treats that row as not checked.
+
+        MEASURED on a production deployment: the `.number` `$eq` clause
+        filters (the right total finds the copy, a total off by 1 or by a
+        factor of 10 finds nothing), and a `total_field` no schema has also
+        finds nothing, with HTTP 200 and no error -- which is why recon.py
+        refuses a --total-field that no channel schema has.
         """
-        body = {"query": {"$and": [
-            {"field.document_id.string": {"$eq": invoice_number}},
-            {"status": {"$in": list(ALL_STATUSES)}},
-        ]}}
+        clauses = [{"field.document_id.string": {"$eq": invoice_number}}]
+        if total_field is not None:
+            clauses.append({f"field.{total_field}.number": {"$eq": float(total)}})
+        clauses.append({"status": {"$in": list(ALL_STATUSES)}})
+        body = {"query": {"$and": clauses}}
         path = f"{SEARCH_PATH}?page_size={PAGE_SIZE}"
         while path:
             payload = self._searcher(path, body)
             for annotation in payload.get("results", []):
                 if annotation.get("status") in ARRIVED_STATUSES:
-                    return True
+                    return annotation["id"]
             path = (payload.get("pagination") or {}).get("next")
-        return False
+        return None
 
     def lookup_einvoice(self, einvoice_id: str) -> list[RossumAnn]:
         """Exact-filename fallback for an id the search did not return.
