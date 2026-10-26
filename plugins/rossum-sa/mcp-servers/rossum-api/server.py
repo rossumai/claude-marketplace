@@ -6763,7 +6763,8 @@ def handle_get_annotation(request_id, arguments):
 @_tool(
     "rossum_patch_annotation",
     "Updates an annotation. Most commonly used to change status (e.g. confirm, reject, "
-    "move to review, export). Only provide the fields you want to change. "
+    "move to review, export), or to exclude it from engine training (training_enabled=false). "
+    "Only provide the fields you want to change. "
     "METADATA: the Rossum API REPLACES annotation.metadata on PATCH — it does not merge. "
     "This tool compensates by default: it GETs the annotation, merges your keys over the "
     "existing metadata, and PATCHes the result, so unrelated keys other parts of the pipeline "

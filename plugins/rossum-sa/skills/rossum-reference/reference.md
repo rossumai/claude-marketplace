@@ -755,7 +755,7 @@ filtering gives no signal that anything went wrong.
 
 **Validate**: `POST /v1/annotations/{id}/content/validate` — Returns validation messages, constraint violations, table aggregations, AI confidence scores, and `matched_trigger_rules` (the rules whose `trigger_condition` fired — see `business-rules-reference` → *Verifying a rule actually fired*)
 
-**Move**: `PATCH /v1/annotations/{id}` with `{"queue": "<target queue URL>", "schema": "<target schema URL>", "status": "to_review"}` — relocates the annotation without re-importing it. Send `schema` alongside `queue`: the annotation must point at the *target* queue's schema. Content is carried across as-is, which also means the target schema's **formulas do not re-evaluate** (see `txscript-reference` → *A queue move does NOT recompute formulas*). To re-extract instead, move with `status: "importing"` and accept the data loss (see *Document Sorting*). **No MCP tool wraps the move** — `rossum_patch_annotation` accepts only `status` and `metadata`.
+**Move**: `PATCH /v1/annotations/{id}` with `{"queue": "<target queue URL>", "schema": "<target schema URL>", "status": "to_review"}` — relocates the annotation without re-importing it. Send `schema` alongside `queue`: the annotation must point at the *target* queue's schema. Content is carried across as-is, which also means the target schema's **formulas do not re-evaluate** (see `txscript-reference` → *A queue move does NOT recompute formulas*). To re-extract instead, move with `status: "importing"` and accept the data loss (see *Document Sorting*). **No MCP tool wraps the move** — `rossum_patch_annotation` accepts only `status`, `metadata` and `training_enabled`.
 
 #### Move permissions — a queue-scoped user can move, but only into their own queues
 

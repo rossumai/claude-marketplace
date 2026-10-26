@@ -2551,6 +2551,16 @@ def test_patch_annotation_sends_training_enabled_without_reading(monkeypatch):
     assert _patched_body(fake) == {"training_enabled": False}
 
 
+def test_patch_annotation_keeps_training_enabled_through_the_metadata_merge(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "training_enabled": False, "metadata": {"probe": True}},
+        _annotation_with_metadata({"keep_me": "yes"}),
+    )
+    assert _patched_body(fake) == {"training_enabled": False,
+                                   "metadata": {"keep_me": "yes", "probe": True}}
+
+
 def test_patch_annotation_aborts_when_existing_metadata_cannot_be_read(monkeypatch):
     """If the pre-read fails, PATCHing anyway would replace — the destructive outcome the
     merge exists to prevent. Abort instead."""
