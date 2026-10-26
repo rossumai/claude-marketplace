@@ -304,7 +304,7 @@ verdict:
 | `PENDING` | arrived within the grace window | re-run later |
 | `MISSING_IN_ROSSUM` | the source has it, Rossum has nothing | check `acked_at`: a timestamp → it was handed over and lost, escalate with the einvoice id; genuinely empty → it was never collected, which is a source-side fault; `not checked` → no conclusion available yet (see the `acked_at` column below), re-run or narrow the window |
 | `MISSING_EMPTY_SOURCE` | the source has it, Rossum has nothing, and the B2Brouter record has no number, no sender and a zero total | open the invoice's attachment in B2Brouter to find out which invoice it is, then treat it like `MISSING_IN_ROSSUM`. The record holds no data to search Rossum by |
-| `MISSING_RESENT` | Rossum has nothing for this e-invoice id, but a resend of the same invoice is in the same report with note `ok` | none — the resend was processed; `annotation_link` points at its annotation |
+| `MISSING_RESENT` | Rossum has nothing for this e-invoice id, but a resend of the same invoice is in the same channel with note `ok` | none — the resend was processed; `annotation_link` points at its annotation |
 | `MISSING_FOUND_BY_NUMBER` | Rossum has nothing for this e-invoice id, but a healthy annotation with the same invoice number (and total) exists elsewhere in Rossum | none — the invoice reached Rossum another way; `annotation_link` points at that annotation |
 | `STRANDED_CREATED` | only `created` annotations, no healthy sibling | the importer did not finish; recover one at a time, verifying each |
 | `FAILED_IMPORT` | only `failed_import`, no healthy sibling | the XML was processed as a scan instead of being claimed; recover as above |
@@ -352,7 +352,7 @@ exception rows are left `not checked` and the run says so explicitly rather
 than leaving them silently blank.
 
 The cap is spent in priority order, not row order: `MISSING_IN_ROSSUM`
-rows first, then the other actionable notes, then the notes that need no
+and `MISSING_EMPTY_SOURCE` rows first, then the other actionable notes, then the notes that need no
 action (`DELETED`, `DELETED_AS_DUPLICATE`, `MISSING_RESENT`,
 `MISSING_FOUND_BY_NUMBER`). Measured on a production deployment, a year
 has about 1,000 `DELETED` rows per channel. In row order they used up the
@@ -416,19 +416,20 @@ e-invoice id. If the first delivery never became an annotation, matching by
 id alone reports it `MISSING_IN_ROSSUM`, although the resend was processed.
 The same happens when the invoice reached Rossum another way, for example
 by email into a different queue. Measured on a production deployment: of 12
-`MISSING_IN_ROSSUM` rows over ten months, 3 had a resend in the same report,
+`MISSING_IN_ROSSUM` rows over ten months, 3 had a resend in the same channel,
 5 had a healthy annotation with the same number elsewhere in Rossum, and 4
 were empty source records. None needed recovery.
 
 So every `MISSING_IN_ROSSUM` row with an invoice number gets two checks:
 
-1. **A resend in the same report.** Another row of the same channel has
+1. **A resend in the same channel.** Another row of the same channel has
    note `ok` or `ok +xml_twin`, the same invoice number, and agrees on the
    sender name (case-insensitive) or the total. Every one of those two
    fields that both rows have must agree, and at least one must be present
    on both. Both rows come from B2Brouter, so a resend carries the same
    values. This check needs no API call, always runs, and is not capped.
-   A match → `MISSING_RESENT`.
+   It does not see rows of other channels; a resend through another
+   channel is found by check 2. A match → `MISSING_RESENT`.
 2. **A copy elsewhere in Rossum** (`--match-by`). One annotation search per
    row over the whole organization, not only the channel's queues, capped
    by `MISSING_VERIFY_CAP` in `recon.py`. A healthy annotation (an
@@ -446,13 +447,14 @@ So every `MISSING_IN_ROSSUM` row with an invoice number gets two checks:
 In both cases the row keeps its own e-invoice id, and `annotation_link`
 points at the healthy annotation that was found. A row is never marked
 found on the strength of a search that was not made: with no invoice
-number, `--match-by off`, the cap spent, no numeric total for
-`number+total`, or a failed search, it stays `MISSING_IN_ROSSUM`, and the
-channel summary counts how many rows were not searched.
+number, `--match-by off`, no numeric total for `number+total`, the cap
+spent, or a failed search, it stays `MISSING_IN_ROSSUM`, and the channel
+summary counts how many rows were not searched. A row without a numeric
+total does not use up a slot of the cap.
 
-The run refuses to start (exit 2) when `--match-by` needs a field that no
-channel queue schema has: `document_id` as a string, and for
-`number+total` the `--total-field` as a number. A search on an absent
+The run refuses to start (exit 2) when `--match-by` needs a field that a
+channel's queue schemas lack, naming each such channel: `document_id` as
+a string, and for `number+total` the `--total-field` as a number. A search on an absent
 field returns nothing, so every row would stay `MISSING_IN_ROSSUM` with no
 sign that the check never worked. `--show-discovery` prints which of these
 fields each channel's queue schemas have.

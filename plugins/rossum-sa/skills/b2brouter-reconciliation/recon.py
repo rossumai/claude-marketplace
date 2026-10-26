@@ -67,6 +67,7 @@ from match import (
     DELETED_AS_DUPLICATE,
     HEALTHY_NOTES,
     LOOKUP_FAILED,
+    MISSING_EMPTY_SOURCE,
     MISSING_FOUND_BY_NUMBER,
     MISSING_IN_ROSSUM,
     MISSING_RESENT,
@@ -215,8 +216,8 @@ ATTRIBUTION_LOOKUP_CAP = 200
 # largest. Past the cap, the remaining exception rows' acked_at stays
 # NOT_CHECKED rather than being silently left blank -- see match.NOT_CHECKED.
 #
-# The cap is spent in priority order (see `_ack_priority`): MISSING_IN_ROSSUM
-# first, then the other actionable notes, then the exempt ones such as
+# The cap is spent in priority order (see `_ack_priority`): MISSING_IN_ROSSUM and
+# MISSING_EMPTY_SOURCE first, then the other actionable notes, then the exempt ones such as
 # DELETED. Measured on a production deployment, a year has about 1,000
 # DELETED rows per channel; in row order they used up the cap and left 7 of
 # 12 MISSING_IN_ROSSUM rows `not checked` -- the rows where acked_at decides
@@ -232,7 +233,7 @@ MISSING_VERIFY_CAP = 200
 # How a MISSING_IN_ROSSUM row is searched for elsewhere in Rossum (--match-by):
 #   number+total -- the invoice number AND the total must match (default);
 #   number       -- the number alone, which collides across suppliers;
-#   off          -- no Rossum search. A resend inside the report is still
+#   off          -- no Rossum search. A resend in the same channel is still
 #                   found, because that check needs no API call.
 MATCH_STRATEGIES = ("number+total", "number", "off")
 DEFAULT_TOTAL_FIELD = "amount_total"
@@ -678,10 +679,10 @@ def _attribute_unmatched_ids(
 
 
 def _ack_priority(note: str) -> int:
-    """Order of acked_at lookups: MISSING_IN_ROSSUM first, where acked_at
+    """Order of acked_at lookups: the missing invoices first, where acked_at
     decides whose fault the loss is; then the other actionable notes; then
     the exempt ones (DELETED and friends) with whatever cap remains."""
-    if note == MISSING_IN_ROSSUM:
+    if note in (MISSING_IN_ROSSUM, MISSING_EMPTY_SOURCE):
         return 0
     return 1 if note not in ACTIONABLE_EXEMPT_NOTES else 2
 
@@ -839,6 +840,14 @@ def _verify_deleted_rows(
     return filled, verified, not_verified
 
 
+def _is_number(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _verify_missing_rows(
     rows: list[Row], rossum, *, cap: int, match_by: str, total_field: str, ui_host: str,
 ) -> tuple[list[Row], int, int]:
@@ -853,8 +862,9 @@ def _verify_missing_rows(
     8 of 12 MISSING_IN_ROSSUM rows had such a copy.
 
     Two checks, in order:
-      1. A resend in this report: another row with a healthy note and the
-         same number, agreeing on sender or total (`match.same_invoice`).
+      1. A resend in the same channel: another row with a healthy note and
+         the same number, agreeing on sender or total (`match.same_invoice`).
+         Rows of other channels are not seen here; check 2 covers those.
          No API call, so it always runs and is not capped. -> MISSING_RESENT
       2. A Rossum search on the number, plus the total in `total_field` for
          --match-by number+total (`rossum.surviving_annotation_id`). One
@@ -863,9 +873,10 @@ def _verify_missing_rows(
     points at the healthy annotation that was found.
 
     A row with no number is not eligible. A row that was not searched --
-    --match-by off, the cap spent, no usable total for number+total, or the
+    --match-by off, no numeric total for number+total, the cap spent, or the
     search failed -- stays MISSING_IN_ROSSUM: never found on the strength of
-    a search that was not made.
+    a search that was not made. A row without a numeric total is skipped
+    BEFORE it takes a cap slot, so it cannot starve rows that can be searched.
 
     Returns (rows, searched, not_searched): `searched` counts searches that
     completed, whatever they found; `not_searched` counts eligible rows left
@@ -878,7 +889,7 @@ def _verify_missing_rows(
     not_searched = 0
     filled: list[Row] = []
     for row in rows:
-        if row.note != MISSING_IN_ROSSUM or not row.invoice_number:
+        if row.note != MISSING_IN_ROSSUM or not row.invoice_number.strip():
             filled.append(row)
             continue
         resend = next((h for h in healthy if same_invoice(row, h)), None)
@@ -890,6 +901,11 @@ def _verify_missing_rows(
         if match_by == "off":
             filled.append(row)
             continue
+        with_total = match_by == "number+total"
+        if with_total and not _is_number(row.total):
+            not_searched += 1
+            filled.append(row)
+            continue
         if used >= cap:
             not_searched += 1
             filled.append(row)
@@ -898,11 +914,11 @@ def _verify_missing_rows(
         try:
             found = rossum.surviving_annotation_id(
                 row.invoice_number,
-                total=row.total if match_by == "number+total" else None,
-                total_field=total_field if match_by == "number+total" else None,
+                total=row.total if with_total else None,
+                total_field=total_field if with_total else None,
             )
-        except (RossumError, TypeError, ValueError):
-            # A failed search, or no numeric total to search by: not checked.
+        except RossumError:
+            # The search did not complete: not checked, never found.
             not_searched += 1
             filled.append(row)
             continue
@@ -1222,7 +1238,7 @@ def reconcile_channel(
             f"  ! {channel.name}: the acknowledgement lookup cap ({ack_cap}) was reached; "
             f"{ack_capped} exception row(s) were NOT checked and are marked "
             f"'{NOT_CHECKED}' in acked_at rather than left blank. Lookups go to "
-            "MISSING_IN_ROSSUM rows first, then other actionable rows, then DELETED-type "
+            "MISSING_IN_ROSSUM and MISSING_EMPTY_SOURCE rows first, then other actionable rows, then DELETED-type "
             "rows; narrow the window if any MISSING_IN_ROSSUM row is still unchecked.",
             file=sys.stderr,
         )
@@ -1513,25 +1529,29 @@ def main(argv: list[str] | None = None) -> int:
         # The by-number search on a field no schema has returns nothing, so
         # every row would stay MISSING_IN_ROSSUM with no sign the check never
         # worked. Refuse before the run instead.
+        # Checked PER CHANNEL: one channel having the field must not let a
+        # channel without it pass, or that channel's searches all come back
+        # empty.
         required = {}
         if args.match_by != "off":
             required[NUMBER_FIELD] = "string"
         if args.match_by == "number+total":
             required[args.total_field] = "number"
-        if required:
-            available: dict[str, str] = {}
-            for channel in channels:
-                available.update(rossum.schema_datapoints(channel.queue_ids))
+        refusals = []
+        for channel in channels if required else ():
+            available = rossum.schema_datapoints(channel.queue_ids)
             absent = [f"{field} ({kind})" for field, kind in required.items()
                       if available.get(field) != kind]
             if absent:
-                print(
-                    f"--match-by {args.match_by} needs schema field(s) that no channel "
-                    f"queue schema has: {', '.join(absent)}. Name the total field with "
-                    "--total-field, or pick another --match-by (see --show-discovery).",
-                    file=sys.stderr,
-                )
-                return 2
+                refusals.append(f"{channel.name}: {', '.join(absent)}")
+        if refusals:
+            print(
+                f"--match-by {args.match_by} needs schema field(s) that these channels' "
+                f"queue schemas lack -- {'; '.join(refusals)}. Name the total field with "
+                "--total-field, or pick another --match-by (see --show-discovery).",
+                file=sys.stderr,
+            )
+            return 2
     except RossumError as exc:
         return _report_abort("Rossum", exc)
     except B2bError as exc:

@@ -330,8 +330,8 @@ class RossumClient:
 
         The total clause exists for MISSING_IN_ROSSUM rows: a number alone
         collides across suppliers (generic numbers such as `INV/2025/00001`),
-        so the copy must also carry the same total. Raises ValueError when
-        `total` is not a number -- the caller treats that row as not checked.
+        so the copy must also carry the same total. `total` must be numeric;
+        recon.py skips a row without one before calling this.
 
         MEASURED on a production deployment: the `.number` `$eq` clause
         filters (the right total finds the copy, a total off by 1 or by a

@@ -644,3 +644,13 @@ def test_main_refuses_a_match_strategy_whose_field_no_schema_has(monkeypatch, ca
 
     assert rc == 2
     assert "--total-field" in capsys.readouterr().err
+
+
+def test_a_row_without_a_numeric_total_does_not_use_up_the_search_cap():
+    rows = _reconcile(
+        [_inv("1", number="INV-1", total=""), _inv("2", number="INV-7")], {},
+        rossum_survivors={("INV-7", "10.0"): 77}, missing_verify_cap=1,
+    )
+
+    assert rows["1"].note == "MISSING_IN_ROSSUM"
+    assert rows["2"].note == "MISSING_FOUND_BY_NUMBER"

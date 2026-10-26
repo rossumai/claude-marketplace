@@ -126,7 +126,7 @@ invoice is searched for elsewhere in Rossum. Show the operator that line and
   with `--total-field <schema_id>`.
 - `number` — the number alone. Generic numbers collide across suppliers, so
   offer this only when no schema has a total field.
-- `off` — no Rossum search; a resend inside the report is still found.
+- `off` — no Rossum search; a resend in the same channel is still found.
 
 The run refuses to start when the chosen strategy needs a field no channel
 schema has. See `reference.md` → "`MISSING_IN_ROSSUM` checked by invoice

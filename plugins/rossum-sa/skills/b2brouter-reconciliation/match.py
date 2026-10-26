@@ -34,7 +34,7 @@ distinguished purely by whether a surviving copy was found, nothing else.
 
 "MISSING_RESENT" and "MISSING_FOUND_BY_NUMBER" are earned the same way, in
 recon.py's `_verify_missing_rows`, for a MISSING_IN_ROSSUM row: a resend of
-the same invoice is in the same report with a healthy note (see
+the same invoice is in the same channel with a healthy note (see
 `same_invoice`), or a Rossum search found a healthy annotation for the same
 number elsewhere. A resend gets a NEW e-invoice id from B2Brouter, so
 pairing by id alone flags the first delivery as missing.
@@ -215,7 +215,8 @@ def same_invoice(a: Row, b: Row) -> bool:
     same sender name and total as the first delivery. Every field both rows
     have must agree, and at least one of sender/total must be compared.
     """
-    if not a.invoice_number or a.invoice_number.strip() != b.invoice_number.strip():
+    number = a.invoice_number.strip()
+    if not number or number != b.invoice_number.strip():
         return False
     checks = []
     if a.sender and b.sender:
