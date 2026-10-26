@@ -223,7 +223,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.45.1"
+_SERVER_VERSION = "0.46.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -6763,7 +6763,8 @@ def handle_get_annotation(request_id, arguments):
 @_tool(
     "rossum_patch_annotation",
     "Updates an annotation. Most commonly used to change status (e.g. confirm, reject, "
-    "move to review, export). Only provide the fields you want to change. "
+    "move to review, export), or to exclude it from engine training (training_enabled=false). "
+    "Only provide the fields you want to change. "
     "METADATA: the Rossum API REPLACES annotation.metadata on PATCH — it does not merge. "
     "This tool compensates by default: it GETs the annotation, merges your keys over the "
     "existing metadata, and PATCHes the result, so unrelated keys other parts of the pipeline "
@@ -6810,6 +6811,15 @@ def handle_get_annotation(request_id, arguments):
                     "when deliberately clearing keys. Ignored when `metadata` is not given."
                 ),
             },
+            "training_enabled": {
+                "type": "boolean",
+                "description": (
+                    "Whether the annotation may be used to train the extraction engine. false "
+                    "excludes it — the same effect as the exclude_from_training rule action. "
+                    "rossum_copy_annotation carries both `automated` and training_enabled over "
+                    "to the copy, so set it here when the copy must differ from its source."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -6820,6 +6830,8 @@ def handle_patch_annotation(request_id, arguments):
     body = {}
     if "status" in arguments:
         body["status"] = arguments["status"]
+    if "training_enabled" in arguments:
+        body["training_enabled"] = arguments["training_enabled"]
 
     if "metadata" in arguments:
         metadata = arguments["metadata"]
@@ -6854,7 +6866,8 @@ def handle_patch_annotation(request_id, arguments):
     "PROPAGATES: metadata; the full content tree including values, validation_sources (human "
     "marks included) and datapoint positions to the float; and a page image with an identical "
     "sha256. Also confirmed_at and confirmed_by — so a copy LOOKS confirmed although it never "
-    "was; do not read those as evidence of review on a copy. DOES NOT PROPAGATE: relations "
+    "was; do not read those as evidence of review on a copy. Also `automated` and "
+    "`training_enabled` — change the latter with rossum_patch_annotation. DOES NOT PROPAGATE: relations "
     "(including the 'edit' relation document splitting creates), document_relations, or labels — "
     "reapply labels with rossum_apply_labels if the copy needs them. SCHEMA TRAP, and it is the "
     "DEFAULT case: only target_status='importing' retargets the copy to the target queue's "
