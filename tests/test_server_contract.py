@@ -2541,6 +2541,16 @@ def test_patch_annotation_without_metadata_does_not_read_the_annotation(monkeypa
     assert _patched_body(fake) == {"status": "to_review"}
 
 
+def test_patch_annotation_sends_training_enabled_without_reading(monkeypatch):
+    fake, _ = run_handler(
+        monkeypatch, "rossum_patch_annotation",
+        {"annotation_id": 55, "training_enabled": False},
+        _annotation_with_metadata({"routing": {"role": "training_copy"}}),
+    )
+    assert not [c for c in fake.calls if c["method"] == "GET"]
+    assert _patched_body(fake) == {"training_enabled": False}
+
+
 def test_patch_annotation_aborts_when_existing_metadata_cannot_be_read(monkeypatch):
     """If the pre-read fails, PATCHing anyway would replace — the destructive outcome the
     merge exists to prevent. Abort instead."""
