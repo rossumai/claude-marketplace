@@ -65,11 +65,17 @@ from match import (
     CSV_COLUMNS,
     DELETED,
     DELETED_AS_DUPLICATE,
+    HEALTHY_NOTES,
     LOOKUP_FAILED,
+    MISSING_EMPTY_SOURCE,
+    MISSING_FOUND_BY_NUMBER,
+    MISSING_IN_ROSSUM,
+    MISSING_RESENT,
     NOT_CHECKED,
     Row,
     build_row,
     enumeration_contradiction,
+    same_invoice,
     unverified_row,
 )
 from rossum import RossumClient, RossumError
@@ -111,7 +117,17 @@ CLEAN_NOTES = ("ok", "ok +xml_twin", "PENDING")
 # order of magnitude stops trusting the report -- the same failure mode
 # already fixed twice, in the unmatched-id count and the per-account
 # UNVERIFIED_SOURCE flags.
-ACTIONABLE_EXEMPT_NOTES = CLEAN_NOTES + (DELETED, DELETED_AS_DUPLICATE)
+#
+# MISSING_RESENT and MISSING_FOUND_BY_NUMBER are exempt for the same reason as
+# DELETED_AS_DUPLICATE: a check found the invoice in Rossum under another
+# e-invoice id (see `_verify_missing_rows`). Measured on a production
+# deployment: all 12 MISSING_IN_ROSSUM rows over ten months needed no
+# recovery -- 8 had a copy findable by number, the other 4 were empty source
+# records. MISSING_EMPTY_SOURCE stays actionable: only opening the
+# attachment tells whether it is a real invoice that never reached Rossum.
+ACTIONABLE_EXEMPT_NOTES = CLEAN_NOTES + (
+    DELETED, DELETED_AS_DUPLICATE, MISSING_RESENT, MISSING_FOUND_BY_NUMBER,
+)
 KEY_ENV_PREFIX = "B2B_API_KEY"
 DEFAULT_BASE_URL = "https://elis.rossum.ai"
 
@@ -195,13 +211,33 @@ ATTRIBUTION_LOOKUP_CAP = 200
 # two caps above. `acked_at` is only ever backfilled for EXCEPTION rows (see
 # match.CLEAN_NOTES via reconcile_channel's own filter below) -- the notes
 # that mean "nothing to do" never need the distinction this backfill exists
-# for -- so in practice this tier is small: a handful of exceptions, not one
-# call per invoice. The cap exists anyway for the same mass-incident reason:
-# an unbounded tier here would make the run unfinishable exactly when the
-# exception count is largest. Past the cap, the remaining exception rows'
-# acked_at stays NOT_CHECKED rather than being silently left blank -- see
-# match.NOT_CHECKED.
+# for. The cap exists for the same mass-incident reason: an unbounded tier
+# here would make the run unfinishable exactly when the exception count is
+# largest. Past the cap, the remaining exception rows' acked_at stays
+# NOT_CHECKED rather than being silently left blank -- see match.NOT_CHECKED.
+#
+# The cap is spent in priority order (see `_ack_priority`): MISSING_IN_ROSSUM and
+# MISSING_EMPTY_SOURCE first, then the other actionable notes, then the exempt ones such as
+# DELETED. Measured on a production deployment, a year has about 1,000
+# DELETED rows per channel; in row order they used up the cap and left 7 of
+# 12 MISSING_IN_ROSSUM rows `not checked` -- the rows where acked_at decides
+# whose fault the loss is.
 ACK_LOOKUP_CAP = 200
+
+# Hard cap on per-row by-number searches for MISSING_IN_ROSSUM rows (see
+# `_verify_missing_rows`), same spirit as DUPLICATE_VERIFY_CAP. These rows
+# are few in a normal run; past the cap a row stays MISSING_IN_ROSSUM, never
+# found.
+MISSING_VERIFY_CAP = 200
+
+# How a MISSING_IN_ROSSUM row is searched for elsewhere in Rossum (--match-by):
+#   number+total -- the invoice number AND the total must match (default);
+#   number       -- the number alone, which collides across suppliers;
+#   off          -- no Rossum search. A resend in the same channel is still
+#                   found, because that check needs no API call.
+MATCH_STRATEGIES = ("number+total", "number", "off")
+DEFAULT_TOTAL_FIELD = "amount_total"
+NUMBER_FIELD = "document_id"
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -234,6 +270,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--out", default="b2brouter_reconciliation.csv")
     parser.add_argument("--only-exceptions", action="store_true")
     parser.add_argument("--grace-minutes", type=int, default=30)
+    parser.add_argument("--match-by", choices=MATCH_STRATEGIES, default="number+total",
+                        help="how a MISSING_IN_ROSSUM invoice is searched for elsewhere in "
+                             "Rossum: number+total (default), number (collides across "
+                             "suppliers), or off. --show-discovery lists which fields the "
+                             "channel schemas have")
+    parser.add_argument("--total-field", default=DEFAULT_TOTAL_FIELD, metavar="SCHEMA_ID",
+                        help="the number-type schema field holding the invoice total, for "
+                             f"--match-by number+total (default: {DEFAULT_TOTAL_FIELD})")
     parser.add_argument("--show-discovery", action="store_true",
                         help="print the discovered channels and exit")
     parser.add_argument("--check-coverage", action="store_true",
@@ -512,32 +556,38 @@ def _parse_created_at(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
-def _window_scoped_ids(index: dict, since: datetime) -> set[str]:
-    """einvoice ids from the index whose NEWEST annotation was created at or
-    after `since` -- i.e. ids that actually arrived in the reporting window.
+def _window_scoped_ids(index: dict, since: datetime, until: datetime) -> set[str]:
+    """einvoice ids from the index with at least one annotation created
+    inside [since, until] -- i.e. ids that actually arrived in the reporting
+    window.
 
-    einvoice_index() is deliberately built WIDER than [since, until]:
-    rossum.py's INDEX_LOOKBACK subtracts 24 hours from `since` before
-    querying, so an invoice arriving right at the window's edge still finds
-    an annotation created slightly later. That is correct and must stay --
-    but it means the index also holds ids whose ONLY annotation predates the
-    window: pure lookback-tail context, not something that arrived now.
-    Treating every id in the index as if it belonged to the window is the
-    exact bug this function exists to close: on a live run it substantially
-    inflated the "unmatched" count and, through the per-account attribution
-    check below, produced false UNVERIFIED_SOURCE flags on accounts that had
-    simply been quiet.
+    einvoice_index() is deliberately built WIDER than [since, until] on both
+    sides. Below: rossum.py's INDEX_LOOKBACK subtracts 24 hours from `since`,
+    so an invoice arriving right at the window's edge still finds an
+    annotation created slightly later. Above: the query has no upper bound at
+    all, so an invoice that arrived before `until` but was imported or
+    re-driven later still finds its annotation instead of becoming a false
+    MISSING_IN_ROSSUM. Both are correct and must stay -- but the index then
+    also holds ids whose annotations all predate the window (lookback-tail
+    context) or all postdate it (created after --to). Neither arrived in the
+    window. Treating every id in the index as if it belonged to the window
+    is the exact bug this function exists to close: it inflated the
+    "unmatched" count and, through the per-account attribution check, put
+    false UNVERIFIED_SOURCE flags on accounts. Measured on a production
+    deployment with --to a month in the past, 2,713 ids created after --to
+    counted as unmatched and every account of the channel was flagged.
 
-    A re-import or a later sibling annotation created after `since` puts the
-    id back in scope even if an older annotation for the same id predates the
-    window -- hence "newest", not "any" or "all".
+    "Any annotation inside", not "newest": a re-import after `until` must
+    not push an id that also has an in-window annotation out of scope. There
+    is no margin after `until`: an id annotated just after it is only lost
+    from this check when its invoice is ALSO missing from the listing, and
+    for this check under-reporting is the safe direction. With `until` =
+    now, the rule is the same as the old "newest annotation >= since".
     """
-    scoped: set[str] = set()
-    for einvoice_id, anns in index.items():
-        newest = max((_parse_created_at(a.created_at) for a in anns), default=None)
-        if newest is not None and newest >= since:
-            scoped.add(einvoice_id)
-    return scoped
+    return {
+        einvoice_id for einvoice_id, anns in index.items()
+        if any(since <= _parse_created_at(a.created_at) <= until for a in anns)
+    }
 
 
 def _pick_attribution_client(channel, b2b_for_account, uncovered: set[str]):
@@ -628,6 +678,15 @@ def _attribute_unmatched_ids(
     return dict(counts), used, pre_window_artefacts
 
 
+def _ack_priority(note: str) -> int:
+    """Order of acked_at lookups: the missing invoices first, where acked_at
+    decides whose fault the loss is; then the other actionable notes; then
+    the exempt ones (DELETED and friends) with whatever cap remains."""
+    if note in (MISSING_IN_ROSSUM, MISSING_EMPTY_SOURCE):
+        return 0
+    return 1 if note not in ACTIONABLE_EXEMPT_NOTES else 2
+
+
 def _backfill_acked_at(
     rows: list[Row], b2b_for_account, *, cap: int
 ) -> tuple[list[Row], int, int]:
@@ -642,7 +701,8 @@ def _backfill_acked_at(
     ACTIONABLE on a row that is already flagged as something needing
     attention -- CLEAN_NOTES rows have nothing to act on either way -- so
     this is scoped to `note not in CLEAN_NOTES`, which keeps the cost to a
-    handful of calls per run instead of one per invoice.
+    handful of calls per run instead of one per invoice. The cap is spent in
+    `_ack_priority` order, not row order; the returned rows keep row order.
 
     Reuses `B2brouterClient.get_invoice` -- the SAME by-id call attribution
     already uses, never a second endpoint -- via `b2b_for_account`, exactly
@@ -667,40 +727,40 @@ def _backfill_acked_at(
     """
     used = 0
     capped = 0
-    filled: list[Row] = []
-    for row in rows:
-        if not row.einvoice_id or row.note in CLEAN_NOTES:
-            filled.append(row)
-            continue
+    filled = list(rows)
+    eligible = sorted(
+        (i for i, row in enumerate(rows) if row.einvoice_id and row.note not in CLEAN_NOTES),
+        key=lambda i: _ack_priority(rows[i].note),
+    )
+    for i in eligible:
+        row = rows[i]
         if used >= cap:
             capped += 1
-            filled.append(row)
             continue
         client = b2b_for_account(row.account)
         if client is None:
             # No client is available for this account at all (uncovered, or
             # every key failed) -- no lookup was attempted, so this is the
             # same "never checked" outcome as a clean row, not a failure.
-            filled.append(row)
             continue
         used += 1
         try:
             ref = client.get_invoice(row.einvoice_id)
         except B2bError:
-            filled.append(dataclasses.replace(row, acked_at=LOOKUP_FAILED))
+            filled[i] = dataclasses.replace(row, acked_at=LOOKUP_FAILED)
             continue
         if ref is None:
             # A 404: this key/account group cannot see this invoice id by
             # direct lookup either -- a failed check, not evidence of
             # anything about acknowledgement.
-            filled.append(dataclasses.replace(row, acked_at=LOOKUP_FAILED))
+            filled[i] = dataclasses.replace(row, acked_at=LOOKUP_FAILED)
             continue
         # ref.ack_at is None both when the field was absent/non-string AND
         # when the invoice genuinely has no acknowledgement yet -- but this
         # lookup succeeded (a real invoice object came back), so here None
         # means the latter: write a genuinely empty cell, distinguishable
         # from NOT_CHECKED and from LOOKUP_FAILED.
-        filled.append(dataclasses.replace(row, acked_at=ref.ack_at or ""))
+        filled[i] = dataclasses.replace(row, acked_at=ref.ack_at or "")
     return filled, used, capped
 
 
@@ -780,6 +840,99 @@ def _verify_deleted_rows(
     return filled, verified, not_verified
 
 
+def _is_number(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _verify_missing_rows(
+    rows: list[Row], rossum, *, cap: int, match_by: str, total_field: str, ui_host: str,
+) -> tuple[list[Row], int, int]:
+    """Look for a copy of each MISSING_IN_ROSSUM invoice under another
+    e-invoice id, by invoice number -- the MISSING_IN_ROSSUM counterpart of
+    `_verify_deleted_rows`.
+
+    A supplier's resend gets a NEW e-invoice id from B2Brouter, and an
+    invoice can also reach Rossum another way (e.g. by email into another
+    queue). Matching by id alone then flags the first delivery as missing
+    although the invoice was processed. Measured on a production deployment:
+    8 of 12 MISSING_IN_ROSSUM rows had such a copy.
+
+    Two checks, in order:
+      1. A resend in the same channel: another row with a healthy note and
+         the same number, agreeing on sender or total (`match.same_invoice`).
+         Rows of other channels are not seen here; check 2 covers those.
+         No API call, so it always runs and is not capped. -> MISSING_RESENT
+      2. A Rossum search on the number, plus the total in `total_field` for
+         --match-by number+total (`rossum.surviving_annotation_id`). One
+         search per row, capped. -> MISSING_FOUND_BY_NUMBER
+    Either way the row keeps its own e-invoice id, and its annotation_link
+    points at the healthy annotation that was found.
+
+    A row with no number is not eligible. A row that was not searched --
+    --match-by off, no numeric total for number+total, the cap spent, or the
+    search failed -- stays MISSING_IN_ROSSUM: never found on the strength of
+    a search that was not made. A row without a numeric total is skipped
+    BEFORE it takes a cap slot, so it cannot starve rows that can be searched.
+
+    Returns (rows, searched, not_searched): `searched` counts searches that
+    completed, whatever they found; `not_searched` counts eligible rows left
+    unsearched by the cap, a missing total, or a failed search (not by
+    --match-by off, which the summary states on its own).
+    """
+    healthy = [row for row in rows if row.note in HEALTHY_NOTES]
+    used = 0
+    searched = 0
+    not_searched = 0
+    filled: list[Row] = []
+    for row in rows:
+        if row.note != MISSING_IN_ROSSUM or not row.invoice_number.strip():
+            filled.append(row)
+            continue
+        resend = next((h for h in healthy if same_invoice(row, h)), None)
+        if resend is not None:
+            filled.append(dataclasses.replace(
+                row, note=MISSING_RESENT, annotation_link=resend.annotation_link,
+            ))
+            continue
+        if match_by == "off":
+            filled.append(row)
+            continue
+        with_total = match_by == "number+total"
+        if with_total and not _is_number(row.total):
+            not_searched += 1
+            filled.append(row)
+            continue
+        if used >= cap:
+            not_searched += 1
+            filled.append(row)
+            continue
+        used += 1
+        try:
+            found = rossum.surviving_annotation_id(
+                row.invoice_number,
+                total=row.total if with_total else None,
+                total_field=total_field if with_total else None,
+            )
+        except RossumError:
+            # The search did not complete: not checked, never found.
+            not_searched += 1
+            filled.append(row)
+            continue
+        searched += 1
+        if found is None:
+            filled.append(row)
+        else:
+            filled.append(dataclasses.replace(
+                row, note=MISSING_FOUND_BY_NUMBER,
+                annotation_link=f"https://{ui_host}/document/{found}",
+            ))
+    return filled, searched, not_searched
+
+
 def reconcile_channel(
     channel,
     b2b_for_account,
@@ -795,6 +948,9 @@ def reconcile_channel(
     attribution_cap: int = ATTRIBUTION_LOOKUP_CAP,
     ack_cap: int = ACK_LOOKUP_CAP,
     duplicate_verify_cap: int = DUPLICATE_VERIFY_CAP,
+    missing_verify_cap: int = MISSING_VERIFY_CAP,
+    match_by: str = "number+total",
+    total_field: str = DEFAULT_TOTAL_FIELD,
 ) -> tuple[list[Row], list[str]]:
     """Join one channel's invoices to its Rossum annotations.
 
@@ -815,10 +971,10 @@ def reconcile_channel(
     The per-account version is PRECISE, not sibling-based. einvoice_index()
     is deliberately wider than [since, until] (see rossum.py's
     INDEX_LOOKBACK), so an id in the index is not necessarily an id that
-    arrived IN the window; `_window_scoped_ids` keeps only ids whose newest
-    annotation was created at or after `since`, and ids that exist solely in
-    the lookback tail are reported as their own, deliberate count -- never
-    folded into "unmatched". Of the window-scoped ids, the ones no listed
+    arrived IN the window; `_window_scoped_ids` keeps only ids with an
+    annotation created inside [since, until], and ids that exist solely in
+    the lookback tail or solely after `until` are reported as their own,
+    deliberate counts -- never folded into "unmatched". Of the window-scoped ids, the ones no listed
     invoice matched are then looked up in B2Brouter BY ID
     (`_attribute_unmatched_ids`) to learn which account actually owns each
     one, and ONLY that account is flagged UNVERIFIED_SOURCE. An account that
@@ -886,8 +1042,12 @@ def reconcile_channel(
     # received nothing this window -- but whose queues hold e-invoices from
     # BEFORE it -- would be declared unverified on the strength of the
     # lookback tail alone.
-    window_scoped_ids = _window_scoped_ids(index, since)
-    tail_only_ids = set(index) - window_scoped_ids
+    window_scoped_ids = _window_scoped_ids(index, since, until)
+    after_window_ids = {
+        einvoice_id for einvoice_id in set(index) - window_scoped_ids
+        if any(_parse_created_at(a.created_at) > until for a in index[einvoice_id])
+    }
+    tail_only_ids = set(index) - window_scoped_ids - after_window_ids
 
     if enumeration_contradiction(len(invoices), len(window_scoped_ids)):
         reason = (
@@ -920,6 +1080,8 @@ def reconcile_channel(
           f"listed invoice (window-scoped)")
     print(f"    {len(tail_only_ids):6d}  Rossum e-invoice id(s) outside the window "
           f"(lookback-only, skipped from the count above -- deliberate, not a gap)")
+    print(f"    {len(after_window_ids):6d}  Rossum e-invoice id(s) created after the window "
+          f"end (--to), skipped from the count above -- deliberate, not a gap")
     if unmatched_index_ids:
         print(
             f"  ! {channel.name}: {len(unmatched_index_ids)} Rossum e-invoice id(s) in "
@@ -1027,31 +1189,11 @@ def reconcile_channel(
             file=sys.stderr,
         )
 
-    # Backfill acked_at for exception rows only -- see _backfill_acked_at's
-    # own docstring for why. Run AFTER the fallback loop above (so a
-    # fallback-capped row's note, UNVERIFIED_SOURCE, is already final) and
-    # BEFORE unverified_rows is appended: those synthetic rows carry no
-    # einvoice_id at all, so _backfill_acked_at already leaves them alone,
-    # but there is no reason to hand them to it in the first place.
-    rows, ack_used, ack_capped = _backfill_acked_at(rows, b2b_for_account, cap=ack_cap)
-    print(f"    {ack_used:6d}  per-invoice acknowledgement lookups used (cap {ack_cap})")
-    if ack_capped:
-        print(
-            f"  ! {channel.name}: the acknowledgement lookup cap ({ack_cap}) was reached; "
-            f"{ack_capped} exception row(s) were NOT checked and are marked "
-            f"'{NOT_CHECKED}' in acked_at rather than left blank.",
-            file=sys.stderr,
-        )
-
     # Try to upgrade DELETED rows to DELETED_AS_DUPLICATE -- see
-    # _verify_deleted_rows' own docstring. Order relative to the acked_at
-    # backfill above does not matter: DELETED and DELETED_AS_DUPLICATE are
-    # equally eligible for an acked_at lookup either way (neither is in
-    # CLEAN_NOTES), so which one runs first changes nothing either function
-    # reads. This is also what gives DELETED its own line in the per-channel
-    # note summary below (summarize() counts by exact note string, so
-    # DELETED and DELETED_AS_DUPLICATE are always reported separately, never
-    # folded together).
+    # _verify_deleted_rows' own docstring. This is also what gives DELETED
+    # its own line in the per-channel note summary below (summarize() counts
+    # by exact note string, so DELETED and DELETED_AS_DUPLICATE are always
+    # reported separately, never folded together).
     rows, duplicate_verified, duplicate_not_verified = _verify_deleted_rows(
         rows, rossum, cap=duplicate_verify_cap
     )
@@ -1063,6 +1205,41 @@ def reconcile_channel(
             "verified (the cap was reached, or the search itself failed) and keep the "
             'DELETED label -- for these rows that means "we did not look", not '
             '"nothing exists".',
+            file=sys.stderr,
+        )
+
+    # Look for a copy of each MISSING_IN_ROSSUM invoice by number -- see
+    # _verify_missing_rows. Before the acked_at backfill below, so its
+    # priority order sees which rows are still MISSING_IN_ROSSUM.
+    rows, missing_searched, missing_not_searched = _verify_missing_rows(
+        rows, rossum, cap=missing_verify_cap, match_by=match_by,
+        total_field=total_field, ui_host=ui_host,
+    )
+    print(f"    {missing_searched:6d}  MISSING_IN_ROSSUM row(s) searched for in Rossum by "
+          f"number (--match-by {match_by}, cap {missing_verify_cap})")
+    if missing_not_searched:
+        print(
+            f"  ! {channel.name}: {missing_not_searched} MISSING_IN_ROSSUM row(s) were NOT "
+            "searched for by number (the cap was reached, the row has no numeric total, "
+            "or the search failed) and keep the MISSING_IN_ROSSUM label.",
+            file=sys.stderr,
+        )
+
+    # Backfill acked_at for exception rows only -- see _backfill_acked_at's
+    # own docstring for why. Run AFTER the fallback loop and both
+    # verifications above (so every row's note is final, and the lookup
+    # priority follows it) and BEFORE unverified_rows is appended: those
+    # synthetic rows carry no einvoice_id at all, so _backfill_acked_at
+    # already leaves them alone, but there is no reason to hand them to it.
+    rows, ack_used, ack_capped = _backfill_acked_at(rows, b2b_for_account, cap=ack_cap)
+    print(f"    {ack_used:6d}  per-invoice acknowledgement lookups used (cap {ack_cap})")
+    if ack_capped:
+        print(
+            f"  ! {channel.name}: the acknowledgement lookup cap ({ack_cap}) was reached; "
+            f"{ack_capped} exception row(s) were NOT checked and are marked "
+            f"'{NOT_CHECKED}' in acked_at rather than left blank. Lookups go to "
+            "MISSING_IN_ROSSUM and MISSING_EMPTY_SOURCE rows first, then other actionable rows, then DELETED-type "
+            "rows; narrow the window if any MISSING_IN_ROSSUM row is still unchecked.",
             file=sys.stderr,
         )
 
@@ -1313,6 +1490,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"hook {channel.hook_id} [{state}] {channel.name}: "
                       f"queues={list(channel.queue_ids)} accounts={len(channel.account_ids)} "
                       f"base={channel.b2b_base_url}")
+                fields = rossum.schema_datapoints(channel.queue_ids)
+                print("    match fields: " + ", ".join(
+                    f"{field}={fields.get(field, 'missing')}"
+                    for field in dict.fromkeys((NUMBER_FIELD, args.total_field))
+                ))
             return 0
 
         # client_factory is passed explicitly (rather than relying on
@@ -1343,6 +1525,33 @@ def main(argv: list[str] | None = None) -> int:
             # is ever made on this path (build_client_resolver only calls
             # visible_account_ids).
             return check_coverage(channels, uncovered_by_host, failed_keys)
+
+        # The by-number search on a field no schema has returns nothing, so
+        # every row would stay MISSING_IN_ROSSUM with no sign the check never
+        # worked. Refuse before the run instead.
+        # Checked PER CHANNEL: one channel having the field must not let a
+        # channel without it pass, or that channel's searches all come back
+        # empty.
+        required = {}
+        if args.match_by != "off":
+            required[NUMBER_FIELD] = "string"
+        if args.match_by == "number+total":
+            required[args.total_field] = "number"
+        refusals = []
+        for channel in channels if required else ():
+            available = rossum.schema_datapoints(channel.queue_ids)
+            absent = [f"{field} ({kind})" for field, kind in required.items()
+                      if available.get(field) != kind]
+            if absent:
+                refusals.append(f"{channel.name}: {', '.join(absent)}")
+        if refusals:
+            print(
+                f"--match-by {args.match_by} needs schema field(s) that these channels' "
+                f"queue schemas lack -- {'; '.join(refusals)}. Name the total field with "
+                "--total-field, or pick another --match-by (see --show-discovery).",
+                file=sys.stderr,
+            )
+            return 2
     except RossumError as exc:
         return _report_abort("Rossum", exc)
     except B2bError as exc:
@@ -1372,6 +1581,9 @@ def main(argv: list[str] | None = None) -> int:
             attribution_cap=ATTRIBUTION_LOOKUP_CAP,
             ack_cap=ACK_LOOKUP_CAP,
             duplicate_verify_cap=DUPLICATE_VERIFY_CAP,
+            missing_verify_cap=MISSING_VERIFY_CAP,
+            match_by=args.match_by,
+            total_field=args.total_field,
         )
         all_rows.extend(rows)
         if failed:
@@ -1415,10 +1627,10 @@ def main(argv: list[str] | None = None) -> int:
             )
     # Counted over ALL rows, not only the ones written: --only-exceptions
     # changes what the CSV holds, never what the exit code means.
-    # ACTIONABLE_EXEMPT_NOTES, not CLEAN_NOTES: DELETED and DELETED_AS_DUPLICATE
-    # are exempt from THIS count even though they are still "exception" rows
-    # for acked_at-backfill purposes -- see ACTIONABLE_EXEMPT_NOTES' own
-    # comment above. By the user's explicit decision neither label implies
+    # ACTIONABLE_EXEMPT_NOTES, not CLEAN_NOTES: DELETED, DELETED_AS_DUPLICATE,
+    # MISSING_RESENT and MISSING_FOUND_BY_NUMBER are exempt from THIS count
+    # even though they are still "exception" rows for acked_at-backfill
+    # purposes -- see ACTIONABLE_EXEMPT_NOTES' own comment above. By the user's explicit decision neither label implies
     # an action is needed, whether or not the row's DELETED->DELETED_AS_DUPLICATE
     # upgrade was ever actually verified.
     actionable = sum(1 for r in all_rows if r.note not in ACTIONABLE_EXEMPT_NOTES)

@@ -233,7 +233,7 @@ hook's name. `--only-exceptions` drops every row whose note is `ok` or
 | flag | meaning | default |
 |---|---|---|
 | `--ui-host` | host used to build clickable annotation links, e.g. `example-org.rossum.app` (required only when neither `--base-url` nor a credentials file names the host — see [Where the links point](#where-the-links-point)) | the host of an explicitly given `--base-url` / `rossum.base_url` |
-| `--base-url` | Rossum API base URL | `https://elis.rossum.ai`, or a credentials file's `rossum.base_url` |
+| `--base-url` | Rossum API base URL; a trailing `/api/v1` is accepted and stripped | `https://elis.rossum.ai`, or a credentials file's `rossum.base_url` |
 | `--init-credentials [PATH]` | write a credentials template to PATH and exit (refuses to overwrite an existing file; never prints file contents) | `~/.config/rossum-b2brouter-recon/credentials.json` |
 | `--credentials PATH` | read credentials from this file instead of the environment — see "Credentials resolution order" above | — |
 | `--from` | window start, ISO date or datetime | 30 days before `--to` |
@@ -242,7 +242,9 @@ hook's name. `--only-exceptions` drops every row whose note is `ok` or
 | `--out` | CSV output path | `b2brouter_reconciliation.csv` |
 | `--only-exceptions` | write only non-`ok` rows | off |
 | `--grace-minutes` | how long a just-arrived invoice may go unmatched before it is `MISSING_IN_ROSSUM` instead of `PENDING` | `30` |
-| `--show-discovery` | print discovered channels and exit; no report is run | off |
+| `--match-by` | how a `MISSING_IN_ROSSUM` invoice is searched for elsewhere in Rossum: `number+total`, `number` or `off` — see [`MISSING_IN_ROSSUM` checked by invoice number](#missing_in_rossum-checked-by-invoice-number) | `number+total` |
+| `--total-field` | the number-type schema field that holds the invoice total, for `--match-by number+total` | `amount_total` |
+| `--show-discovery` | print discovered channels, and which match fields their queue schemas have, and exit; no report is run | off |
 | `--check-coverage` | print per-channel account coverage (and the uncovered ids) and exit; fetches no invoices | off |
 | `--relax-x509-strict` | opt-in: clear `ssl.VERIFY_X509_STRICT` for both Rossum and B2Brouter connections; see [TLS interception](#tls-interception) | off |
 | `--b2b-api-version` | pin the B2Brouter API generation (`2025-01-01` or `2026-06-26`) and skip auto-detection | auto-detect, per host — see [B2Brouter API version](#b2brouter-api-version) below |
@@ -301,6 +303,9 @@ verdict:
 | `ok +xml_twin` | healthy, plus a `failed_import` XML sibling | none for the invoice; the twin can be deleted as cleanup |
 | `PENDING` | arrived within the grace window | re-run later |
 | `MISSING_IN_ROSSUM` | the source has it, Rossum has nothing | check `acked_at`: a timestamp → it was handed over and lost, escalate with the einvoice id; genuinely empty → it was never collected, which is a source-side fault; `not checked` → no conclusion available yet (see the `acked_at` column below), re-run or narrow the window |
+| `MISSING_EMPTY_SOURCE` | the source has it, Rossum has nothing, and the B2Brouter record has no number, no sender and a zero total | open the invoice's attachment in B2Brouter to find out which invoice it is, then treat it like `MISSING_IN_ROSSUM`. The record holds no data to search Rossum by |
+| `MISSING_RESENT` | Rossum has nothing for this e-invoice id, but a resend of the same invoice is in the same channel with note `ok` | none — the resend was processed; `annotation_link` points at its annotation |
+| `MISSING_FOUND_BY_NUMBER` | Rossum has nothing for this e-invoice id, but a healthy annotation with the same invoice number (and total) exists elsewhere in Rossum | none — the invoice reached Rossum another way; `annotation_link` points at that annotation |
 | `STRANDED_CREATED` | only `created` annotations, no healthy sibling | the importer did not finish; recover one at a time, verifying each |
 | `FAILED_IMPORT` | only `failed_import`, no healthy sibling | the XML was processed as a scan instead of being claimed; recover as above |
 | `SPLIT_CONTAINER` | only a `split` annotation, no healthy sibling | the document was split into children; inspect the children before touching the parent — do **not** re-drive the container, its children are the real documents and re-driving it risks double-posting them |
@@ -345,6 +350,15 @@ per invoice. Like the fallback and attribution tiers above, it is capped
 lookups were used out of the cap; if the cap is reached, the remaining
 exception rows are left `not checked` and the run says so explicitly rather
 than leaving them silently blank.
+
+The cap is spent in priority order, not row order: `MISSING_IN_ROSSUM`
+and `MISSING_EMPTY_SOURCE` rows first, then the other actionable notes, then the notes that need no
+action (`DELETED`, `DELETED_AS_DUPLICATE`, `MISSING_RESENT`,
+`MISSING_FOUND_BY_NUMBER`). Measured on a production deployment, a year
+has about 1,000 `DELETED` rows per channel. In row order they used up the
+cap and left 7 of 12 `MISSING_IN_ROSSUM` rows `not checked`, although
+those are the rows where `acked_at` decides whose fault the loss is. If a
+`MISSING_IN_ROSSUM` row is still `not checked`, narrow the window.
 
 ### `DELETED` and `DELETED_AS_DUPLICATE`
 
@@ -394,6 +408,61 @@ that was checked and confirmed to have no surviving copy — both simply say
 `DELETED`. To tell them apart, read the channel summary's verified/
 not-verified counts printed for that run; the label alone does not carry
 that distinction.
+
+### `MISSING_IN_ROSSUM` checked by invoice number
+
+When a supplier resends an invoice, B2Brouter gives the resend a **new**
+e-invoice id. If the first delivery never became an annotation, matching by
+id alone reports it `MISSING_IN_ROSSUM`, although the resend was processed.
+The same happens when the invoice reached Rossum another way, for example
+by email into a different queue. Measured on a production deployment: of 12
+`MISSING_IN_ROSSUM` rows over ten months, 3 had a resend in the same channel,
+5 had a healthy annotation with the same number elsewhere in Rossum, and 4
+were empty source records. None needed recovery.
+
+So every `MISSING_IN_ROSSUM` row with an invoice number gets two checks:
+
+1. **A resend in the same channel.** Another row of the same channel has
+   note `ok` or `ok +xml_twin`, the same invoice number, and agrees on the
+   sender name (case-insensitive) or the total. Every one of those two
+   fields that both rows have must agree, and at least one must be present
+   on both. Both rows come from B2Brouter, so a resend carries the same
+   values. This check needs no API call, always runs, and is not capped.
+   It does not see rows of other channels; a resend through another
+   channel is found by check 2. A match → `MISSING_RESENT`.
+2. **A copy elsewhere in Rossum** (`--match-by`). One annotation search per
+   row over the whole organization, not only the channel's queues, capped
+   by `MISSING_VERIFY_CAP` in `recon.py`. A healthy annotation (an
+   `ARRIVED_STATUSES` status) is a match → `MISSING_FOUND_BY_NUMBER`.
+   - `number+total` (default): `field.document_id.string` equals the
+     invoice number **and** `field.<--total-field>.number` equals the
+     B2Brouter total. A number alone is weak: generic numbers such as
+     `INV/2025/00001` collide across suppliers. The sender name is not
+     used here, because the name Rossum extracts rarely matches B2Brouter's
+     spelling exactly.
+   - `number`: the invoice number alone. Use it only when the schemas have
+     no total field.
+   - `off`: no search. Check 1 still runs.
+
+In both cases the row keeps its own e-invoice id, and `annotation_link`
+points at the healthy annotation that was found. A row is never marked
+found on the strength of a search that was not made: with no invoice
+number, `--match-by off`, no numeric total for `number+total`, the cap
+spent, or a failed search, it stays `MISSING_IN_ROSSUM`, and the channel
+summary counts how many rows were not searched. A row without a numeric
+total does not use up a slot of the cap.
+
+The run refuses to start (exit 2) when `--match-by` needs a field that a
+channel's queue schemas lack, naming each such channel: `document_id` as
+a string, and for `number+total` the `--total-field` as a number. A search on an absent
+field returns nothing, so every row would stay `MISSING_IN_ROSSUM` with no
+sign that the check never worked. `--show-discovery` prints which of these
+fields each channel's queue schemas have.
+
+A record with no number, no sender and a zero total cannot be checked
+either way. It gets its own note, `MISSING_EMPTY_SOURCE`, which still needs
+action: only its attachment tells whether it is a real invoice that never
+reached Rossum.
 
 A row can be `UNVERIFIED_SOURCE` even though its own invoice reconciled
 fine. Once a Rossum-side e-invoice id inside the window has been traced to
@@ -446,19 +515,22 @@ all (uncovered, or an outright API error).
   disarmed by a single listed invoice anywhere in the channel, so a second,
   per-account check also runs. It is **window-scoped**: `einvoice_index()`
   is deliberately built wider than the reporting window (see the Gotchas
-  entry below on the lookback), so before anything is counted, ids whose
-  newest annotation predates the window are set aside as lookback-tail
-  context, not orphans. Only among the remaining, in-window ids does the
-  channel summary print the count that matters —
+  entry below on the lookback), so before anything is counted, an id counts
+  as in the window only if it has an annotation created between `--from`
+  and `--to`. Ids whose annotations all predate the window are set aside as
+  lookback-tail context, and ids whose annotations were all created after
+  `--to` are set aside too; neither are orphans. Only among the remaining,
+  in-window ids does the channel summary print the count that matters —
 
       ```
           2  Rossum e-invoice id(s) matched by no listed invoice (window-scoped)
          40  Rossum e-invoice id(s) outside the window (lookback-only, skipped from the count above -- deliberate, not a gap)
+          0  Rossum e-invoice id(s) created after the window end (--to), skipped from the count above -- deliberate, not a gap
       ```
 
-  — and the second line is not a shortfall: it says how many ids the index
-  only holds because of the deliberate lookback, and were therefore excluded
-  from the count above on purpose. Each of the in-window unmatched ids is
+  — and the second and third lines are not a shortfall: they say how many
+  ids the index only holds because it is deliberately wider than the
+  window, and were therefore excluded from the count above on purpose. Each of the in-window unmatched ids is
   then looked up in B2Brouter **by id** (one GET each, capped by
   `ATTRIBUTION_LOOKUP_CAP` in `recon.py` and reported the same way as the
   per-id fallback cap above) to learn which account owns it *and when the
@@ -492,11 +564,12 @@ all (uncovered, or an outright API error).
 
 - **0** — clean run: nothing missing, nothing unverified, and nothing
   needing action. Every account was fully enumerated and every row's note is
-  `ok`, `ok +xml_twin`, `PENDING`, `DELETED`, or `DELETED_AS_DUPLICATE`.
-- **1** — at least one row needs action — *any* note other than the five
+  `ok`, `ok +xml_twin`, `PENDING`, `DELETED`, `DELETED_AS_DUPLICATE`,
+  `MISSING_RESENT`, or `MISSING_FOUND_BY_NUMBER`.
+- **1** — at least one row needs action — *any* note other than the seven
   above, including `STRANDED_CREATED`, `FAILED_IMPORT`, `SPLIT_CONTAINER`,
-  `DUPLICATE`, `MISSING_IN_ROSSUM`, `UNVERIFIED_SOURCE` and
-  `UNKNOWN_STATUS:*` — or at least one channel could not fully enumerate its
+  `DUPLICATE`, `MISSING_IN_ROSSUM`, `MISSING_EMPTY_SOURCE`,
+  `UNVERIFIED_SOURCE` and `UNKNOWN_STATUS:*` — or at least one channel could not fully enumerate its
   accounts. The count is taken over every row produced, so
   `--only-exceptions` changes what the CSV holds, never what the exit code
   means.
@@ -536,6 +609,12 @@ ten times too large, which is exactly the kind of inflated headline that
 makes a reader stop trusting the report, the same failure mode already
 fixed twice before (the unmatched-id count, the per-account
 `UNVERIFIED_SOURCE` flags).
+
+`MISSING_RESENT` and `MISSING_FOUND_BY_NUMBER` keep a run clean for the
+same reason as `DELETED_AS_DUPLICATE`: a check found the invoice in Rossum
+under another e-invoice id (see "`MISSING_IN_ROSSUM` checked by invoice
+number" above). `MISSING_EMPTY_SOURCE` does not: nobody knows yet what the
+document is.
 
 Every OTHER note is either a lost invoice, a duplicate, a document stuck
 partway through, or a row nobody has verified, and none of those may exit
@@ -633,15 +712,21 @@ of an error, so getting them wrong is silent, not loud.
   `rossum.py`) from `since` before querying, so an invoice that arrived
   right at the window's edge still finds an annotation created slightly
   later — the two systems' clocks are independent, and this is correct and
-  must stay. But it means the index also returns ids whose *only*
-  annotation predates `since`: pure lookback-tail context, not something
-  that arrived now. Any consumer that treats every id in the index as if it
+  must stay. The query also has **no upper bound**: an invoice that arrived
+  before `--to` but was imported or re-driven later must still find its
+  annotation, or it becomes a false `MISSING_IN_ROSSUM`. But it means the
+  index also returns ids whose *only* annotations predate `since` (pure
+  lookback-tail context) or were all created after `--to`. Neither arrived
+  in the window. Measured on a production deployment with `--to` a month in
+  the past: 2,713 ids created after `--to` counted as unmatched, and every
+  account of the channel was flagged `UNVERIFIED_SOURCE`, until the scoping
+  below got its upper bound. Any consumer that treats every id in the index as if it
   belonged to the window over-counts — measured on a live run over a short
   window, only a small minority of the ids the index returned had an
   annotation actually inside the window; the rest were lookback-tail only.
   Both the unmatched-id count and the per-account attribution check (see
   Guarantees above) scope to the window first for exactly this reason, and
-  report the excluded tail count separately rather than dropping it
+  report both excluded counts separately rather than dropping them
   silently.
 - **Channels are discovered by account presence, not by the hook's
   extension URL.** A channel is any hook whose settings carry a

@@ -114,6 +114,24 @@ note silently:
   configuration. Do not run a full report on an under-scoped discovery — it
   will look complete while quietly covering less than it claims.
 
+Each channel also gets a `match fields:` line: whether its queue schemas
+have `document_id` (the invoice number) and the total field (`amount_total`,
+or the `--total-field` given). These decide how a `MISSING_IN_ROSSUM`
+invoice is searched for elsewhere in Rossum. Show the operator that line and
+**ask which strategy to use** before the full run, then pass it as
+`--match-by`:
+
+- `number+total` (default) — number and total must both match. Needs both
+  fields. If the total lives in a differently named number field, pass it
+  with `--total-field <schema_id>`.
+- `number` — the number alone. Generic numbers collide across suppliers, so
+  offer this only when no schema has a total field.
+- `off` — no Rossum search; a resend in the same channel is still found.
+
+The run refuses to start when the chosen strategy needs a field no channel
+schema has. See `reference.md` → "`MISSING_IN_ROSSUM` checked by invoice
+number" for which fields each check uses.
+
 ### 3. Prove credentials cover that scope — before trusting any numbers
 
 Run `--check-coverage` right after `--show-discovery`, before any full run:
@@ -151,9 +169,10 @@ The same check also applies **one account at a time**, because a single
 listed invoice anywhere in the channel would otherwise disarm the
 channel-wide version entirely — and it is **precise**, not sibling-based.
 The Rossum-side index is deliberately built wider than the reporting window
-(so an invoice at the window's edge still finds its annotation), so before
-anything is counted, ids whose only annotation predates the window are set
-aside as a separate, disclosed count — not treated as missing. Only among
+(so an invoice at the window's edge, or one imported after `--to`, still
+finds its annotation), so before anything is counted, ids with no
+annotation created inside the window — all before it, or all after `--to` —
+are set aside as separate, disclosed counts, not treated as missing. Only among
 the remaining, in-window ids does the tool count how many no listed invoice
 matched; each of those is then looked up in B2Brouter **by id** to learn
 which account actually owns it, and *only that account* gets its own
@@ -163,7 +182,7 @@ shortfall — some accounts legitimately receive only a handful of invoices a
 year, and an earlier, sibling-based version of this check flagged quiet
 accounts like that on its first live run. Each channel's summary prints both
 counts: how many in-window ids matched no listed invoice, and how many ids
-were outside the window and excluded — a few unmatched is normal at window
+were before or after the window and excluded — a few unmatched is normal at window
 edges, a large number means the source listing is not returning everything
 those queues received — say those numbers back to the operator rather than
 skipping past them.
@@ -213,7 +232,11 @@ up:
   rows carry — the detail lookup only runs for exception rows, capped per
   channel) means neither has been established yet: never report a
   `not checked` row as "never acknowledged" or as anything else conclusive
-  — narrow the window or re-run instead.
+  — narrow the window or re-run instead. `MISSING_RESENT` and
+  `MISSING_FOUND_BY_NUMBER` are not losses: a copy of the invoice was found
+  under another e-invoice id, and `annotation_link` points at it. A
+  `MISSING_EMPTY_SOURCE` row has no number, sender or total to go on — ask
+  the operator to open its attachment in B2Brouter before calling it lost.
 - **`DELETED` and `DELETED_AS_DUPLICATE` are not exceptions to chase —
   neither is an action item, by explicit product decision.** This tool does
   not reason about *why* an annotation was deleted, and neither should you:
@@ -248,13 +271,15 @@ skill**. Say so plainly; the operator authorises and performs it separately.
 State: where the CSV landed (`--out`, default `b2brouter_reconciliation.csv`),
 and what the exit code means — `0` means nothing missing, nothing unverified
 and nothing needing action (every note is `ok`, `ok +xml_twin`, `PENDING`,
-`DELETED`, or `DELETED_AS_DUPLICATE` — the last two because this tool does
-not treat either as an action item, by explicit product decision, whether
-or not the row's `DELETED` -> `DELETED_AS_DUPLICATE` upgrade was actually
-verified); `1` means at least one row needs action (**any** other note,
+`DELETED`, `DELETED_AS_DUPLICATE`, `MISSING_RESENT` or
+`MISSING_FOUND_BY_NUMBER` — `DELETED` and `DELETED_AS_DUPLICATE` because
+this tool does not treat either as an action item, by explicit product
+decision, whether or not the row's `DELETED` -> `DELETED_AS_DUPLICATE`
+upgrade was actually verified; the last two because a copy of the invoice
+was found); `1` means at least one row needs action (**any** other note,
 including `STRANDED_CREATED`, `FAILED_IMPORT`, `SPLIT_CONTAINER`,
-`DUPLICATE`, `MISSING_IN_ROSSUM`, `UNVERIFIED_SOURCE` and
-`UNKNOWN_STATUS:*`) or a channel could not fully enumerate its accounts;
+`DUPLICATE`, `MISSING_IN_ROSSUM`, `MISSING_EMPTY_SOURCE`,
+`UNVERIFIED_SOURCE` and `UNKNOWN_STATUS:*`) or a channel could not fully enumerate its accounts;
 `2` means the run could not be performed — missing credentials, an invalid
 window, or no channels discovered at all. Exit `2`
 also covers credentials
