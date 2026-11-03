@@ -300,7 +300,7 @@ This skill has 7 phases. Work through them in order — each phase produces conc
    | `[Rossum token expired — refreshing]` | Auto-refreshed via `--username`/`--password`; no action needed |
    | `[Rossum 401 — re-reading token from config]` | No credentials passed; retried once with the (possibly refreshed) config token |
    | `[Coupa token expired — refreshing]` | Auto-refreshed via client credentials; no action needed |
-   | `[RETRY N/5] SSLError` / `HTTPError (HTTP 502)` | Transient DS connection error, 429 or 5xx; retrying the batch with exponential backoff (the existence check dedupes a partly written batch) |
+   | `[RETRY N/5] SSLError` / `HTTPError (HTTP 502)` | Transient DS connection error, 429, 502, 503 or 504; retrying the batch with jittered exponential backoff. The existence check dedupes a partly written batch, except records with a missing/falsy `id_key`, which a retry can insert twice |
    | `[RETRY N/8] Coupa HTTP 429/503 — backing off Ns` | Coupa rate/availability blip; blind exponential backoff (no Retry-After exists), then the supervisor is the backstop |
    | `[WARN] Coupa 429 under the self-imposed cap…` | Another consumer is draining the OAuth client's 25 req/s budget (live webhooks? another run?) — consider lowering `max_requests_per_second` |
    | `[WARN] per-child rate under 0.5 req/s` | More workers than the aggregate cap can feed — reduce workers or raise the cap |
@@ -389,7 +389,7 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 | Schedule / crons | Same cadence as the reference org |
 | `token_owner` | The integration user (Phase 0) |
 | `dataset_name` | The bulk-loaded collection name |
-| `fields` | **Exactly the bulk config's `fields` list** — record shapes then match (both sides store Coupa's hyphenated-key JSON) |
+| `fields` | **Exactly the bulk config's `fields` list** (absent when the bulk config has `fields: null`) — record shapes then match (both sides store Coupa's hyphenated-key JSON) |
 | Coupa credentials | The new org's `coupa_base_url` / `client_id` / scope; `client_secret` via secrets (step 4) |
 | `"updated-at[gt_or_eq]"` | The delta seeding value — step 1 |
 | `dir` | **Absent.** Remove it if the reference hook carries `"dir": "desc"` — the service then processes only the first page and hangs until killed (see "A hook that fails every run"). `order_by` follows the reference (`created_at` or none) |

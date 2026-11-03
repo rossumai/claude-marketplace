@@ -327,6 +327,9 @@ class RateLimiter:
 LIMITER = RateLimiter(None)   # configured in main() from --rate / config cap
 
 _BACKOFF_STATUSES = (429, 503)
+# DS statuses insert_batch retries: rate limit + gateway/availability blips.
+# Not 500 — a server error that repeats should fail fast, not back off.
+_DS_RETRY_STATUSES = (429, 502, 503, 504)
 
 
 def coupa_call(fn, *, _attempts: int = 8, _base: float = 5.0, _cap: float = 240.0):
@@ -725,7 +728,7 @@ def insert_batch(session: requests.Session, collection: str, records: list,
     inserting; the 200-with-write_errors parsing is kept as a belt for
     servers/races that do return per-document errors.
     Retries the whole check+insert on transient SSL/connection errors and
-    DS 429/5xx (a short DS outage must not kill the worker);
+    DS 429/502/503/504 (a short DS outage must not kill the worker);
     the re-run existence check absorbs partially-applied batches.  A record
     that shows up as "existing" only on a retry (not on the first attempt)
     was persisted by the interrupted earlier attempt itself — it is counted
@@ -810,14 +813,14 @@ def insert_batch(session: requests.Session, collection: str, records: list,
             return BatchResult(inserted + recovered, duplicates, failed, ok_values)
         except (*_RETRYABLE, requests.HTTPError) as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            if isinstance(exc, requests.HTTPError) and status != 429 \
-                    and (status or 0) < 500:
+            if isinstance(exc, requests.HTTPError) and status not in _DS_RETRY_STATUSES:
                 raise               # 401 -> ds_call_with_heal; 400 handled above
             if attempt == _retries:
                 raise
-            wait = 2 ** attempt
+            # jitter: workers hit by one DS outage must not retry in lockstep
+            wait = 2 ** attempt * random.uniform(0.5, 1.0)
             print(f"   [RETRY {attempt}/{_retries}] {type(exc).__name__}"
-                  f"{f' (HTTP {status})' if status else ''}: retrying in {wait}s")
+                  f"{f' (HTTP {status})' if status else ''}: retrying in {wait:.0f}s")
             time.sleep(wait)
 
 

@@ -252,9 +252,9 @@ def test_transient_error_on_check_retries_whole_flow(monkeypatch):
     assert len(_insert_calls(s)) == 1
 
 
-@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
-def test_insert_batch_retries_ds_429_and_5xx_then_succeeds(monkeypatch, status):
-    # DS-side 429/5xx join the retryable set — a rate blip or a short DS
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
+def test_insert_batch_retries_ds_429_and_gateway_5xx_then_succeeds(monkeypatch, status):
+    # DS-side 429/502/503/504 join the retryable set — a rate blip or a short DS
     # outage (a field run lost 4 of 42 workers to one 502 burst) on any DS
     # call inside the loop (check or insert) must not kill an hours-long run
     monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
