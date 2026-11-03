@@ -5,6 +5,7 @@ later delete) — not request shapes or log wording. The aggregate-vs-find
 choice and per-batch check scope are pinned end-to-end by the FakeDS tests
 in test_bulk_import_dataset.py / test_bulk_token_reread.py.
 """
+import pytest
 import requests
 
 from bulk_helpers import FakeDS, StubResponse
@@ -251,9 +252,11 @@ def test_transient_error_on_check_retries_whole_flow(monkeypatch):
     assert len(_insert_calls(s)) == 1
 
 
-def test_insert_batch_retries_ds_429_then_succeeds(monkeypatch):
-    # DS-side 429/503 join the retryable set — a rate blip on any DS call
-    # inside the loop (check or insert) must not kill an hours-long run
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
+def test_insert_batch_retries_ds_429_and_gateway_5xx_then_succeeds(monkeypatch, status):
+    # DS-side 429/502/503/504 join the retryable set — a rate blip or a short DS
+    # outage (a field run lost 4 of 42 workers to one 502 burst) on any DS
+    # call inside the loop (check or insert) must not kill an hours-long run
     monkeypatch.setattr(cbi.time, "sleep", lambda s: None)
     ds = FakeDS()
     real_post = ds.post
@@ -262,7 +265,7 @@ def test_insert_batch_retries_ds_429_then_succeeds(monkeypatch):
     def flaky_post(url, json=None, timeout=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            return StubResponse({}, status=429)
+            return StubResponse({}, status=status)
         return real_post(url, json=json, timeout=timeout)
 
     ds.post = flaky_post
