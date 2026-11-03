@@ -52,6 +52,20 @@ def test_import_dataset_passes_extra_params_to_every_fetch_page_call(monkeypatch
     assert calls["extra_params"] and all(e == extra for e in calls["extra_params"])
 
 
+@pytest.mark.parametrize("fields", [None, "absent"])
+def test_dataset_without_fields_imports_full_records(monkeypatch, tmp_path, fields):
+    # mirrors a Coupa import hook with no `fields` (full records) — must
+    # import, not crash in the id-projection helper
+    users = {"endpoint": "api/users", "collection": "users",
+             "id_key": "id", "scope": "s"}
+    if fields != "absent":
+        users["fields"] = fields
+    saved, _ = run_import(monkeypatch, tmp_path, [make_records(2, 1), []],
+                          datasets={"users": users})
+    assert saved["users"]["completed"] is True
+    assert saved["users"]["total_inserted"] == 2
+
+
 def test_duplicates_counted_processed_not_inserted(monkeypatch, tmp_path):
     results = [cbi.BatchResult(inserted=1, duplicates=2, failed=0)]
     saved, _ = run_import(monkeypatch, tmp_path, [make_records(3, 2, 1), []],

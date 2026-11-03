@@ -47,6 +47,15 @@ def test_fetch_page_first_page_has_no_cursor_filters(tmp_path):
     assert "id[lt]" not in p and "id[gt]" not in p and "limit" not in p
 
 
+def test_fetch_page_without_fields_sends_no_projection(tmp_path):
+    # a hook with no `fields` fetches full records; the bulk config mirrors
+    # that with fields null/absent, so no projection param may be sent
+    _cfg(tmp_path)
+    session = ParamCapture()
+    cbi.fetch_page(session, "api/users", None, "2026-07-15T00:00:00Z")
+    assert "fields" not in session.params
+
+
 def test_fetch_at_rank_query_shape(tmp_path):
     _cfg(tmp_path)
     session = ParamCapture()

@@ -394,8 +394,14 @@ def ds_call_with_heal(call, ds_session: requests.Session,
 
 # ── Coupa pagination ─────────────────────────────────────────────────────────────
 
-def ensure_id_field(fields: list) -> list:
-    """Cursor pagination needs the id column even when id_key != 'id'."""
+def ensure_id_field(fields: list | None) -> list | None:
+    """Cursor pagination needs the id column even when id_key != 'id'.
+
+    None (dataset has no `fields`, like a hook that fetches full records)
+    stays None: no projection is sent, and full records carry id anyway.
+    """
+    if fields is None:
+        return None
     return fields if "id" in fields else ["id", *fields]
 
 
@@ -431,7 +437,7 @@ def validate_extra_params(extra, *, dataset: str) -> dict:
     return dict(extra)
 
 
-def fetch_page(session: requests.Session, endpoint: str, fields: list,
+def fetch_page(session: requests.Session, endpoint: str, fields: list | None,
                anchor_ts: str, *, before_id: int | None = None,
                id_gt: int | None = None, limit: int | None = None,
                extra_params: dict | None = None) -> list:
@@ -439,18 +445,20 @@ def fetch_page(session: requests.Session, endpoint: str, fields: list,
 
     before_id: moving upper bound (exclusive) — the cursor.
     id_gt:     static lower bound (exclusive) — partition floor (spec §4.3).
+    fields:    projection; None sends none (Coupa returns full records).
     extra_params: dataset-specific Coupa query params (filtered-slice
     datasets) merged in last — see validate_extra_params for the reserved
     keys guarded against here as a last-resort belt on top of the
     load_config-time check.
     """
     params = {
-        "fields":               json.dumps(fields),
         "order_by":             "id",
         "dir":                  "desc",
         "offset":               0,
         "updated-at[lt_or_eq]": anchor_ts,
     }
+    if fields is not None:
+        params["fields"] = json.dumps(fields)
     if before_id is not None:
         params["id[lt]"] = before_id
     if id_gt is not None:
@@ -716,7 +724,8 @@ def insert_batch(session: requests.Session, collection: str, records: list,
     (live-verified), so the check is what filters duplicates BEFORE
     inserting; the 200-with-write_errors parsing is kept as a belt for
     servers/races that do return per-document errors.
-    Retries the whole check+insert on transient SSL/connection errors;
+    Retries the whole check+insert on transient SSL/connection errors and
+    DS 429/5xx (a short DS outage must not kill the worker);
     the re-run existence check absorbs partially-applied batches.  A record
     that shows up as "existing" only on a retry (not on the first attempt)
     was persisted by the interrupted earlier attempt itself — it is counted
@@ -801,7 +810,8 @@ def insert_batch(session: requests.Session, collection: str, records: list,
             return BatchResult(inserted + recovered, duplicates, failed, ok_values)
         except (*_RETRYABLE, requests.HTTPError) as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            if isinstance(exc, requests.HTTPError) and status not in (429, 503):
+            if isinstance(exc, requests.HTTPError) and status != 429 \
+                    and (status or 0) < 500:
                 raise               # 401 -> ds_call_with_heal; 400 handled above
             if attempt == _retries:
                 raise
@@ -892,7 +902,7 @@ def import_dataset(key: str, limit: int | None, resume: bool,
         anchor_ts = _utcnow_ts()
 
     id_key = cfg.get("id_key", "id")
-    fields = ensure_id_field(cfg["fields"])
+    fields = ensure_id_field(cfg.get("fields"))
     extra  = cfg.get("extra_params")
 
     print(f"\n── {key}  →  {cfg['collection']} ──")
@@ -1077,7 +1087,7 @@ def smoke_dataset(key: str, n: int, ds_session: requests.Session,
 
     coupa_session = make_coupa_session(cfg["scope"])
 
-    fields = ensure_id_field(cfg["fields"])
+    fields = ensure_id_field(cfg.get("fields"))
     extra  = cfg.get("extra_params")
     records: list = []
     cursor = None
@@ -1179,7 +1189,7 @@ def suggest_workers(count: int, rate: float, target_hours: float = 1.0,
     return max(1, min(by_time, by_size, max_workers))
 
 
-def measure_rate(session, endpoint: str, fields: list, anchor_ts: str,
+def measure_rate(session, endpoint: str, fields: list | None, anchor_ts: str,
                  extra_params: dict | None = None) -> float:
     """Sampled single-worker throughput (rec/s) over SAMPLE_PAGES keyset
     pages with the dataset's REAL field list — record width dominates
@@ -1237,7 +1247,7 @@ def probe_datasets(keys: list[str], state: dict) -> None:
             lambda off: bool(fetch_at_rank(session, cfg["endpoint"], anchor, off,
                                            extra_params=extra)))
         rate = measure_rate(session, cfg["endpoint"],
-                            ensure_id_field(cfg["fields"]), anchor,
+                            ensure_id_field(cfg.get("fields")), anchor,
                             extra_params=extra)
         pct = f"  ({done / n:.1%} processed)" if done and n else ""
         print(f"   {key:<28} {n:>9}  anchor: {anchor}{pct}")
@@ -1490,7 +1500,7 @@ def partitioned_preflight(key: str, cfg: dict, ds_session) -> None:
     """
     id_key = cfg.get("id_key", "id")
     session = make_coupa_session(cfg["scope"])
-    page = fetch_page(session, cfg["endpoint"], ensure_id_field(cfg["fields"]),
+    page = fetch_page(session, cfg["endpoint"], ensure_id_field(cfg.get("fields")),
                       _utcnow_ts(), limit=10, extra_params=cfg.get("extra_params"))
     if page and all(not r.get(id_key) for r in page):
         raise SystemExit(

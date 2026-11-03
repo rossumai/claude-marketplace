@@ -211,7 +211,7 @@ This skill has 7 phases. Work through them in order — each phase produces conc
    }
    ```
 
-   Each dataset's `fields` list must exactly mirror the corresponding hook's field configuration — it is the projection sent to the Coupa API. (The script always adds `id` to the projection itself — the pagination cursor needs it even when `id_key` differs.)
+   Each dataset's `fields` list must exactly mirror the corresponding hook's field configuration — it is the projection sent to the Coupa API. (The script always adds `id` to the projection itself — the pagination cursor needs it even when `id_key` differs.) A hook with no `fields` in its query fetches full records; mirror it with `"fields": null` (or omit the key), and the script sends no projection.
 
    **`extra_params`** (optional, default `{}`): a dataset can be a **filtered slice** of its Coupa endpoint rather than the whole thing — e.g. a lookup slice needs `lookup[name][in]` + `active`, an invoice load needs a `created-at[gt_or_eq]` floor. Whatever key/value pairs go here are merged into **every** Coupa call the script makes for that dataset: fetching, `--probe` counts/throughput, and partition planning alike — so the count, the plan, and the load all describe the same slice instead of drifting apart. Keys the script itself manages (the cursor/anchor/projection set: `fields`, `order_by`, `dir`, `offset`, `limit`, `updated-at[lt_or_eq]`, `id[lt]`, `id[gt]`) are rejected at startup if present here — overriding one would corrupt keyset pagination or re-slice partitions mid-run.
 
@@ -300,7 +300,7 @@ This skill has 7 phases. Work through them in order — each phase produces conc
    | `[Rossum token expired — refreshing]` | Auto-refreshed via `--username`/`--password`; no action needed |
    | `[Rossum 401 — re-reading token from config]` | No credentials passed; retried once with the (possibly refreshed) config token |
    | `[Coupa token expired — refreshing]` | Auto-refreshed via client credentials; no action needed |
-   | `[RETRY N/5] SSLError` | Transient DS connection error; retrying with exponential backoff |
+   | `[RETRY N/5] SSLError` / `HTTPError (HTTP 502)` | Transient DS connection error, 429 or 5xx; retrying the batch with exponential backoff (the existence check dedupes a partly written batch) |
    | `[RETRY N/8] Coupa HTTP 429/503 — backing off Ns` | Coupa rate/availability blip; blind exponential backoff (no Retry-After exists), then the supervisor is the backstop |
    | `[WARN] Coupa 429 under the self-imposed cap…` | Another consumer is draining the OAuth client's 25 req/s budget (live webhooks? another run?) — consider lowering `max_requests_per_second` |
    | `[WARN] per-child rate under 0.5 req/s` | More workers than the aggregate cap can feed — reduce workers or raise the cap |
