@@ -1,0 +1,21 @@
+plugins/rossum-sa/skills/coupa-baseline-reference/SKILL.md
+  s_33836d6937dbd6::t_11472ef23e9293 3
+plugins/rossum-sa/skills/coupa-baseline-reference/reference.md
+  s_33836d6937dbd6::t_d81b43ff075946 9-10,12,17-18,24,33,37,39,80,96,107-108,112-113,122-125,127,129,144,152-154,165-167,172,176-177,188,190,197,203,213,223,232,554,669-670,677,954,961,1006,1032,1040-1041,1044,1156-1157,1237-1240,1245,1255-1258,1260-1266,1272,1276-1277,1282,1290-1291,1293,1299,1307-1308,1310-1312,1320,1333,1353-1356,1662,1802,1809,1818,1822
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6ba238906fcaf4be4c4fe60b0c8929f3070c06c",
+  "prompts": {},
+  "sessions": {
+    "s_33836d6937dbd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_33836d6937dbd6",
+        "model": "unknown"
+      },
+      "human_author": "Martin Kazík <martin.kazik@rossum.ai>"
+    }
+  }
+}
