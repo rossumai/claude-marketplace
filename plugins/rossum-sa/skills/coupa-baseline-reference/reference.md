@@ -6,22 +6,22 @@ Two baselines are in production. **CIB 2.0 is a fresh install only — there is 
 
 | Signal | CIB 1.x | CIB 2.0 |
 |---|---|---|
-| Workspaces / queues | 1 / 2 | 6 / 7 |
-| Country queues, e-invoicing inbox | absent | present |
+| Workspaces / queues | 1 / 2 | 6 / 7 (v2.0.x); 8 / 9 from v2.1.0 |
+| Country queues, e-invoicing inbox | absent | present — BE / PL / FR / DE; + IT / MX from v2.1.0 |
 | Rule names | prefixed `TEST - ` | no prefix |
-| Rule count | 48 | 53 |
+| Rule count | 48 | 53 (v2.0.x); 55 from v2.1.0 |
 | Master-data import hooks | `Coupa Webhook Import - X (CIB)`, `type: webhook` | `Coupa Master Data Import - X (CIB)`, `type: job` |
 | Export chain | 8 webhooks, four of them `… - parse response` | 5 `Export Pipeline - N.` serverless functions |
 | Coupa API responses stored in | schema fields (`api1_response_body`, …) | `document_relations` |
 | Baseline queue IDs (source org) | 1260377 line, 1260388 header | 2766927 line, 2766928 header |
-| Line-level engine fields | 43 | 63 |
-| Email templates | 10 | 35 |
+| Line-level engine fields | 43 | 63 (v2.0.x); 72 from v2.1.0 |
+| Email templates | 10 | 35 (v2.0.x); 45 from v2.1.0 |
 | `_cib_deploy_manifest` collection (optional) | `cib_version: v1.x.y` | `cib_version: v2.x.y` |
 
 **In a live org** — the queue count is the fastest signal:
 
 ```
-rossum_list_queues    # 2 queues -> 1.x;  7 queues incl. "E-invoicing Inbox" -> 2.0
+rossum_list_queues    # 2 queues -> 1.x;  7 or 9 queues incl. "E-invoicing Inbox" -> 2.0 (9 = v2.1.0, with IT and MX)
 rossum_list_hooks     # "Coupa Webhook Import - …" -> 1.x;  "Coupa Master Data Import - …" -> 2.0
 ```
 
@@ -30,13 +30,13 @@ rossum_list_hooks     # "Coupa Webhook Import - …" -> 1.x;  "Coupa Master Data
 **In a pulled prd2 tree:**
 
 ```bash
-ls <org>/<dir>/workspaces        # 1 workspace -> 1.x;  6 -> 2.0
+ls <org>/<dir>/workspaces        # 1 workspace -> 1.x;  6 -> 2.0 (v2.0.x);  8 -> v2.1.0
 ls <org>/<dir>/rules | head -1   # "TEST - …" -> 1.x
 ```
 
-Throughout this reference, a heading or row tagged **[1.x]** or **[2.0]** applies only to that baseline. Untagged content applies to both — the MDH matching cascades, every shared schema formula, and all 48 baseline rules are carried into 2.0 unchanged. What 2.0 *did* change in the schema is listed in section 3.
+Throughout this reference, a heading or row tagged **[1.x]** or **[2.0]** applies only to that baseline; **[2.1.0]** marks what v2.1.0 added on top of 2.0 — the Italian and Mexican country queues, their ingestion configurations and routing rules, the CFDI section and `item_po_line_number`. v2.1.0 is still 2.0 in every respect this reference distinguishes: same export chain, same import jobs, same fresh-install rule. Untagged content applies to both — the MDH matching cascades, every shared schema formula, and all 48 baseline rules are carried into 2.0 unchanged. What 2.0 *did* change in the schema is listed in section 3.
 
-**Names and IDs**. Every shipped hook and rule name ends in ` (CIB)` — e.g. `MDH - Main (CIB)`, `PO is Closed (CIB)` — except the hook `Coupa E-Invoicing`, the four `Move to XX queue` rules, `KSeF Offline Invoice (PL)` and the inactive 1.x `Export Pipeline - Request Processor`. Search by the full name. Every numeric hook, rule, queue, schema and engine ID in this reference is a **source-org ID** of the release; a deployed organisation gets its own, so use the IDs to recognise the shape, never to address objects.
+**Names and IDs**. Every shipped hook and rule name ends in ` (CIB)` — e.g. `MDH - Main (CIB)`, `PO is Closed (CIB)` — except the hook `Coupa E-Invoicing`, the `Move to XX queue` rules (four on v2.0.x, six from v2.1.0), `KSeF Offline Invoice (PL)` and the inactive 1.x `Export Pipeline - Request Processor`. Search by the full name. Every numeric hook, rule, queue, schema and engine ID in this reference is a **source-org ID** of the release; a deployed organisation gets its own, so use the IDs to recognise the shape, never to address objects.
 
 ---
 
@@ -77,7 +77,7 @@ Peppol / national platform ──> Coupa ──(upload + invoice_enrichable_docu
                                                                                       │
                                                         routing rule on source_country (on confirm)
                                                                                       │
-                                                                   Country queue (BE / PL / FR / DE)
+                                                                   Country queue (BE / PL / FR / DE; + IT / MX [2.1.0])
                                                                                       │
                                                         full CIB logic -> Export Pipeline -> Coupa
 ```
@@ -93,7 +93,7 @@ From the country queue onwards an e-invoice is processed exactly like a PDF. See
 | **AP Documents - line level taxation** | 1260377 | Tax codes per line item | Europe, APAC | Has `fully_tax_coded` check, per-line tax rates/amounts, charges table with tax per charge |
 | **AP Documents - header level taxation** | 1260388 | Single tax at header | US | No tax codes, shipping/handling/misc charges as separate fields, simpler submission logic |
 
-**[2.0] — six workspaces, seven queues:**
+**[2.0] — six workspaces, seven queues; [2.1.0] eight workspaces, nine queues:**
 
 | Workspace | Queue | ID | Role |
 |---|---|---|---|
@@ -104,8 +104,12 @@ From the country queue onwards an e-invoice is processed exactly like a PDF. See
 | 3. Poland | AP Documents - PL | 2841935 | Full AP queue + KSeF section |
 | 4. France | AP Documents - FR | 2868272 | Full AP queue + Peppol party fields |
 | 5. Germany | AP Documents - DE | 3013757 | Full AP queue |
+| 6. Italy **[2.1.0]** | AP Documents - IT | 3242608 | Full AP queue + `split_payment_mechanism` |
+| 7. Mexico **[2.1.0]** | AP Documents - MX | 3251179 | Full AP queue + CFDI section |
 
 Every country queue is a **complete AP processing queue** carrying the whole CIB logic — matching, validation, enrichment, tagging and the export pipeline. PDFs for that country can be sent straight to it. The Inbox is the only queue that is *not* a processing queue: it has no export pipeline and no matching, and documents leave it by routing rather than by export.
+
+Each country queue carries the locale of its market — `nl_BE`, `pl_PL`, `fr_FR`, `de_DE`, `it_IT`, `es_MX` (in v2.1.0; earlier trees had `en_GB` on all of them).
 
 These are the source-org IDs of the CIB release. A deployed organisation gets its own — use them to recognise the shape, not to address objects.
 
@@ -115,12 +119,14 @@ Both baselines deploy two dedicated, learning-enabled engines. **[1.x]** a 43-fi
 
 | Engine | ID | Fields | Bound queues |
 |---|---|---|---|
-| AP Documents - line level taxation | 56992 | 63 | baseline line-level, E-invoicing Inbox, BE, PL, FR, DE — **six queues** |
-| AP Documents - header level taxation | 56991 | 41 | baseline header-level — one queue |
+| AP Documents - line level taxation | 56992 | 63; **[2.1.0]** 72 | baseline line-level, E-invoicing Inbox, BE, PL, FR, DE — **six queues**; **[2.1.0]** + IT, MX — **eight** |
+| AP Documents - header level taxation | 56991 | 41; **[2.1.0]** 42 | baseline header-level — one queue |
 
-The line-level engine is **shared by six queues**, which matters when removing any of them — see [2.4 Never remove](#24-never-remove).
+The line-level engine is **shared by six queues (eight on v2.1.0)**, which matters when removing any of them — see [2.4 Never remove](#24-never-remove).
 
-On an engine-bound queue the schema and the engine must agree: every extracted field needs a matching engine field, and the schema field must not carry `rir_field_names`. Adding an extracted field means creating the engine field first, then the schema field. One harmless leftover: `charge_type` carries `rir_field_names` on all six line-engine schemas and has no engine field.
+On an engine-bound queue the schema and the engine must agree: every extracted field needs a matching engine field, and the schema field must not carry `rir_field_names`. Adding an extracted field means creating the engine field first, then the schema field. One harmless leftover: `charge_type` carries `rir_field_names` on every line-engine schema and has no engine field.
+
+**[2.1.0]** The nine new line-engine fields are `item_po_line_number` and the eight CFDI fields (3.15); the header-level engine gained `item_po_line_number` only. **Binding a queue to an engine and training the engine on it are separate settings**: a queue uses the engine through its own `engine`, but contributes to training only if it is listed in the engine's `training_queues`. In the v2.1.0 source org the IT and MX queues use engine 56992 but are **not** in its `training_queues`, which still lists the six v2.0 queues. Add them when the customer should train on those markets: `rossum_get /api/v1/engines/<id>` shows the list.
 
 Only **some** fields populated from an e-invoice mapping carry `score_threshold: 0` — 22 of the 54 mapped schema ids on the Inbox schema, 13 of 45 on BE. `document_id`, `amount_total`, `date_issue`, `sender_name`, `iban` and others do not. For the fields that have it, extraction confidence never blocks automation while they remain trainable; the others use the normal threshold.
 
@@ -135,7 +141,7 @@ Only **some** fields populated from an e-invoice mapping carry `score_threshold:
 
 ## 2. Scoping the Deployment [2.0]
 
-**CIB 2.0 deploys everything, every time.** The init script has no country or feature switches: a customer who processes no e-invoices, or who operates in only some of BE / PL / FR / DE, still gets all seven queues. Trimming the deployment to what they actually use is a normal part of the handover.
+**CIB 2.0 deploys everything, every time.** The init script has no country or feature switches: a customer who processes no e-invoices, or who operates in only some of BE / PL / FR / DE (/ IT / MX on v2.1.0), still gets all seven queues — nine on v2.1.0. Trimming the deployment to what they actually use is a normal part of the handover.
 
 **Do it before any document is uploaded.** Queue deletion is asynchronous with a 24-hour grace window, and an annotation sitting in a queue you are about to delete turns a two-minute cleanup into a migration.
 
@@ -143,9 +149,9 @@ Only **some** fields populated from an e-invoice mapping carry `score_threshold:
 
 | Customer | Keep | Remove |
 |---|---|---|
-| No e-invoicing, one taxation model | the baseline queue for that model | the Inbox, all four country queues, the other baseline queue, all e-invoicing hooks |
-| No e-invoicing, both taxation models | both baseline queues | the Inbox, all four country queues, all e-invoicing hooks |
-| E-invoicing in some of BE/PL/FR/DE | the Inbox + the country queues they operate in | the country queues they do not, and each one's ingestion configuration |
+| No e-invoicing, one taxation model | the baseline queue for that model | the Inbox, all country queues, the other baseline queue, all e-invoicing hooks |
+| No e-invoicing, both taxation models | both baseline queues | the Inbox, all country queues, all e-invoicing hooks |
+| E-invoicing in some of the shipped countries (BE/PL/FR/DE; + IT/MX on v2.1.0) | the Inbox + the country queues they operate in | the country queues they do not, and each one's ingestion configuration |
 | E-invoicing in a country CIB does not ship | the Inbox + baseline queues | nothing — this is a build, not a prune: a new country queue, schema, ingestion configuration and routing rule are required |
 
 A customer who receives both e-invoices and PDFs for the same country normally runs both through that country's queue and needs no baseline queue at all.
@@ -156,17 +162,19 @@ For each dropped country `XX`, in this order:
 
 1. **Routing rule** — delete `Move to XX queue`. Do this *first*: a routing rule pointing at a deleted queue is a rule that fires and fails.
 2. **Ingestion configuration** — in the `Coupa E-Invoicing` hook, delete the configuration(s) whose `source_country` literal is `XX` (see [8.4 Format coverage](#84-format-coverage)). Left in place, the XML still maps, still lands in the Inbox, and then has nowhere to go.
-3. **Queue-scoped rules** — remove the queue from the `queues` array of every rule listing it. The 48 baseline rules split 36 / 8 / 4: 36 are bound to all six AP queues, 8 to the line-level queue and the four country queues, and 4 to the header-level queue only (see 6). A country queue therefore appears in 44 of them.
+3. **Queue-scoped rules** — remove the queue from the `queues` array of every rule listing it. The 48 baseline rules split 36 / 8 / 4: 36 are bound to every AP queue, 8 to the line-level queue and every country queue, and 4 to the header-level queue only (see 6). A country queue therefore appears in 44 of them.
+
+   **Read the bindings from the API or from `queue.json`, not from the rule files of a pulled tree.** In the v2.1.0 source tree the 48 rule files' `queues` arrays still listed only the six v2.0 AP queues, while the live rules — and the `rules` array in the IT and MX `queue.json` — included IT and MX (44 rules each). `rossum_list_rules` (or `GET /api/v1/rules?queue=<id>`) is authoritative.
 4. **Hook bindings** — remove the queue from the `queues` array of every hook bound to it.
 5. **Queue, then workspace** — delete the queue, then the now-empty workspace. `rossum_delete_queue` cascade-deletes the queue's schema and inbox.
 6. **Poland only** — also delete hook `Get Barcodes - KSeF PL (CIB)` and rule `KSeF Offline Invoice (PL)`. Both are bound to the PL queue alone and are dead weight without it.
 
-If **all four** countries go, apply 2.3 as well — an Inbox with no country queue to route to is a document trap.
+If **every** country goes, apply 2.3 as well — an Inbox with no country queue to route to is a document trap.
 
 ### 2.3 Removing e-invoicing entirely
 
-1. Apply 2.2 for all four countries.
-2. Delete any remaining `Move to BE/PL/FR/DE queue` rules.
+1. Apply 2.2 for every country.
+2. Delete any remaining `Move to XX queue` rules (BE/PL/FR/DE; + IT/MX on v2.1.0).
 3. Delete hooks `Coupa E-Invoicing`, `Coupa E-Invoicing Status Sync (CIB)`, `Coupa E-Invoicing Status Sync - Inbox (CIB)` and `Get Barcodes - KSeF PL (CIB)`.
 4. Delete the `E-invoicing Inbox` queue, then the `1. Inbox` workspace.
 5. On the Coupa side, stop pointing the enrichment integration at Rossum — there is no longer a queue to receive `invoice_enrichable_documents`.
@@ -177,22 +185,22 @@ What remains is a 1.x-shaped deployment — the two baseline queues carrying the
 
 | Object | Why |
 |---|---|
-| Engine `AP Documents - line level taxation` (56992) | Shared by six queues. `rossum_delete_queue` cascade-deletes an engine only when that queue is its **sole** reference, so it survives while any of the six remain — and goes with the last one. Deleting the baseline line queue *and* every country queue takes the engine with them. |
+| Engine `AP Documents - line level taxation` (56992) | Shared by six queues (eight on v2.1.0). `rossum_delete_queue` cascade-deletes an engine only when that queue is its **sole** reference, so it survives while any of them remain — and goes with the last one. Deleting the baseline line queue *and* every country queue takes the engine with them. |
 | The 12 `Coupa Master Data Import` hooks | Feed every matching cascade on every queue. Dropping a country changes nothing about the master data. |
-| `MDH - Main (CIB)`, `- Payment Terms (CIB)`, `- Tax Codes (CIB)`, `- Coupa Invoice Check (CIB)` | Core matching. All are bound to all six AP queues except `MDH - Tax Codes (CIB)`, which is bound to the line-level queue and the four country queues only. |
+| `MDH - Main (CIB)`, `- Payment Terms (CIB)`, `- Tax Codes (CIB)`, `- Coupa Invoice Check (CIB)` | Core matching. All are bound to every AP queue except `MDH - Tax Codes (CIB)`, which is bound to the line-level queue and the country queues only. |
 | The 5 `Export Pipeline` hooks, `Handle Coupa Responses`, both `Export Mapping` hooks | The export chain. |
 | `Duplicate Handling`, `Metadata Propagator`, the three memorization hooks | Cross-queue services. |
 | The 48 baseline rules | Only their `queues` bindings change. |
 
 ### 2.5 Traps
 
-**Ingestion configurations are ordered and country-specific.** `Coupa E-Invoicing` evaluates its six configurations in order; the first matching `trigger_condition` wins. From v2.0.1 the five UBL and CII configurations test the buyer's country and the KSeF configuration matches on the Polish-only `Faktura` root element, so a document whose buyer country is not one of the four matches **nothing** and stays in the Inbox unmapped. That is deliberate — visible and unmapped beats silently attributed to the wrong country. Drop a country's configuration when you drop its queue, or its invoices will map and then strand. On **v2.0.0** the CII/France configuration is a catch-all; see [8.4](#84-format-coverage) before assuming a dropped country is really gone.
+**Ingestion configurations are ordered and country-specific.** `Coupa E-Invoicing` evaluates its configurations in order — six on v2.0.x, eight on v2.1.0; the first matching `trigger_condition` wins. From v2.0.1 the five UBL and CII configurations test the buyer's country, and the national formats match on a root element only their country uses — KSeF `Faktura`, and on v2.1.0 FatturaPA `FatturaElettronica` and the CFDI 4.0 `Comprobante` — so a document whose buyer country is not a shipped one matches **nothing** and stays in the Inbox unmapped. That is deliberate — visible and unmapped beats silently attributed to the wrong country. Drop a country's configuration when you drop its queue, or its invoices will map and then strand. On **v2.0.0** the CII/France configuration is a catch-all; see [8.4](#84-format-coverage) before assuming a dropped country is really gone.
 
 **An orphaned routing rule is worse than a missing one.** Deleting a country queue but leaving `Move to XX queue` gives you a rule that fires on confirmation and tries to move the annotation into a queue that no longer exists.
 
 **Deletion is asynchronous.** Queue deletes return 202 and can take up to 24 hours. Until one completes, dependent engine and schema deletes return 409 / `engine_attached_to_queues_waiting_for_deletion`. Plan the cleanup as a single pass, not a retry loop.
 
-**The status sync outlives individual countries.** `Coupa E-Invoicing Status Sync (CIB)` is bound to all four country queues at once. Remove the queue from its `queues` array; delete the hook only when the last country goes.
+**The status sync outlives individual countries.** `Coupa E-Invoicing Status Sync (CIB)` is bound to every country queue at once (four on v2.0.x, six on v2.1.0). Remove the queue from its `queues` array; delete the hook only when the last country goes.
 
 ### 2.6 Verification
 
@@ -202,7 +210,7 @@ rossum_list_rules     # no rule lists a deleted queue; no Move-to rule without a
 rossum_list_hooks     # no hook still bound to a deleted queue
 ```
 
-Also read each `Move to XX queue` rule's `actions[].payload.queue` and check the **host**, not only the queue id. In an org deployed by the CIB deploy tool the four routing rules kept the source host `https://cib.rossum.app/...` next to the correct target ids: prd2 v2.20.2, which the tool runs, rewrites the ids but not the host. Rewrite the host by hand after the deploy. The effect on routing was not tested.
+Also read each `Move to XX queue` rule's `actions[].payload.queue` and check the **host**, not only the queue id. In an org deployed by the CIB deploy tool the routing rules kept the source host `https://cib.rossum.app/...` next to the correct target ids: prd2 v2.20.2, which the tool runs, rewrites the ids but not the host. Rewrite the host by hand after the deploy. The effect on routing was not tested.
 
 An empty `queues` array is **not** by itself a fault: `Coupa Master Data Import - Contracts`, `- Purchase Orders` and `- Purchase Order Lines` ship unbound because they write only to Data Storage.
 
@@ -212,7 +220,7 @@ Finish by confirming the `Coupa E-Invoicing` hook holds exactly one configuratio
 
 ## 3. Schema Structure
 
-All field IDs below are the `schema_id` values used in formulas, MDH mappings and export templates. The structure is shared by every CIB schema — **[1.x]** the two baseline schemas, **[2.0]** those two plus the four country schemas and the Inbox subset.
+All field IDs below are the `schema_id` values used in formulas, MDH mappings and export templates. The structure is shared by every CIB schema — **[1.x]** the two baseline schemas, **[2.0]** those two plus the four country schemas (six on v2.1.0) and the Inbox subset.
 
 **Field types**. Every field that MDH writes is `type: enum` with `ui_configuration.type: data` and empty options; MDH fills the options at run time. The formula flags with fixed values — `epd_detected`, `epd_tag`, `po_backed`, `po_closed`, `backing_document`, the `*_tag` fields, `item_po_closed`, `sf_submit_for_approval`, `rossum_tag`, `line_items_present`, `fully_tax_coded` — are enums with fixed options too. A field created as `string` from these tables breaks MDH. The Type column below has been corrected accordingly.
 
@@ -221,6 +229,7 @@ All field IDs below are the `schema_id` values used in formulas, MDH mappings an
 - `coupa_technical_fields` was split into four sections — `export_pipeline`, `submission_control`, `validation_tags` and `header_queue_compat` (see 3.14).
 - 12 export-plumbing fields were removed (the 13th item in the diff is the `coupa_technical_fields` section itself) and two added; see 3.14.
 - 21 fields that previously existed only on country queues were added to the baseline line-level schema, so the shared line-level export mapping resolves everywhere. Twenty are captured with `score_threshold: 0.0` and no pretrained seed; `type_of_receipt` is a `data` field written from e-invoice XML. They are listed in 3.15.
+- **[2.1.0]** `item_po_line_number` (captured, `score_threshold: 0.0`) was added to the line-item tuple of every schema, both baseline schemas included — see 3.13.
 - The country schemas and the Inbox subset are described in [8.7 Country schemas](#87-country-schemas) and [8.5](#85-the-e-invoicing-inbox-queue).
 - `contract_number_normalized` no longer strips non-alphanumeric characters: the MDH contract lookup matches Coupa's `number` exactly, so stripping broke any contract number containing a separator.
 
@@ -542,6 +551,7 @@ Each line item has these fields (showing key ones):
 | `item_tax_code_match` | enum | MDH | Matched tax code for this line (LINE LEVEL ONLY) |
 | `item_order_id` | string | Captured | Per-line PO number |
 | `item_order_id_calculated` | string | Formula | `item_order_id` or `order_id_calculated` or `order_blanket_match` |
+| `item_po_line_number` | string | Captured | **[2.1.0]** PO line number as stated on the document; mapped from every e-invoice format, `score_threshold: 0.0`, engine field on both engines. **Nothing reads it** — not MDH, not a formula, not the export; the exported `order-line-num` comes from `item_po_line_number_match` via `item_order_item_number_export`. Use it as the input when a project wants PO line matching by line number |
 | `item_code` | string | Captured | Supplier part number |
 | `item_order_item_match` | enum | MDH | Matched PO line for this invoice line |
 | `item_order_header_match` | enum | MDH | Matched PO header for this line's PO number |
@@ -656,13 +666,15 @@ When `line_items_present == "false"`:
 
 **[2.0] The 21 fields added to the line-level schema:** `delivery_date`, `requester_email_xml`, `source_country`, `type_of_receipt`, `cash_accounting_scheme_reference`, `payment_order_number`, `payment_order_reference`, `split_payment_mechanism`, `recipient_electronic_address`, `sender_electronic_address`, `recipient_party_identifier`, `sender_party_identifier`, `credit_reason`, `exchange_rate`, `invoice_misc_charge`, `invoice_rounding_amount`, `invoice_shipping_charge`, `item_tax_description`, `item_tax_exempt`, `item_tax_out_of_scope`, `item_tax_reverse_charge`. The 20 captured ones are engine fields with `pre_trained_field_id: null`. `type_of_receipt` sits in `payment_terms_section` on the line-level schema but in `general_info_section` on the Inbox.
 
+**[2.1.0] CFDI fields** (`cfdi_section`, MX schema visible, Inbox hidden): `series`, `folio_number`, `use_of_invoice`, `form_of_payment`, `payment_method`, `issuance_place`, `confirmation`, `type_of_relationship`. All `string`, captured, `score_threshold: 0.0`, engine fields on the line-level engine with no pretrained seed. Exported as `series`, `folio-number`, `use-of-invoice`, `form-of-payment`, `payment-method`, `issuance-place`, `confirmation`, `type-of-relationship` when non-empty.
+
 **Requestor routing:** `requestor_email` (enum, MDH), `requestor_email_calculated` (formula), `item_requestor_email_match`, `item_order_requestor_match`. They feed `requester-email` in the export (see 7.3).
 
 **Other header fields:** `order_item_number_export`, `po_line_recipient_name_match`, `po_line_supplier_name_match`, `po_line_supplier_display_name_match`, `service_period_start_text` / `service_period_end_text`, `po_line_sp_start_date_match` / `po_line_sp_end_date_match`, `po_line_sp_*_normalized`.
 
 **Other line-item columns:** `item_po_line_split_billing_match`, `item_order_header_status_match`, `item_order_header_ship_to_addr_match`, `item_po_line_recipient_name_match`, `item_po_line_supplier_name_match`, `item_po_line_supplier_display_name_match`, `sp_item_start_date_text` / `sp_item_end_date_text`, `item_po_line_sp_*_normalized`, `service_period_item_start` / `service_period_item_end`, `service_period_item_dates_parsed`.
 
-**Per-environment constants:** `coupa_api_base_url` and `oauth_client_id` are formulas that return hard-coded constants and must be overridden per environment (see 14). `country_code` is `''` on the baseline schemas and `'BE'` / `'PL'` / `'FR'` / `'DE'` on the country schemas; the export sends it as `override-tax-country`.
+**Per-environment constants:** `coupa_api_base_url` and `oauth_client_id` are formulas that return hard-coded constants and must be overridden per environment (see 14). `country_code` is `''` on the baseline schemas and `'BE'` / `'PL'` / `'FR'` / `'DE'` (**[2.1.0]** + `'IT'` / `'MX'`) on the country schemas; the export sends it as `override-tax-country`.
 
 ---
 
@@ -939,14 +951,14 @@ Validation is implemented with **native Rossum Rules** (the `/v1/rules` entity) 
 **48 baseline rules**, byte-for-byte identical between 1.x and 2.0 in both trigger conditions and actions. The only difference is the name:
 
 - **[1.x]** every rule is prefixed `TEST - ` (e.g. `TEST - PO is Closed (CIB)`).
-- **[2.0]** the prefix is dropped, and five rules are added — see 6.4.
+- **[2.0]** the prefix is dropped, and five rules are added (seven on v2.1.0) — see 6.4.
 
 How the 48 are scoped:
 
 | Scope | Count | Bound to |
 |---|---|---|
 | Common | 36 | every AP queue |
-| Line-level taxation only | 8 | the line-level queues (**[2.0]** baseline line queue + all four country queues) |
+| Line-level taxation only | 8 | the line-level queues (**[2.0]** baseline line queue + every country queue) |
 | Header-level taxation only | 4 | the header-level queue |
 
 Two of the 48 are not validation at all — `ShowHide - Hide Order Item Match` and `ShowHide - Hide Tax Code Match` drive field visibility (see 9.2).
@@ -991,7 +1003,7 @@ The catalogue below is taken from the release rule objects. Names drop the ` (CI
 
 ### 6.2 Line Level Taxation Rules — 8 rules
 
-Bound to the line-level queue and **[2.0]** the four country queues.
+Bound to the line-level queue and **[2.0]** every country queue.
 
 | Rule | Severity | Blocker | Fires when |
 |---|---|---|---|
@@ -1017,7 +1029,7 @@ Bound to the header-level queue only.
 | `Subtotal Not Equal to Sum of Item Totals` | warning | yes | `amount_total_base` differs from the sum of `item_total_base` |
 | `Total Amount Less Than Subtotal (Tax Invoice)` | warning | yes | tax invoice and `amount_total < amount_total_base` |
 
-### 6.4 Rules added in 2.0 — 5 rules
+### 6.4 Rules added in 2.0 — 5 rules (7 on v2.1.0)
 
 | Rule | Queue | Trigger | Action |
 |---|---|---|---|
@@ -1025,9 +1037,11 @@ Bound to the header-level queue only.
 | `Move to PL queue` | E-invoicing Inbox | `field.source_country == 'PL'` | as above |
 | `Move to FR queue` | E-invoicing Inbox | `field.source_country == 'FR'` | as above |
 | `Move to DE queue` | E-invoicing Inbox | `field.source_country == 'DE'` | as above |
+| `Move to IT queue` **[2.1.0]** | E-invoicing Inbox | `field.source_country == 'IT'` | as above |
+| `Move to MX queue` **[2.1.0]** | E-invoicing Inbox | `field.source_country == 'MX'` | as above |
 | `KSeF Offline Invoice (PL)` | AP Documents - PL | `field.ksef_offline_invoice == 'true'` | blocking `error` + automation blocker on `ksef_offline_invoice` |
 
-The four routing rules are the only rules on the Inbox, and the only rules in CIB whose action is `change_queue` rather than a message. `KSeF Offline Invoice (PL)` is the only country-specific *validation* rule: an invoice issued while the issuer was offline has no KSeF number yet, and the rule blocks confirmation until one is assigned.
+The routing rules are the only rules on the Inbox, and the only rules in CIB whose action is `change_queue` rather than a message. `KSeF Offline Invoice (PL)` is the only country-specific *validation* rule: an invoice issued while the issuer was offline has no KSeF number yet, and the rule blocks confirmation until one is assigned.
 
 ---
 
@@ -1139,7 +1153,8 @@ The Jinja template produces Coupa invoice JSON. Key structure:
 - `payment-term`: Only if `payment_terms_export` is set
 - `requester-email`: From `requestor_email` or `requestor_email_calculated`
 - Line items: Loop over `line_items` tuple, with fallback to header fields if no line items
-- **[2.0]** also sends `creation_source`, a `requester_email_xml` fallback for `requester-email`, `override-tax-country` from `country_code`, the e-invoice party fields, `transaction-uuid`, `split-payment-mechanism`, `line-tax-exempt` and `line-tax-reverse-charge`
+- **[2.0]** also sends `creation_source`, a `requester_email_xml` fallback for `requester-email`, `override-tax-country` from `country_code`, the e-invoice party fields, `transaction-uuid`, `split-payment-mechanism`, and on each line `line-tax-exempt`, `line-tax-reverse-charge`, `line-tax-out-of-scope` and `line-tax-description`
+- **[2.1.0]** also sends the eight CFDI attributes (`series`, `folio-number`, `use-of-invoice`, `form-of-payment`, `payment-method`, `issuance-place`, `confirmation`, `type-of-relationship`), each only when its field is non-empty — so the shared line-level mapping stays valid for every other country
 
 ### 7.4 Header Level Template Differences
 
@@ -1219,11 +1234,15 @@ Hook `Coupa E-Invoicing` (1170832), a webhook on `upload.created` bound to the I
 
 Beyond plain node selection a field mapping can concatenate and normalise (multi-line addresses folded into one `sender_address`), aggregate with XPath functions (`sum()` over the numbered Polish `P_13_*` / `P_14_*` elements), translate a code list through a `mapping` table (KSeF `RodzajFaktury`: `KOR`, `KOR_ROZ`, `KOR_ZAL` → `credit_note`; `VAT`, `ROZ`, `UPR`, `ZAL` → `tax_invoice`; plus a `__default__` entry), or assign a literal — which is how `source_country` is set.
 
+**Currency is not a code list.** v2.0.x mapped `currency` through a 17-entry table with `__default__: other` — and `other` is not among the schema's 58 currency options. Every configuration in v2.1.0 instead lower-cases the ISO code in XPath (`translate(normalize-space(…), 'ABC…Z', 'abc…z')`), so any code the schema lists arrives as a valid option. A code the schema does not list still produces no valid value; the fix is a schema option, not a mapping entry.
+
+**Fallbacks are increasingly written as one expression.** Since v2.1.0 several fields that had one selector per variant (`/Invoice/…`, then `/CreditNote/…`) use a single union selector (`/*[local-name()='Invoice' or local-name()='CreditNote']/…`) or a `concat(A, substring(B, 1, string-length(B) * (A='')))` idiom that yields B only when A is empty. Read the whole expression before concluding a field has no fallback.
+
 `skip_non_existing_schema_ids: true` means fields the target schema lacks are skipped rather than failing the import, so one configuration can serve queues with slightly different schemas.
 
 ### 8.4 Format coverage
 
-Six configurations, in evaluation order:
+Six configurations on v2.0.x, eight from v2.1.0, in evaluation order:
 
 | # | Format | Root element | Buyer-country test | `source_country` | Fields |
 |---|---|---|---|---|---|
@@ -1233,22 +1252,34 @@ Six configurations, in evaluation order:
 | 4 | UBL 2.1 / Peppol BIS 3.0 | `Invoice` or `CreditNote` | `IdentificationCode = DE` | `DE` | 32 |
 | 5 | UN/CEFACT CII — X-Rechnung, ZUGFeRD | `CrossIndustryInvoice` | `CountryID = DE` | `DE` | 30 |
 | 6 | UN/CEFACT CII — Factur-X | `CrossIndustryInvoice` | `CountryID = FR` | `FR` | 35 |
+| 7 **[2.1.0]** | FatturaPA v1.2 — Italy (SDI) | `FatturaElettronica` | — (format is country-specific) | `IT` | 29 |
+| 8 **[2.1.0]** | CFDI 4.0 — Mexico (SAT) | `Comprobante` in namespace `http://www.sat.gob.mx/cfd/4` with `@TipoDeComprobante` `I` or `E` | — (format is country-specific) | `MX` | 29 |
 
-The same syntax serves several markets, so the configurations are separated by the buyer's country code — `cac:AccountingCustomerParty/…/cac:Country/cbc:IdentificationCode` for UBL, `BuyerTradeParty/PostalTradeAddress/CountryID` for CII. There is deliberately **no catch-all**: a document whose buyer country is none of the four matches nothing and stays in the Inbox unmapped, rather than being silently attributed to a country it did not come from.
+The same syntax serves several markets, so the configurations are separated by the buyer's country code — `cac:AccountingCustomerParty/…/cac:Country/cbc:IdentificationCode` for UBL, `BuyerTradeParty/PostalTradeAddress/CountryID` for CII. There is deliberately **no catch-all**: a document whose buyer country is none of the four Peppol/CII markets matches nothing and stays in the Inbox unmapped, rather than being silently attributed to a country it did not come from.
+
+Field counts are top-level `fields` entries; the two repeating groups (`line_items`, `line_item_charges`) count as one each. **[2.1.0]** every configuration also gained `item_po_line_number` inside `line_items`.
+
+**[2.1.0] What the two national formats need you to know:**
+
+- **FatturaPA** — only `FatturaElettronicaBody[1]` is read, so a batch file with several invoice bodies yields one annotation for the first. `TD04`/`TD08` map to `credit_note`. The line PO number and PO line number come from `DatiGenerali/DatiOrdineAcquisto`, looked up by `RiferimentoNumeroLinea = NumeroLinea` with **one selector per line number, 1–100**, plus a fallback when the file has a single order reference without line references. `split_payment_mechanism` is `t` when any `DatiRiepilogo` has `EsigibilitaIVA = 'S'`. `item_tax` is computed as `round(PrezzoTotale * AliquotaIVA) div 100` because FatturaPA states VAT per summary, not per line. *Natura* codes drive `item_tax_exempt` (N3*, N4), `item_tax_reverse_charge` (N6*), `item_tax_out_of_scope` (N1, N2*) and a `code - text` `item_tax_description`. The *cassa previdenziale* (`DatiCassaPrevidenziale`, amount > 0) becomes a charge line of type `InvoiceShippingCharge`.
+- **CFDI 4.0** — the namespace test excludes CFDI 3.3, and the `TipoDeComprobante` test excludes payment (`P`), transfer (`T`) and payroll (`N`) receipts; all of them stay in the Inbox unmapped. `document_id` is the SAT stamp UUID (`TimbreFiscalDigital/@UUID`), not series + folio. `document_type` is `credit_note` for type `E` or a `CfdiRelacionados/@TipoRelacion` of `01`/`03`, built as an intermediate `x`/`xc` string that a `mapping` translates. Addresses are postal codes (`LugarExpedicion`, `DomicilioFiscalReceptor`). `recipient_tax_id` skips the generic foreign RFC `XEXX010101000` and falls back to `NumRegIdTrib`. `@Descuento` becomes one negated `InvoiceMiscCharge` charge line with tax 0. `amount_total_tax` is `TotalImpuestosTrasladados` only — withholdings are not mapped. **There is no header `order_id`**: line PO numbers come only from a trading-partner addenda (`Addenda/AddendaLineas/AddendaLinea[@NoIdentificacion = Concepto/@NoIdentificacion]`, attributes `NumeroDeDocumentoDeLaOrdenDeCompra` / `NumeroLineaOrden`), one selector per line position 1–100. An invoice without that addenda reaches the MX queue with no PO number.
+- **Lines past 100** get no line-level PO number from FatturaPA, KSeF or CFDI: the per-line lookups are unrolled to 100 selectors.
 
 > **v2.0.0 shipped configuration 6 without its country test.** The selector was a bare `/*[local-name()='CrossIndustryInvoice']`, making it a catch-all evaluated after the German one, so in an organisation deployed from v2.0.0 **any CII invoice not identified as German is labelled `FR`**, routed to the French queue, and validated against French expectations. Fixed in **v2.0.1**. Check this selector first when a CII invoice turns up in the wrong country queue, and treat it as a known defect of any org still on v2.0.0.
 
 ### 8.5 The E-invoicing Inbox queue
 
-All e-invoices land in the single **E-invoicing Inbox** (2860788) before reaching a country queue. It is a triage queue, not a processing queue: its schema is an 86-field subset of the 260-field line-level schema — the header, supplier, customer, amounts, charges and line-item fields the mappings populate, and nothing else. No matching fields, no `recipient_search` / `sender_search`, no EPD section, no export pipeline, and no MDH hook bound to it. It has only three formula fields — the charge tax ones and `oauth_client_id`, whose client id is hard-coded.
+All e-invoices land in the single **E-invoicing Inbox** (2860788) before reaching a country queue. It is a triage queue, not a processing queue: its schema is an 86-field subset of the 260-field line-level schema (**[2.1.0]** 96 of 261: + the 9-node `cfdi_section` and `item_po_line_number`) — the header, supplier, customer, amounts, charges and line-item fields the mappings populate, and nothing else. No matching fields, no `recipient_search` / `sender_search`, no EPD section, no export pipeline, and no MDH hook bound to it. It has only three formula fields — the charge tax ones and `oauth_client_id`, whose client id is hard-coded.
 
 The Inbox exists so that one upload target serves every country (keeping the Coupa side simple), the source country is determined from the document rather than the upload target, and a document in an unexpected format is visible in one place instead of failing silently.
+
+**[2.1.0]** `source_country` is `required: true` on the Inbox, so a file that no configuration matched cannot be confirmed — and therefore cannot be routed — until someone sets a country; `currency`, `charge_type` and `charge_amount` are no longer required there. The CFDI fields are hidden on the Inbox and visible on the MX queue.
 
 It is the only queue with `automation_level: always`. In production the Inbox is expected to confirm automatically, because every value in it comes from the mapping and no rule blocks it.
 
 ### 8.6 Routing to the country queues
 
-Four rules on the Inbox, each firing on `annotation_confirmed`:
+Four rules on the Inbox (six on v2.1.0), each firing on `annotation_confirmed`:
 
 | Rule | Condition | Target |
 |---|---|---|
@@ -1256,14 +1287,16 @@ Four rules on the Inbox, each firing on `annotation_confirmed`:
 | Move to PL queue | `field.source_country == 'PL'` | AP Documents - PL |
 | Move to FR queue | `field.source_country == 'FR'` | AP Documents - FR |
 | Move to DE queue | `field.source_country == 'DE'` | AP Documents - DE |
+| Move to IT queue **[2.1.0]** | `field.source_country == 'IT'` | AP Documents - IT |
+| Move to MX queue **[2.1.0]** | `field.source_country == 'MX'` | AP Documents - MX |
 
-All four use `change_queue` with `reimport: true`. Re-import is required because the country schema is far richer than the Inbox schema: on arrival the document is processed from the beginning — values carried over from the Inbox are kept, formula fields are evaluated, and matching against Coupa master data runs for the first time.
+All of them use `change_queue` with `reimport: true`. Re-import is required because the country schema is far richer than the Inbox schema: on arrival the document is processed from the beginning — values carried over from the Inbox are kept, formula fields are evaluated, and matching against Coupa master data runs for the first time.
 
 > Routing happens **on confirmation**, so in the worst case a user sees an e-invoice twice — once in the Inbox, once in the country queue. If documents pile up in the Inbox, check its automation settings before assuming a mapping problem.
 
 ### 8.7 Country schemas
 
-Each country queue has its own schema, derived from the 260-field line-level baseline schema. All four **add** the hidden `upload_id` and **drop** `source_country` — that field exists only to drive the routing rule, and has done its job by the time the document arrives.
+Each country queue has its own schema, derived from the 260-field line-level baseline schema. All of them **add** the hidden `upload_id` and **drop** `source_country` — that field exists only to drive the routing rule, and has done its job by the time the document arrives.
 
 | Queue | Fields | Relative to the line-level baseline |
 |---|---|---|
@@ -1271,8 +1304,12 @@ Each country queue has its own schema, derived from the 260-field line-level bas
 | AP Documents - PL | 262 | + `upload_id` and a 5-field `ksef_section` (`ksef_offline_invoice`, `barcode_qrcode`, `barcode_qrcode_item`, `transaction_id`, `transaction_date`) — 7 nodes with `upload_id` and the section itself; − `source_country` and the four Peppol party fields. Keeps `split_payment_mechanism`, which Poland needs. `type_of_receipt` becomes an enum (VAT, KOR, ZAL, ROZ, UPR, KOR_ZAL, KOR_ROZ), both mismatch tags are hidden, and the new XML fields have `can_export: true`. |
 | AP Documents - BE | 252 | + `upload_id`; − `source_country`, the four Peppol party fields, `invoice_misc_charge`, `invoice_shipping_charge`, `payment_order_number`, `split_payment_mechanism`. |
 | AP Documents - DE | 252 | identical delta to BE. |
+| AP Documents - IT **[2.1.0]** | 254 | the BE/DE delta, but **keeps** `split_payment_mechanism` (Italian *scissione dei pagamenti*). |
+| AP Documents - MX **[2.1.0]** | 264 | the BE/DE delta, plus a `cfdi_section` holding the eight CFDI fields (3.15) and a hidden `barcode_qrcode` multivalue with `barcode_qrcode_item` — the KSeF barcode field, which nothing populates on MX because `Get Barcodes - KSeF PL (CIB)` is bound to PL only. |
 
-All four also set `country_code` to a constant (`'BE'` / `'PL'` / `'FR'` / `'DE'`; `''` on the baseline schemas) and hide `quantity_export` and `price_export`.
+Counts are the v2.0.x values except for IT and MX; **[2.1.0]** adds `item_po_line_number` to every schema, so FR 257, PL 263, BE 253, DE 253, baseline line-level 261.
+
+All of them also set `country_code` to a constant (`'BE'` / `'PL'` / `'FR'` / `'DE'`, **[2.1.0]** `'IT'` / `'MX'`; `''` on the baseline schemas) and hide `quantity_export` and `price_export`.
 
 Everything else — every formula, every matching field, every export field — is the baseline schema. That is what makes a country queue a full AP queue and lets PDFs for that country be sent straight to it.
 
@@ -1280,7 +1317,7 @@ Everything else — every formula, every matching field, every export field — 
 
 Coupa owns the invoice record from the moment it receives the e-invoice, so it has to be told what happened in Rossum. Two `function` hooks (python3.12) do this on `annotation_status.changed`, issuing a `PUT` against `api/invoice_enrichable_documents/{upload_id}`:
 
-- `Coupa E-Invoicing Status Sync (CIB)` (1309898) — bound to all four country queues.
+- `Coupa E-Invoicing Status Sync (CIB)` (1309898) — bound to every country queue (four; six on v2.1.0).
 - `Coupa E-Invoicing Status Sync - Inbox (CIB)` (1309899) — bound to the Inbox.
 
 | Rossum status | Coupa `external_status` | Also sets `status: not_completed` |
@@ -1293,7 +1330,7 @@ Coupa owns the invoice record from the moment it receives the e-invoice, so it h
 | `failed_export` | `export failed` | yes |
 | `failed_import` | `import failed` | yes |
 
-The Inbox instance uses the same map **without** `exported` and `rejected`, because documents leave the Inbox by routing rather than by export. Its Coupa base URL is hard-coded in `settings.coupa_base_url`.
+The Inbox instance uses the same map **without** `exported` and `rejected`, because documents leave the Inbox by routing rather than by export. Its Coupa base URL is hard-coded in `settings.coupa_base_url`; its OAuth client id comes from the Inbox schema's hidden `oauth_client_id` formula field, and its `settings` carry no `client_id`.
 
 The hooks cache their Coupa token in the hook secret `coupa_auth_token`, and treat a 404 on an already closed enrichable document as a warning.
 
@@ -1312,6 +1349,10 @@ The Coupa base URL and OAuth client id are read from the `coupa_api_base_url` an
 **France.** Served by UBL (Peppol BIS 3.0) and CII (Factur-X). The French schema additionally retains the electronic address and party identifier fields for both trading parties.
 
 **Belgium.** UBL only.
+
+**[2.1.0] Italy.** FatturaPA only. The Italian schema keeps `split_payment_mechanism`, set from VAT chargeability `S` and exported as `split-payment-mechanism`; the *Natura* codes feed the four line tax indicator fields. No Italy-specific rule or hook.
+
+**[2.1.0] Mexico.** CFDI 4.0 income and expense receipts only. The `cfdi_section` holds the SAT receipt attributes, exported to Coupa when set. The invoice number is the SAT UUID, and `document_id_manual` copies it (36 characters, inside the 40-character cap) — so `Duplicate Handling (CIB)` compares UUIDs, and the export sends the UUID as Coupa's `invoice-number`, not series + folio. A customer who wants series + folio in Coupa needs a changed `document_id_manual` formula on the MX schema. No Mexico-specific rule or hook — `Get Barcodes - KSeF PL (CIB)` was briefly bound to MX during the build and is PL-only in the release.
 
 ### 8.10 Export
 
@@ -1618,7 +1659,7 @@ Shipped names end in ` (CIB)` and the IDs in brackets below are source-org IDs; 
 3. Native Rules (48 baseline + [2.0] KSeF Offline on PL)
 --- on status change (confirmed / exported) ---
 4. Supplier / Customer / Tax Coding Memorization (CIB) — skip automated documents
-5. Coupa E-Invoicing Status Sync (CIB)    [2.0] country queues; …- Inbox (CIB) on the Inbox
+5. Coupa E-Invoicing Status Sync (CIB)    [2.0] every country queue; …- Inbox (CIB) on the Inbox
 ```
 
 **[2.0]** `Coupa E-Invoicing` is not in this chain — it runs on `upload.created`, before an annotation exists.
@@ -1758,14 +1799,14 @@ The IDs below are **source-org IDs** of the release; a deployed organisation get
 | 1341763 | Coupa Master Data Import - Units of Measure (CIB) | job | scheduled/manual | all AP |
 | 1123384 | MDH - Main (CIB) | webhook | init/started/updated | all AP |
 | 1123400 | MDH - Payment Terms (CIB) | webhook | init/started/updated | all AP |
-| 1123401 | MDH - Tax Codes (CIB) | webhook | init/started/updated | line-level + 4 country (not header) |
+| 1123401 | MDH - Tax Codes (CIB) | webhook | init/started/updated | line-level + every country queue (not header) |
 | 1123402 | MDH - Coupa Invoice Check (CIB) | webhook | init/started/updated | all AP |
 | 1123399 | Duplicate Handling (CIB) | webhook | init/started/updated/confirm/export, status changed | all AP |
 | 1123391 | Metadata Propagator (CIB) | function | init/started | all AP |
 | 1123404 | Supplier memorization (CIB) | function | annotation_status.changed | all AP |
 | 1123405 | Customer memorization (CIB) | function | annotation_status.changed | all AP |
 | 1123407 | Tax Coding Memorization (CIB) | function | annotation_status.changed | all AP |
-| 1123383 | Export Mapping - LIne Level Taxation (CIB) | webhook | export | line-level + 4 country |
+| 1123383 | Export Mapping - LIne Level Taxation (CIB) | webhook | export | line-level + every country queue |
 | 1123394 | Export Mapping - Header Level Taxation (CIB) | webhook | export | header-level |
 | 1157241 | Export Pipeline - 1. Create Draft (CIB) | function | export | all AP |
 | 1342015 | Export Pipeline - 2. Attach Image Scan (CIB) | function | export | all AP |
@@ -1774,11 +1815,11 @@ The IDs below are **source-org IDs** of the release; a deployed organisation get
 | 1342018 | Export Pipeline - 5. Submit Document (CIB) | function | export | all AP |
 | 1123389 | Handle Coupa Responses (CIB) | function | export | all AP |
 | 1170832 | Coupa E-Invoicing | webhook | upload.created | E-invoicing Inbox |
-| 1309898 | Coupa E-Invoicing Status Sync (CIB) | function | annotation_status.changed | 4 country queues |
+| 1309898 | Coupa E-Invoicing Status Sync (CIB) | function | annotation_status.changed | every country queue (4; 6 on v2.1.0) |
 | 1309899 | Coupa E-Invoicing Status Sync - Inbox (CIB) | function | annotation_status.changed | E-invoicing Inbox |
 | 1157629 | Get Barcodes - KSeF PL (CIB) | function | init | AP Documents - PL |
 
-"all AP" = the six AP queues (baseline line-level and header-level, plus BE / PL / FR / DE) — never the Inbox. The three imports with no queue binding write only to Data Storage; that is not a fault.
+"all AP" = every AP queue — the baseline line-level and header-level queues plus BE / PL / FR / DE (six), and **[2.1.0]** IT / MX (eight) — never the Inbox. v2.1.0 adds no hook: the 33 hooks are the same objects, with IT and MX added to their `queues`. The three imports with no queue binding write only to Data Storage; that is not a fault.
 
 **Note the misspelling** in `Export Mapping - LIne Level Taxation (CIB)` — it is in the shipped object name, so match on it when searching.
 
