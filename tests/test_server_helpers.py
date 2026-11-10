@@ -546,6 +546,32 @@ def test_walk_compact_default_shape_unchanged():
     assert "_row_id" not in tables["line_items"]["rows"][0]
 
 
+# --- rossum_get_annotation_content schema_ids filter (issue #171) ---
+
+def test_filter_content_tree_cell_filter_keeps_raw_shape_and_drops_empty_rows():
+    pruned, matched = server._filter_content_tree(_WALK_TREE, {"item_qty"})
+    assert matched == {"item_qty"}
+    mv = pruned[0]["children"][0]
+    assert mv["id"] == 30 and len(mv["children"]) == 1      # row 41 had no item_qty
+    assert mv["children"][0]["children"] == [_WALK_TREE[0]["children"][1]["children"][0]["children"][1]]
+
+
+def test_filter_content_tree_multivalue_id_keeps_whole_table():
+    pruned, _ = server._filter_content_tree(_WALK_TREE, {"line_items"})
+    assert pruned[0]["children"] == [_WALK_TREE[0]["children"][1]]
+
+
+def test_get_annotation_content_schema_ids_reports_unmatched(monkeypatch):
+    _connect(monkeypatch)
+    out = _capture_result(monkeypatch)
+    monkeypatch.setattr(server, "_http_request", lambda rid, url, **kw: {"content": _WALK_TREE})
+    server.handle_get_annotation_content("1", {"annotation_id": 7,
+                                               "schema_ids": ["invoice_id", "curency"]})
+    body = json.loads(out["text"])
+    assert body["unmatched_schema_ids"] == ["curency"]
+    assert body["content"][0]["children"] == [_WALK_TREE[0]["children"][0]]
+
+
 # --- schema content file-path I/O: canonical hash + structural integrity diff ---
 # The API injects default keys on write (rir_field_names, default_value, section icon)
 # and silently DROPS keys it does not know, so a write's integrity is "everything sent
