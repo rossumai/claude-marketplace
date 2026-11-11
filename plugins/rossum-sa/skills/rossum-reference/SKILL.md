@@ -22,6 +22,10 @@ Which Rossum API operations the `rossum-api` MCP server wraps is tracked in [api
 
 **Two deployment tools — detect which one the project uses.** `prd_config.yaml` at the root → **prd2** (see `prd-reference`). `rdc.toml` at the root → **rdc** (see `rdc-reference`): code lives in sidecar `.py` files the same way, but references are `rdc://<kind>/<slug>`, pull is `rdc sync <env> --no-push`, push is `rdc sync <env>` after a `--dry-run`, and promotion is `rdc migrate`. Never run one tool against the other's project.
 
+## Large MCP results
+
+Annotation content is often 400 KB+. To read a few datapoints, call `rossum_get_annotation_content` with `schema_ids` (raw shape, ids included) or `rossum_get_annotation` with `fields` (compact values). When a tool result overflows to a saved file anyway, query that file with `jq` — e.g. `jq '[.. | objects | select(.category=="datapoint" and .schema_id=="currency") | .content.value]' <file>` — and never re-fetch the data with an ad-hoc HTTP script: it writes the token to disk and Python `urllib` fails behind TLS-intercepting proxies.
+
 ## Customer-facing terminology
 
 In SOWs, proposals, emails, and any other customer-facing material, write "Master Data Hub" in full — never "MDH" — and do not mention "Data Storage" (it is implementation; the product is Master Data Hub). Reference content and internal developer guidance can use "MDH" freely.

@@ -223,7 +223,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.47.2"
+_SERVER_VERSION = "0.48.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -3259,10 +3259,44 @@ def handle_search_annotations_advanced(request_id, arguments):
         }, indent=2))
 
 
+def _filter_content_tree(nodes, wanted):
+    """Prune a raw content tree to the datapoints whose schema_id is in *wanted*.
+
+    Keeps the raw node shape (ids, category, content, ...) so the result still feeds
+    content operations. A section / tuple survives only if a descendant matched; a
+    multivalue or tuple whose own schema_id is wanted is kept whole. Returns
+    (pruned_nodes, set_of_schema_ids_that_matched).
+    """
+    matched = set()
+
+    def prune(node):
+        if not isinstance(node, dict):
+            return None
+        schema_id = node.get("schema_id")
+        if schema_id in wanted:
+            matched.add(schema_id)
+            return node
+        children = node.get("children")
+        if node.get("category") == "datapoint" or not isinstance(children, list):
+            return None
+        kept = [c for c in (prune(child) for child in children) if c is not None]
+        if not kept:
+            return None
+        return {**node, "children": kept}
+
+    pruned = [n for n in (prune(node) for node in nodes or ()) if n is not None]
+    return pruned, matched
+
+
 @_tool(
     "rossum_get_annotation_content",
-    "Retrieves the extracted data (content) of a single annotation. "
-    "Returns the annotation's data tree: sections containing datapoints and multivalues (tables).",
+    "Retrieves the raw extracted data (content) of a single annotation: sections containing "
+    "datapoints and multivalues (tables), with datapoint ids. A full tree is often 400 KB+ "
+    "and overflows to a saved file — pass schema_ids to get only the datapoints you need. "
+    "If a result was saved to a file anyway, read it with jq on that file, e.g. "
+    "jq '[.. | objects | select(.category==\"datapoint\" and .schema_id==\"currency\") "
+    "| .content.value]' <file>; never re-fetch it with an ad-hoc HTTP script (that puts the "
+    "token on disk). For a compact value-only view use rossum_get_annotation with fields.",
     {
         "type": "object",
         "required": ["annotation_id"],
@@ -3271,13 +3305,44 @@ def handle_search_annotations_advanced(request_id, arguments):
                 "type": "integer",
                 "description": "The annotation ID.",
             },
+            "schema_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": (
+                    "Optional. Return only datapoints with these schema_ids, in their raw "
+                    "shape (ids included). A multivalue or tuple schema_id returns that whole "
+                    "table / row; a cell schema_id returns that column on every row. Sections "
+                    "and rows with no match are dropped. The response adds "
+                    "'unmatched_schema_ids' so a typo is visible."
+                ),
+            },
         },
         "additionalProperties": False,
     },
     annotations=_READ_ONLY,
 )
 def handle_get_annotation_content(request_id, arguments):
-    _rossum_get(request_id, f"/api/v1/annotations/{arguments['annotation_id']}/content")
+    schema_ids = arguments.get("schema_ids")
+    if not schema_ids:
+        _rossum_get(request_id, f"/api/v1/annotations/{arguments['annotation_id']}/content")
+        return
+    wanted = set(schema_ids)
+
+    def render(result):
+        if isinstance(result, dict):
+            key = "content" if "content" in result else "results"
+            tree = result.get(key)
+        else:
+            key, tree = "content", result
+        pruned, matched = _filter_content_tree(tree if isinstance(tree, list) else [], wanted)
+        tool_result(request_id, json.dumps({
+            key: pruned,
+            "unmatched_schema_ids": sorted(wanted - matched),
+        }, indent=2))
+
+    _rossum_get(request_id, f"/api/v1/annotations/{arguments['annotation_id']}/content",
+                format_result=render)
 
 
 @_tool(
