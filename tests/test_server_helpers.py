@@ -44,6 +44,9 @@ def test_parse_connection_string_token_only_and_url_only():
     ("https://elis.rossum.ai", "https://elis.rossum.ai"),
     ("https://elis.rossum.ai/api/v1", "https://elis.rossum.ai"),  # path stripped to origin
     ("https://us.api.rossum.ai", "https://us.app.rossum.ai"),     # api -> app rewrite
+    ("https://api.elis.rossum.ai", "https://elis.rossum.ai"),     # admin-UI api. prefix dropped
+    ("https://api.elis.rossum.ai/api/v1/queues", "https://elis.rossum.ai"),
+    ("https://api.rossum.ai", "https://api.rossum.ai"),           # bare api. host untouched
     ("https://host:8443", "https://host:8443"),                   # non-443 port kept
     ("https://host:443", "https://host"),                         # default port dropped
     ("http://elis.rossum.ai", None),                              # non-https rejected

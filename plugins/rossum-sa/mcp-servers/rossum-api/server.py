@@ -122,7 +122,10 @@ def _validate_base_url(url):
     Normalizes common Rossum URL variants so callers don't need to know the
     canonical hostname.  For example ``us.api.rossum.ai`` is rewritten to
     ``us.app.rossum.ai`` because the ``*.api.*`` subdomain does not expose
-    the Data Storage service (``/svc/data-storage/...``).
+    the Data Storage service (``/svc/data-storage/...``). Likewise the
+    ``api.<org>.rossum.ai`` form the admin UI's curl connection string shows
+    (e.g. ``api.elis.rossum.ai``) serves the REST API but 404s every ``/svc/*``
+    path, so the ``api.`` prefix is dropped.
     """
     try:
         parsed = urlparse(url)
@@ -136,6 +139,10 @@ def _validate_base_url(url):
     # *.api.rossum.ai → *.app.rossum.ai (data-storage lives on *.app.*)
     if hostname.endswith(".api.rossum.ai"):
         hostname = hostname.replace(".api.rossum.ai", ".app.rossum.ai")
+    # api.<org>.rossum.ai → <org>.rossum.ai (REST only on the api. host, no /svc/*)
+    elif hostname.startswith("api.") and hostname.endswith(".rossum.ai") \
+            and hostname != "api.rossum.ai":
+        hostname = hostname[len("api."):]
     origin = f"https://{hostname}"
     if parsed.port and parsed.port != 443:
         origin += f":{parsed.port}"
@@ -223,7 +230,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.48.0"
+_SERVER_VERSION = "0.48.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
