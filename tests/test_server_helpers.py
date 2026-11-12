@@ -1294,3 +1294,19 @@ def test_set_token_project_dir_for_a_shared_server(fresh_autoconnect, tmp_path, 
 
     server.handle_set_token(2, {"project_dir": "/home/claude-does-not-exist"})
     assert out[-1][1] is True and "not a folder" in out[-1][0]
+
+
+@pytest.mark.parametrize("make,refresh", [
+    (lambda root: _rdc_project(root, {"prod": "old"}), "rdc auth prod"),
+    (lambda root: _prd2_project(root, {"production-org": "old"}), "production-org/credentials.yaml"),
+])
+def test_expired_project_token_names_the_refresh_step(fresh_autoconnect, tmp_path, monkeypatch, make, refresh):
+    make(tmp_path)
+    monkeypatch.setattr(server, "_probe_token", lambda base, tok: (False, "HTTP 401"))
+    out = []
+    monkeypatch.setattr(server, "tool_result",
+                        lambda rid, text, is_error=False: out.append((text, is_error)))
+    server.handle_set_token(1, {"project_dir": str(tmp_path)})
+    text, is_error = out[-1]
+    assert is_error and refresh in text and "project_dir again" in text
+    assert "old" not in text.replace("folder", "")  # the token itself never echoes
