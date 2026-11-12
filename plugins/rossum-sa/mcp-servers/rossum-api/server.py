@@ -230,7 +230,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.49.1"
+_SERVER_VERSION = "0.49.2"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -275,6 +275,7 @@ _ENV_URL_VARS = ("ROSSUM_API_URL", "ROSSUM_BASE_URL", "ROSSUM_URL")
 # other destination has to go through set_token, where a person sees it.
 _ROSSUM_HOST_SUFFIXES = (".rossum.ai", ".rossum.app")
 _autoconnect_attempted = False
+_project_refresh_hint = None  # refresh step for the last project token resolved
 _connection_source = None  # "explicit" (rossum_set_token) | "env" | None
 
 
@@ -326,7 +327,8 @@ def _read_rdc_project(root):
                 token = (json.load(f).get("api_token") or "").strip() or None
         except (OSError, ValueError, AttributeError):
             pass
-        out[env] = ((cfg or {}).get("api_base", ""), token, f"run `rdc auth {env}`")
+        out[env] = ((cfg or {}).get("api_base", ""), token,
+                    _PROJECT_REFRESH["rdc"].format(env=env, root=root))
     return out
 
 
@@ -361,9 +363,16 @@ def _read_prd2_project(root):
         except OSError:
             pass
         result[org_dir] = (api_base, token,
-                           f"put `token: <token>` in {org_dir}/credentials.yaml")
+                           _PROJECT_REFRESH["prd2"].format(env=org_dir, root=root))
     return result
 
+
+# What the user has to do to refresh a project token, keyed by project kind.
+# Relayed verbatim through tool errors, so it must stand alone.
+_PROJECT_REFRESH = {
+    "rdc": "run `rdc auth {env}` (or `rdc auth {env} --browser` for SSO) in a terminal in {root}",
+    "prd2": "put a fresh `token: <token>` line in {root}/{env}/credentials.yaml",
+}
 
 _PROJECT_READERS = (("rdc.toml", "rdc", _read_rdc_project),
                     ("prd_config.yaml", "prd2", _read_prd2_project))
@@ -416,10 +425,13 @@ def _project_credentials(env=None, start_dir=None):
                 f"(known: {', '.join(sorted(envs)) or 'none'})")
     api_base, token, fix = envs[env]
     if not token:
-        return (None, None, f"no token for {kind} env '{env}' — {fix}")
+        return (None, None, f"no token for {kind} env '{env}' — ask the user to {fix}, "
+                "then call rossum_set_token with project_dir again")
     origin = _validate_base_url(api_base)
     if not origin or not (urlparse(origin).hostname or "").endswith(_ROSSUM_HOST_SUFFIXES):
         return (None, None, f"{kind} env '{env}' has no Rossum https api_base ({api_base!r})")
+    global _project_refresh_hint
+    _project_refresh_hint = fix
     return (origin, token, f"{kind} env '{env}'")
 
 
@@ -1907,7 +1919,9 @@ def handle_set_token(request_id, arguments):
     if not token and not username:
         return tool_result(
             request_id,
-            "No credentials provided. Supply either a token OR username+password.",
+            "No credentials provided. Supply either a token OR username+password — or, if "
+            "the session has an rdc/prd2 project folder, project_dir=<its absolute local path> "
+            "so the server reads that project's own token.",
             is_error=True,
         )
 
@@ -1929,6 +1943,15 @@ def handle_set_token(request_id, arguments):
             )
 
     ok, detail = _probe_token(base_url, token)
+    if not ok and from_project:
+        _invalidate_connection()
+        return tool_result(
+            request_id,
+            f"The {label} token was rejected by {base_url} ({detail}) — it has most likely "
+            f"expired. Ask the user to {_project_refresh_hint}, then call rossum_set_token "
+            "with project_dir again. Do not ask them to paste the token.",
+            is_error=True,
+        )
     if not ok:
         _invalidate_connection()
         return tool_result(
@@ -8661,6 +8684,19 @@ def main():
                         "anything else. This is a RECOGNITION rule and it applies to the user's "
                         "message, before any tool call: what to do once a call has come back "
                         "unauthenticated is enforced separately by the plugin's auth-guard hook. "
+                        "CONNECTION RULE — connect from the project folder, never ask for a pasted "
+                        "token first: when a Rossum tool says not connected and the session has a "
+                        "project folder holding rdc.toml (rdc) or prd_config.yaml (prd2), call "
+                        "rossum_set_token with project_dir = that folder's absolute local path (in "
+                        "Cowork the connected folder's path on the user's machine, never "
+                        "/home/claude) — add project_env (rdc env / prd2 org folder) if the error "
+                        "says several envs hold a token. The server reads the project's own token; "
+                        "you never open the credential file. If it reports the token rejected or "
+                        "missing, relay the refresh step from its message to the user verbatim "
+                        "(rdc: `rdc auth <env>` in a terminal in that folder; prd2: a new `token:` "
+                        "line in <org-folder>/credentials.yaml), wait for them, then call "
+                        "rossum_set_token with project_dir again. The same applies when a token "
+                        "expires mid-session. "
                         "EDITING RULE — local file workflow: "
                         "When modifying hook code or formula logic in a prd project, only edit the local .py files. "
                         "Never edit the code field in hook JSON or the formula property in schema.json — "
