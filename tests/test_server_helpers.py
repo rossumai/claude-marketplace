@@ -944,7 +944,7 @@ def test_load_json_dict_field_refuses_two_markers_without_settings_key(tmp_path)
 # a scheduled or cloud agent). These pin the environment path that replaces it.
 
 @pytest.fixture
-def fresh_autoconnect(monkeypatch):
+def fresh_autoconnect(monkeypatch, tmp_path):
     """Disconnected server with the one-shot bootstrap flag rearmed.
 
     The flag is module state, so without this a single earlier call would make
@@ -955,6 +955,9 @@ def fresh_autoconnect(monkeypatch):
     monkeypatch.setattr(server, "_token_validated", False)
     monkeypatch.setattr(server, "_autoconnect_attempted", False)
     monkeypatch.setattr(server, "_connection_source", None)
+    # The project-folder fallback walks up from here; keep it off the real checkout.
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
     class _Probes(list):
         """A list of (base_url, token) probes, with the stderr log alongside."""
         logs: list
@@ -1190,3 +1193,86 @@ def test_healthz_names_the_env_target_instead_of_the_default(fresh_autoconnect, 
     assert fresh_autoconnect == [], "healthz must not probe a token"
     text = emitted[-1]["result"]["content"][0]["text"]
     assert "ROSSUM_API_URL (not connected yet)" in text
+
+
+# --- project-folder fallback: rdc / prd2 tokens already on disk ---
+#
+# A chat client that refuses pasted tokens leaves the folder as the only way in:
+# rdc caches one in secrets/<env>.secrets.json, prd2 keeps one in
+# <org-dir>/credentials.yaml. Values below are invented.
+
+def _rdc_project(root, tokens):
+    (root / "rdc.toml").write_text(
+        '[envs.dev]\napi_base = "https://acme-dev.rossum.app/api/v1"\n\n'
+        '[envs.prod]\napi_base = "https://acme.rossum.app/api/v1"\n')
+    (root / "secrets").mkdir()
+    (root / "secrets" / "dev.hook-secrets.json").write_text("{}")
+    for env, tok in tokens.items():
+        (root / "secrets" / f"{env}.secrets.json").write_text(
+            json.dumps({"api_token": tok, "expires_at": None}))
+
+
+def _prd2_project(root, tokens, host="acme.rossum.app"):
+    (root / "prd_config.yaml").write_text(
+        "directories:\n"
+        "  sandbox-org:\n    org_id: '1'\n    api_base: https://acme-dev.rossum.app/api/v1\n"
+        "    subdirectories:\n      dev:\n        regex: ''\n"
+        f"  production-org:\n    org_id: '2'\n    api_base: 'https://{host}/api/v1'\n"
+        "    subdirectories:\n      default:\n        regex: ''\n")
+    for org_dir, tok in tokens.items():
+        (root / org_dir).mkdir()
+        (root / org_dir / "credentials.yaml").write_text(f"token: {tok}\n")
+
+
+def test_autoconnect_uses_the_only_rdc_token(fresh_autoconnect, tmp_path):
+    _rdc_project(tmp_path, {"prod": "rdc-tok"})
+    (tmp_path / "envs").mkdir()
+    import os
+    os.chdir(tmp_path / "envs")  # found from a subfolder too
+    assert server._autoconnect_from_env() is True
+    assert fresh_autoconnect == [("https://acme.rossum.app", "rdc-tok")]
+
+
+def test_autoconnect_uses_the_only_prd2_token(fresh_autoconnect, tmp_path):
+    _prd2_project(tmp_path, {"production-org": "prd-tok"})
+    assert server._autoconnect_from_env() is True
+    assert fresh_autoconnect == [("https://acme.rossum.app", "prd-tok")]
+
+
+def test_environment_still_wins_over_the_project(fresh_autoconnect, tmp_path, monkeypatch):
+    _rdc_project(tmp_path, {"prod": "rdc-tok"})
+    monkeypatch.setenv("ROSSUM_TOKEN", "env-tok")
+    monkeypatch.setenv("ROSSUM_API_URL", "https://elis.rossum.ai")
+    assert server._autoconnect_from_env() is True
+    assert fresh_autoconnect == [("https://elis.rossum.ai", "env-tok")]
+
+
+@pytest.mark.parametrize("make", [
+    lambda root: _rdc_project(root, {"dev": "a", "prod": "b"}),
+    lambda root: _prd2_project(root, {"sandbox-org": "a", "production-org": "b"}),
+])
+def test_several_project_tokens_are_never_guessed(fresh_autoconnect, tmp_path, make):
+    make(tmp_path)
+    assert server._autoconnect_from_env() is False
+    assert fresh_autoconnect == []
+    assert any("project_env" in line for line in fresh_autoconnect.logs), fresh_autoconnect.logs
+
+
+def test_project_host_allow_list(fresh_autoconnect, tmp_path):
+    _prd2_project(tmp_path, {"production-org": "prd-tok"}, host="attacker.example")
+    assert server._autoconnect_from_env() is False
+    assert fresh_autoconnect == [], "a non-Rossum host must not receive the token"
+
+
+def test_set_token_project_env_picks_one(fresh_autoconnect, tmp_path, monkeypatch):
+    _rdc_project(tmp_path, {"dev": "dev-tok", "prod": "prod-tok"})
+    out = []
+    monkeypatch.setattr(server, "tool_result",
+                        lambda rid, text, is_error=False: out.append((text, is_error)))
+    server.handle_set_token(1, {"project_env": "dev"})
+    assert fresh_autoconnect == [("https://acme-dev.rossum.app", "dev-tok")]
+    assert out[-1][1] is False and "rdc env 'dev'" in out[-1][0]
+    assert server._connection_source == "explicit"
+
+    server.handle_set_token(2, {"project_env": "nope"})
+    assert out[-1][1] is True and "no env 'nope'" in out[-1][0]

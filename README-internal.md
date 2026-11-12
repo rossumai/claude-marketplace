@@ -215,6 +215,16 @@ through to the ordinary not-connected message rather than half-connecting:
 - **Rejected** — a stale token logs the 401 once and never re-probes, including
   after a mid-session `_invalidate_connection`.
 
+With no variables set, the same bootstrap falls back to the project folder
+(`_project_credentials`): it walks up from `CLAUDE_PROJECT_DIR` or the cwd to
+the first `rdc.toml` / `prd_config.yaml` and takes the token from
+`secrets/<env>.secrets.json` / `<org-dir>/credentials.yaml`. Live-test it by
+opening a session in a project with exactly one valid token and calling
+`rossum_whoami` (stderr: `connected to ... via rdc env '<env>'`), then in a
+project with two and checking the decline names `project_env`, then calling
+`rossum_set_token` with `project_env`. The environment always wins over the
+folder, and the folder's URL goes through the same Rossum-host allow-list.
+
 `conftest.py` clears every `ROSSUM_*` variable for the whole test suite, so an SA
 running `pytest` on the machine they work Rossum from cannot have their own token
 connect the disconnected-path tests (or fire a live probe per tool in

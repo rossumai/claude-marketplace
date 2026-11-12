@@ -230,7 +230,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.48.1"
+_SERVER_VERSION = "0.49.0"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -311,6 +311,113 @@ def _env_base_url():
     return (url_var, origin)
 
 
+def _read_rdc_project(root):
+    """{env: (api_base, token_or_None, how_to_fix)} for an rdc project root."""
+    import os
+    import tomllib  # stdlib since 3.11
+
+    with open(os.path.join(root, "rdc.toml"), "rb") as f:
+        envs = tomllib.load(f).get("envs") or {}
+    out = {}
+    for env, cfg in envs.items():
+        token = None
+        try:
+            with open(os.path.join(root, "secrets", f"{env}.secrets.json"), encoding="utf-8") as f:
+                token = (json.load(f).get("api_token") or "").strip() or None
+        except (OSError, ValueError, AttributeError):
+            pass
+        out[env] = ((cfg or {}).get("api_base", ""), token, f"run `rdc auth {env}`")
+    return out
+
+
+def _read_prd2_project(root):
+    """{org_dir: (api_base, token_or_None, how_to_fix)} for a prd2 project root.
+
+    prd_config.yaml / credentials.yaml are YAML and the server is stdlib-only,
+    so this reads just the two keys it needs, line by line.
+    shortcut: only the org-level credentials.yaml, not per-subdirectory ones; extend if a project splits tokens per subdir.
+    """
+    import os
+
+    out, current = {}, None
+    with open(os.path.join(root, "prd_config.yaml"), encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"^  ([^\s#][^:]*):\s*$", line)
+            if m:
+                current = m.group(1).strip().strip("'\"")
+                out[current] = ""
+            m = re.match(r"^    api_base:\s*['\"]?([^'\"\s#]+)", line)
+            if m and current is not None:
+                out[current] = m.group(1)
+    result = {}
+    for org_dir, api_base in out.items():
+        token = None
+        try:
+            with open(os.path.join(root, org_dir, "credentials.yaml"), encoding="utf-8") as f:
+                for line in f:
+                    m = re.match(r"^token:\s*['\"]?([^'\"\s#]+)", line)
+                    if m:
+                        token = m.group(1)
+        except OSError:
+            pass
+        result[org_dir] = (api_base, token,
+                           f"put `token: <token>` in {org_dir}/credentials.yaml")
+    return result
+
+
+_PROJECT_READERS = (("rdc.toml", "rdc", _read_rdc_project),
+                    ("prd_config.yaml", "prd2", _read_prd2_project))
+
+
+def _project_credentials(env=None):
+    """(base_url, token, label) from the rdc/prd2 project around the cwd, or (None, None, reason).
+
+    Both tools already keep a token next to the project — rdc in
+    secrets/<env>.secrets.json, prd2 in <org-dir>/credentials.yaml — and name
+    the env's api_base in rdc.toml / prd_config.yaml. So a folder set up for
+    either holds everything a connection needs, and nobody has to paste a
+    token into a chat client that refuses one. env=None picks the only env with
+    a token; several is ambiguous and must be named (rossum_set_token's
+    project_env). The URL goes through the same Rossum-host allow-list as the
+    environment path.
+    """
+    import os
+
+    root = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    while True:
+        found = [(kind, read) for marker, kind, read in _PROJECT_READERS
+                 if os.path.isfile(os.path.join(root, marker))]
+        if found:
+            break
+        parent = os.path.dirname(root)
+        if parent == root:
+            return (None, None, "no rdc.toml or prd_config.yaml in the working folder or its parents")
+        root = parent
+    kind, read = found[0]
+    try:
+        envs = read(root)
+    except (OSError, ValueError, ImportError) as e:
+        return (None, None, f"cannot read the {kind} project config at {root} ({e})")
+
+    with_token = sorted(name for name, (_, tok, _) in envs.items() if tok)
+    if env is None:
+        if len(with_token) != 1:
+            return (None, None, f"{kind} project at {root} has a token for "
+                    f"{', '.join(with_token) or 'no env'} — exactly one is needed to pick "
+                    f"automatically, or name it with rossum_set_token(project_env=...)")
+        env = with_token[0]
+    if env not in envs:
+        return (None, None, f"{kind} project at {root} has no env '{env}' "
+                f"(known: {', '.join(sorted(envs)) or 'none'})")
+    api_base, token, fix = envs[env]
+    if not token:
+        return (None, None, f"no token for {kind} env '{env}' — {fix}")
+    origin = _validate_base_url(api_base)
+    if not origin or not (urlparse(origin).hostname or "").endswith(_ROSSUM_HOST_SUFFIXES):
+        return (None, None, f"{kind} env '{env}' has no Rossum https api_base ({api_base!r})")
+    return (origin, token, f"{kind} env '{env}'")
+
+
 def _autoconnect_from_env():
     """Connect from the environment, at most once per process. True if connected.
 
@@ -332,6 +439,12 @@ def _autoconnect_from_env():
 
     token_var, token = _first_env(_ENV_TOKEN_VARS)
     url_var, base_url = _env_base_url()
+    if not token and not url_var:
+        # Nothing in the environment: fall back to the rdc/prd2 project's own token.
+        base_url, token, token_var = _project_credentials()
+        if not token:
+            _log(f"Rossum autoconnect skipped: {token_var}.")
+            return False
     if not token or not base_url:
         if token and not url_var:
             # Half-configured is a typo, not a decision — name the missing half.
@@ -1625,6 +1738,16 @@ def _build_annotation_compact_response(
                     "parsed from it and any explicit token/baseUrl arguments are ignored."
                 ),
             },
+            "project_env": {
+                "type": "string",
+                "description": (
+                    "Connect with the token the rdc or prd2 project in the working folder already "
+                    "holds — no token in chat. The rdc env name (rdc.toml [envs.<name>], token "
+                    "from secrets/<name>.secrets.json) or the prd2 org directory (prd_config.yaml, "
+                    "token from <dir>/credentials.yaml). Only needed when the project has tokens "
+                    "for several envs; with one, the server connects on its own."
+                ),
+            },
         },
         "additionalProperties": False,
     },
@@ -1638,6 +1761,12 @@ def handle_set_token(request_id, arguments):
     password = arguments.get("password", "")
     raw_url = arguments.get("baseUrl") or arguments.get("base_url") or ""
     connection_string = arguments.get("connectionString", "")
+
+    if arguments.get("project_env"):
+        project_url, project_token, label = _project_credentials(arguments["project_env"])
+        if not project_token:
+            return tool_result(request_id, f"Cannot connect from the project: {label}.", is_error=True)
+        token, raw_url, username, password, connection_string = project_token, project_url, "", "", ""
 
     # Connection string overrides token/baseUrl when provided.
     if connection_string:
@@ -1800,7 +1929,8 @@ def handle_set_token(request_id, arguments):
     # org the environment names.
     _connection_source = "explicit"
     _autoconnect_attempted = True
-    method = "username+password login" if username else "API token"
+    method = ("username+password login" if username
+              else f"the {label} token" if arguments.get("project_env") else "API token")
     return tool_result(request_id, f"Connected to {base_url} via {method}. Token validated for this session.")
 
 

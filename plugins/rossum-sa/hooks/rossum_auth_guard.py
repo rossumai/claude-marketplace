@@ -54,7 +54,11 @@ BLOCK_REASON = (
     "search does not succeed, and reading credential files nobody pointed you at "
     "is not yours to do. If the user has already pasted a token in this "
     "conversation — a bare 40-character hex string is one — call rossum_set_token "
-    "with it instead of asking again. If this session has no user to answer (an "
+    "with it instead of asking again. If the working folder is an rdc or prd2 "
+    "project, call rossum_set_token with project_env set to the rdc env or prd2 "
+    "org directory (names are in rdc.toml / prd_config.yaml): the server reads "
+    "that project's own token itself, so nothing is pasted and you read no "
+    "credential file. If this session has no user to answer (an "
     "unattended -p or scheduled run), do not wait: report that ROSSUM_TOKEN and "
     "ROSSUM_API_URL have to be set in the environment for runs like this one."
 )

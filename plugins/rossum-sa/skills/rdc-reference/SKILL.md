@@ -39,7 +39,7 @@ Never run `prd2` in an rdc project or `rdc` in a prd2 project. If both markers e
 
 ## Credentials
 
-`rdc` reads `RDC_TOKEN_<SUFFIX>` (or `RDC_USER_<SUFFIX>` + `RDC_PASS_<SUFFIX>`) where the suffix is listed in the project's `CLAUDE.md` env table, and caches a validated token in `secrets/<env>.secrets.json`. When a token is missing or expired, ask the user to run `! rdc auth <env>` (reads the token from stdin) — never put a token on the command line or in an inline env assignment.
+`rdc` reads `RDC_TOKEN_<SUFFIX>` (or `RDC_USER_<SUFFIX>` + `RDC_PASS_<SUFFIX>`) where the suffix is listed in the project's `CLAUDE.md` env table, and caches a validated token in `secrets/<env>.secrets.json`. When a token is missing or expired, ask the user to run `! rdc auth <env>` (reads the token from stdin) — never put a token on the command line or in an inline env assignment. The MCP server reuses that cached token when the session is opened in the project: it connects on its own when only one env has one, otherwise call `rossum_set_token` with `project_env=<env>`.
 
 Use this knowledge when:
 - The working directory contains `rdc.toml`, or the user mentions rdc, `rdc sync`, `rdc migrate`, `overlay.toml`, `.rdc/mapping.toml`, `_index.md`, or `rdc://` references
