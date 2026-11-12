@@ -222,7 +222,9 @@ the first `rdc.toml` / `prd_config.yaml` and takes the token from
 opening a session in a project with exactly one valid token and calling
 `rossum_whoami` (stderr: `connected to ... via rdc env '<env>'`), then in a
 project with two and checking the decline names `project_env`, then calling
-`rossum_set_token` with `project_env`. The environment always wins over the
+`rossum_set_token` with `project_env`. Cowork spawns one MCP server per app
+(cwd `/`, no `CLAUDE_PROJECT_DIR`), so the folder walk finds nothing there; the
+session passes the host path as `project_dir` instead. The environment always wins over the
 folder, and the folder's URL goes through the same Rossum-host allow-list.
 
 `conftest.py` clears every `ROSSUM_*` variable for the whole test suite, so an SA
