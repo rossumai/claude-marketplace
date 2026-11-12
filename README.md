@@ -76,9 +76,47 @@ Every MCP server the CLI spawns inherits these, so per-project settings work too
 - **`rossum_set_token` wins.** Connecting explicitly retires the environment path for the
   rest of the session, so a 401 surfaces as an error instead of quietly failing over to
   whatever org the environment names.
+- **No variables set? The project folder is used** — see the next section.
 - Only Rossum hosts (`*.rossum.ai`, `*.rossum.app`) are accepted from the environment,
   since nobody sees that URL before the token is sent to it. Use `rossum_set_token` for
   anything else.
+
+### Connect from a project folder (Cowork, or no token in chat)
+
+Some chat clients (Claude Cowork included) refuse a token pasted into the conversation.
+For those, keep the token in an **rdc or prd2 project folder** and open Claude on that
+folder. The MCP server reads the org URL and token from the project itself; nothing
+goes into the chat and Claude never opens the credential file.
+
+**1. Install one of the two tools** (one is enough):
+
+- **rdc** — `rdc --version` should answer; keep it current with `rdc upgrade`.
+- **prd2** — `pipx install project-rossum-deploy`, then `prd2 --version`.
+
+**2. Set up the folder — once per org:**
+
+| | Folder is new | Folder already has the project (e.g. cloned from git) |
+|---|---|---|
+| **rdc** | `rdc init` — asks for the env name, API URL, org ID and then the token (or `rdc init --env prod=https://<org>.rossum.app/api/v1:<org_id>`) | `rdc auth <env>` |
+| **prd2** | `prd2 init`, then put `token: <token>` in `<org-folder>/credentials.yaml` | put `token: <token>` in `<org-folder>/credentials.yaml` |
+
+`rdc init` offers a first sync at the end; decline it if you only need the connection.
+The URL comes from `rdc.toml` (`api_base`) or `prd_config.yaml`; no other setting is
+needed. Tokens live in `secrets/` (rdc) or `credentials.yaml` (prd2), which are
+gitignored — every person sets up their own, on their own machine.
+
+**3. Open Claude on the folder** and ask it to run `whoami`. With one env holding a
+token it connects on its own; with several, say which: *"connect to `dev`"* (the rdc env
+name, or the prd2 org folder).
+
+**4. When the token expires**, refresh it in the same place: `rdc auth <env>`, or a new
+`token:` line in `credentials.yaml`. Then start a new Claude session.
+
+Why not just a `token.json` in the folder? The token already *is* a file on disk — this
+reuses the two files the deployment tools manage, instead of adding a third that has no
+`.gitignore` rule, no file permissions (rdc writes its file `0600`), and no refresh
+command, and that a later `git add .` would happily commit. The server also sends the
+token only to the `api_base` the project names, and only if that is a Rossum host.
 
 ## 🛠️ Work on an implementation
 
