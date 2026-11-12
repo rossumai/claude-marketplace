@@ -230,7 +230,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.49.0"
+_SERVER_VERSION = "0.49.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -369,7 +369,7 @@ _PROJECT_READERS = (("rdc.toml", "rdc", _read_rdc_project),
                     ("prd_config.yaml", "prd2", _read_prd2_project))
 
 
-def _project_credentials(env=None):
+def _project_credentials(env=None, start_dir=None):
     """(base_url, token, label) from the rdc/prd2 project around the cwd, or (None, None, reason).
 
     Both tools already keep a token next to the project — rdc in
@@ -383,7 +383,12 @@ def _project_credentials(env=None):
     """
     import os
 
-    root = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    # start_dir exists for clients that run one shared server per app (Cowork:
+    # cwd "/", no project variable), where only the session knows its folder.
+    root = os.path.abspath(start_dir or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    if start_dir and not os.path.isdir(root):
+        return (None, None, f"project_dir {start_dir!r} is not a folder on the machine running "
+                "the MCP server — pass the local path of the connected project folder")
     while True:
         found = [(kind, read) for marker, kind, read in _PROJECT_READERS
                  if os.path.isfile(os.path.join(root, marker))]
@@ -1738,6 +1743,17 @@ def _build_annotation_compact_response(
                     "parsed from it and any explicit token/baseUrl arguments are ignored."
                 ),
             },
+            "project_dir": {
+                "type": "string",
+                "description": (
+                    "Absolute local path of the rdc/prd2 project folder to read the token from "
+                    "(e.g. the Mac path of the folder connected to a Cowork session, not a "
+                    "sandbox path like /home/claude). Use it whenever the server is not "
+                    "connected and the session has a project folder: the server reads that "
+                    "project's own token, so nothing is pasted into chat. Combine with "
+                    "project_env when the project has tokens for several envs."
+                ),
+            },
             "project_env": {
                 "type": "string",
                 "description": (
@@ -1762,8 +1778,10 @@ def handle_set_token(request_id, arguments):
     raw_url = arguments.get("baseUrl") or arguments.get("base_url") or ""
     connection_string = arguments.get("connectionString", "")
 
-    if arguments.get("project_env"):
-        project_url, project_token, label = _project_credentials(arguments["project_env"])
+    from_project = bool(arguments.get("project_env") or arguments.get("project_dir"))
+    if from_project:
+        project_url, project_token, label = _project_credentials(
+            arguments.get("project_env") or None, arguments.get("project_dir") or None)
         if not project_token:
             return tool_result(request_id, f"Cannot connect from the project: {label}.", is_error=True)
         token, raw_url, username, password, connection_string = project_token, project_url, "", "", ""
@@ -1930,7 +1948,7 @@ def handle_set_token(request_id, arguments):
     _connection_source = "explicit"
     _autoconnect_attempted = True
     method = ("username+password login" if username
-              else f"the {label} token" if arguments.get("project_env") else "API token")
+              else f"the {label} token" if from_project else "API token")
     return tool_result(request_id, f"Connected to {base_url} via {method}. Token validated for this session.")
 
 

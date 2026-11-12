@@ -1276,3 +1276,21 @@ def test_set_token_project_env_picks_one(fresh_autoconnect, tmp_path, monkeypatc
 
     server.handle_set_token(2, {"project_env": "nope"})
     assert out[-1][1] is True and "no env 'nope'" in out[-1][0]
+
+
+def test_set_token_project_dir_for_a_shared_server(fresh_autoconnect, tmp_path, monkeypatch):
+    """Cowork runs one server per app from "/", so the session names the folder."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _rdc_project(proj, {"prod": "prod-tok"})
+    import os
+    os.chdir("/")
+    out = []
+    monkeypatch.setattr(server, "tool_result",
+                        lambda rid, text, is_error=False: out.append((text, is_error)))
+    server.handle_set_token(1, {"project_dir": str(proj)})
+    assert fresh_autoconnect == [("https://acme.rossum.app", "prod-tok")]
+    assert out[-1][1] is False
+
+    server.handle_set_token(2, {"project_dir": "/home/claude-does-not-exist"})
+    assert out[-1][1] is True and "not a folder" in out[-1][0]

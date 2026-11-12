@@ -109,6 +109,10 @@ gitignored — every person sets up their own, on their own machine.
 token it connects on its own; with several, say which: *"connect to `dev`"* (the rdc env
 name, or the prd2 org folder).
 
+**In Cowork**, the app runs one shared MCP server that does not know which folder a
+session opened, so Claude passes it: *"connect to Rossum using the project folder"*
+makes it call `rossum_set_token` with `project_dir` = the folder's path on your Mac.
+
 **4. When the token expires**, refresh it in the same place: `rdc auth <env>`, or a new
 `token:` line in `credentials.yaml`. Then start a new Claude session.
 
