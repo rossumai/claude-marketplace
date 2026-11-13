@@ -1082,7 +1082,8 @@ Store extensions are created from **hook templates** (`GET /hook_templates`,
 - **Visibility is per organization group.** Some templates are shown only to groups that Rossum
   has given a visibility tag — `integrations_team` (Coupa master-data import job, template 55;
   NetSuite REST import, template 56), `ps_eng_export_pipeline` (Request Processor, template 50).
-  An organization without the tag does not see the template at all: it is missing from
+  Delayed Document Confirmation and its Runner (templates 51 and 52, see
+  `delayed-confirmation-reference`) are gated the same way. An organization without the tag does not see the template at all: it is missing from
   `GET /hook_templates` and `GET /hook_templates/{id}` returns 404. Customers cannot set the tag;
   ask Rossum. The organization-group response does not show it.
 - **`config.private: true`** on a template (and on hooks created from it) is a separate thing: the
