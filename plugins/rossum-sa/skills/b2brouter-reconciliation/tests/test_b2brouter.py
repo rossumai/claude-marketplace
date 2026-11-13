@@ -169,8 +169,8 @@ def test_legacy_profile_rehosts_an_api_family_base_url_onto_the_app_family(
 
 
 def test_new_profile_lists_via_the_new_host_path_header_meta_envelope_and_sender_field(monkeypatch):
-    """Also covers the host swap (configured base_url always names the
-    legacy `app.` host; this profile must rehost onto `api.`) and a
+    """Also covers the host swap (a base_url on the legacy `app.` host
+    must rehost onto `api.` for this profile) and a
     millisecond-fraction timestamp, which must parse exactly like the
     legacy generation's whole-second one."""
     fake = _CapturingUrlopen({

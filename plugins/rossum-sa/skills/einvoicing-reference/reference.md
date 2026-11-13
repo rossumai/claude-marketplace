@@ -95,11 +95,11 @@ Documents created per e-invoice (file names are stable on purpose — SAs rely o
 ## 2. Prerequisites
 
 - [ ] The org group has the **`einvoicing` feature** enabled (Rossum-side). Without it every e-invoice fails with "E-invoicing feature is not enabled." [source]
-- [ ] A **B2Brouter account** per receiving company and an **API key** that can read it.
+- [ ] A **B2Brouter account** per receiving company and an **API key** that can read it. [source]
 - [ ] For uploads: an account for `b2b_router_account_id_upload`. A buyer company on the invoice that is not registered in that account is rejected by B2Brouter with a `422` [reported from a production deployment; not re-verified].
 - [ ] The queue accepts XML: `application/xml` and `text/xml` in `accepted_mime_types` [live]. For XML specifics (organization group `store_only_mime_types`) see `sfi-reference`.
 - [ ] Optional schema fields the extension fills when present (§6.5): `e_invoice_id`, `issuer_email`, `e_invoice_validation_json`.
-- [ ] A hook token owner who can create documents and annotations in the queue.
+- [ ] A hook token owner who can create documents and annotations in the queue. [source]
 
 ---
 
@@ -149,6 +149,7 @@ Notes:
 - `timeout_s: 360`, `max_polling_time_s: 3600`, cron `*/10 * * * *` are the values production hooks run with [live]. The import job is sized to finish within a one-hour poll window, so a short `max_polling_time_s` can report a failure for an import that later succeeds [source; the 300 s default was seen on a working dev hook, live].
 - `sideload: ["features"]` is recommended by the service (it saves a lookup of the feature flag); hooks without it work [source, live].
 - For a dated B2Brouter API version, set `b2b_router_api_version` and use `https://api.b2brouter.net` (§5).
+- `annotation_status.changed` is what makes **Re-extract** work: it purges the annotation and imports the e-invoice again as a new annotation with a new ID (§9). Never Re-extract an e-invoice a user has worked on [source, live].
 
 ---
 
@@ -159,7 +160,7 @@ Defaults are the service's [source].
 | Key | Default | Meaning / when to change |
 |---|---|---|
 | `b2b_router_base_url` | required | B2Brouter host; must match the API version (§5). Staging: `https://app-staging.b2brouter.net` (Legacy) or `https://api-staging.b2brouter.net` (dated). |
-| `b2b_router_api_version` | `"Legacy"` | Any version B2Brouter supports, e.g. `"2026-06-26"`; sent as the `X-B2B-API-Version` header. Changes the canonical JSON shape (§5) — change mapping and version together. |
+| `b2b_router_api_version` | `"Legacy"` | Any version B2Brouter supports, e.g. `"2026-06-26"`; a dated version is sent as the `X-B2B-API-Version` header, while `Legacy` sends no version header, so the B2Brouter account group's default applies [source]. Changes the canonical JSON shape (§5) — change mapping and version together. |
 | `b2b_router_account_id` | none | Int or list of ints. Accounts polled for received invoices. None = no network polling. |
 | `b2b_router_account_id_upload` | none | Account Rossum-uploaded e-invoices are imported into. None = uploaded e-invoices fail with "B2Brouter account ID for upload not provided, import of e-invoices from any source other than B2Brouter is not possible." |
 | `api_upload_enabled` | `true` | `false` = e-invoices uploaded by API/UI are treated as normal documents (OCR). Invoices uploaded by the poll itself are always imported. |
@@ -343,14 +344,16 @@ import json
 raw = field.e_invoice_validation_json
 r = json.loads(raw) if not is_empty(raw) else {}
 msgs = []
-for part in ("xsd", "sch"):
-    for e in (r.get(part) or {}).get("errors") or []:
+for part, key in (("xsd", "errors"), ("sch", "errors"), ("sch", "warnings")):
+    for e in (r.get(part) or {}).get(key) or []:
         if e.get("message"):
             msgs.append(((e.get("code") + ": ") if e.get("code") else "") + e["message"])
+if r and not msgs:
+    msgs.append("Validation status: " + str(r.get("status")))
 "\n".join(msgs)
 ```
 
-Verified on a live queue: `import json` is allowed in formulas, and the field showed `BR-CO-16: Amount due for payment (BT-115) = Invoice total amount with VAT (BT-112) -Paid amount (BT-113) +Rounding amount (BT-114).` [live]. For a valid invoice the input is empty and the formula returns `""`. To also list warnings, add a loop over `sch.warnings`.
+Verified on a live queue: `import json` is allowed in formulas, and the field showed `BR-CO-16: Amount due for payment (BT-115) = Invoice total amount with VAT (BT-112) -Paid amount (BT-113) +Rounding amount (BT-114).` [live]. For a valid invoice the input is empty and the formula returns `""`. Warnings are listed too (they reach the field when `treat_warnings_as_errors` is on), and when B2Brouter gives no message at all — e.g. `not_applicable` — the formula shows the status. The base version (errors loop) was verified live; the warnings loop and the status fallback were checked in a local simulation only [not verified live].
 
 ---
 
