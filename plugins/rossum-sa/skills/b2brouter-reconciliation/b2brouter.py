@@ -14,8 +14,9 @@ hardcoding one generation.
 Everything below was measured live against BOTH versions, with two different
 keys, on two different account groups:
 
-    LEGACY (`2025-01-01`, the importer extension's own version, and this
-    client's default -- matches the behaviour this tool has always had):
+    LEGACY (`2025-01-01`, the generation behind the importer extension's
+    default `Legacy` setting, and this client's default -- matches the
+    behaviour this tool has always had):
       host:   https://app.b2brouter.net      (staging: app-staging.)
       list:   GET /projects/{ACCOUNT_ID}/received.json?...
                 -> flat envelope {"invoices": [...], "total_count", "offset", "limit"}
@@ -98,9 +99,11 @@ PAGE_SIZE = 500
 # hanging.
 MAX_PAGES = 10_000
 
-# The two measured API generations. LEGACY matches what the Rossum importer
-# extension itself sends and is this client's default, so an operator who
-# never touches version selection sees exactly today's behaviour.
+# The two measured API generations. LEGACY matches the importer extension's
+# default (`b2b_router_api_version: Legacy`, on the app. host) and is this
+# client's default, so an operator who never touches version selection sees
+# exactly today's behaviour. Importer hooks may instead set a dated version
+# and point `b2b_router_base_url` at the api. host.
 LEGACY_API_VERSION = "2025-01-01"
 NEW_API_VERSION = "2026-06-26"
 
@@ -168,8 +171,9 @@ def other_api_version(version: str) -> str:
 def _rehost(base_url: str, profile: ApiProfile) -> str:
     """Swap `base_url`'s host onto `profile`'s own family (app./api.,
     including the staging variants), derived from whatever host the hook's
-    `b2b_router_base_url` setting configured -- which always names the
-    LEGACY host, since that is what the importer extension itself uses.
+    `b2b_router_base_url` setting configured -- the app. family for an
+    importer on its default `Legacy` version, the api. family for one set to
+    a dated `b2b_router_api_version`; both directions are swapped.
     Left unchanged if it already matches this profile's family, or if it
     matches neither known family at all (an unrecognised host shape must
     fail loudly downstream, not be silently rewritten here).
@@ -266,8 +270,8 @@ class B2brouterClient:
         self._api_version = api_version
         self._profile = API_PROFILES[api_version]
         # `base_url` is whatever the hook's `b2b_router_base_url` setting
-        # configured, which always names the LEGACY host -- that is what the
-        # importer extension itself sends. Rehosted onto THIS profile's own
+        # configured -- app. or api. family, depending on the importer hook's
+        # own `b2b_router_api_version`. Rehosted onto THIS profile's own
         # family so a client pinned or auto-detected to the new generation
         # still talks to the right host without the caller needing to know
         # the swap happened.
