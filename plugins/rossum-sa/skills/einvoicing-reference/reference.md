@@ -33,7 +33,7 @@ All IDs, hostnames and values in examples are placeholders.
 
 | Route | How e-invoices arrive | Validation (EN 16931 etc.) | Mapping | Use when |
 |---|---|---|---|---|
-| **B2Brouter E-Invoicing extension** (§1–9) | B2Brouter network polling (e.g. Peppol) **and/or** files uploaded to Rossum by API, UI or email | **Yes** — XSD + schematron by B2Brouter | B2Brouter canonical JSON (JMESPath) + optional XPath on the XML | Rossum is the receiver, or validation is wanted |
+| **B2Brouter E-Invoicing extension** (§1–9) | B2Brouter network polling (e.g. Peppol) **and/or** files uploaded to Rossum by API, UI or email | **Yes** — XSD + schematron by B2Brouter (EN 16931, Peppol BIS seen; national CIUS rule sets such as XRechnung [not verified]) | B2Brouter canonical JSON (JMESPath) + optional XPath on the XML | Rossum is the receiver, or validation is wanted |
 | **Hosted e-invoice upload import** (§11) | An upstream system uploads the XML with file-role metadata (Coupa, a network poller such as Sproom §12) | No | XPath (SFI configuration model) | Something else receives the e-invoice and hands it to Rossum |
 | **Plain SFI** (`sfi-reference`) | Any upload or email | No | XPath / JSONPath | Structured files, e-invoice or not, without validation |
 | **No structured route** | — | — | OCR on the PDF | Fallback when no configuration triggers |
@@ -41,7 +41,7 @@ All IDs, hostnames and values in examples are placeholders.
 Decision questions:
 
 1. **Does Rossum receive from an e-invoicing network?** Via B2Brouter → the extension. Via Sproom → §12. Via Coupa (CIB 2.0) → `coupa-baseline-reference` §8.
-2. **Is EN 16931 / national-CIUS validation required?** Only the B2Brouter extension validates. It also validates e-invoices that arrive by **email or API upload** — no network registration needed, but a B2Brouter account to import them into is (`b2b_router_account_id_upload`) [source].
+2. **Is EN 16931 validation required?** Only the B2Brouter extension validates. It also validates e-invoices that arrive by **email or API upload** — no network registration needed, but a B2Brouter account to import them into is (`b2b_router_account_id_upload`) [source].
 3. **Does an upstream system supply the PDF and attachments with roles?** → hosted upload import.
 4. **Otherwise** → plain SFI.
 
@@ -111,7 +111,7 @@ Documents created per e-invoice (file names are stable on purpose — SAs rely o
 |---|---|
 | EU1 | `https://elis.einvoice-dispatcher.rossum-ext.app/api/v1/dispatch` [live] |
 | EU2 | `https://shared-eu2.einvoice-dispatcher.rossum-ext.app/api/v1/dispatch` [live] |
-| Other regions | Ask Rossum. The service is deployed to the EU regions only [source]; a health check is no evidence — the host answers for any name [live]. |
+| Other regions | Ask Rossum. The service is deployed to the EU regions only [source]; a health check is no evidence — the host answers for any name [live]. Whether an org in another region may point at an EU dispatcher, and the data-residency implications (Rossum and B2Brouter), are [not verified]. |
 
 ### The hook
 
@@ -126,7 +126,7 @@ There is no Store tile for the importer (the Store's B2Brouter tiles are the Fre
              "invocation.scheduled", "invocation.manual"],
   "sideload": ["features"],
   "config": {
-    "url": "https://elis.einvoice-dispatcher.rossum-ext.app/api/v1/dispatch",
+    "url": "<dispatcher URL for your region, table above>",
     "schedule": {"cron": "*/10 * * * *"},
     "timeout_s": 360,
     "max_polling_time_s": 3600
@@ -266,6 +266,7 @@ Canonical mappings first; `xml_mapping` results then **override** canonical valu
 ```
 
 - A list of configurations; **every** configuration whose `trigger_condition` matches is applied, later ones win on conflicts [source]. Add a `selector` to the trigger (e.g. `/*[local-name()='CreditNote']`) to scope a configuration to one document type.
+- It runs on the e-invoice XML whether it was uploaded as XML or extracted from a ZUGFeRD/Factur-X PDF [source].
 - Selectors are XPath 1.0 (syntax: `sfi-reference`). Both namespace-safe `local-name()` paths and prefixed relative paths such as `cac:LegalMonetaryTotal/cbc:PayableAmount/text()` work in production [live].
 - **`skip_non_existing_schema_ids` defaults to `true`** here — the opposite of `configuration.fields` [source].
 - Use it for anything the canonical JSON lacks or gets wrong: bank account, national fields (production maps a Polish KSeF bank account from `//*[local-name()='NrRB']/text()` [live]), document-level values you want exactly as sent.
@@ -292,13 +293,15 @@ Recommended definition: hidden, read-only data fields:
 
 Map the account from the XML, not from `contact_iban` (§5):
 
-- **UBL / Peppol BIS (BT-84)**: the selector in §6.4. It holds an IBAN or a domestic account number, whatever the supplier sent. Verified live: it replaced a stale canonical IBAN [live].
+- **UBL / Peppol BIS (BT-84)**: the selector in §6.4. It holds an IBAN or a domestic account number, whatever the supplier sent. Verified live: it replaced a stale canonical IBAN [live]. For credit notes too, use the root `/*[local-name()='Invoice' or local-name()='CreditNote']/…` [not verified].
+- **Remove** any `configuration.fields` mapping of the bank field from `invoice.contact_iban`: `xml_mapping` overrides only when the XML has a value, so for an XML without an account the stale stored IBAN would still be written [source].
+- Check that the schema field's validation accepts a domestic (non-IBAN) number, or map it to a separate field.
 - **CII (XRechnung/ZUGFeRD)**: `//*[local-name()='PayeePartyCreditorFinancialAccount']/*[local-name()='IBANID']`, with `…/*[local-name()='ProprietaryID']` for a domestic account [not verified].
 - BIC (UBL): `/*[local-name()='Invoice']/*[local-name()='PaymentMeans']/*[local-name()='PayeeFinancialAccount']/*[local-name()='FinancialInstitutionBranch']/*[local-name()='ID']` [not verified].
 
 ### 6.7 Testing a mapping change
 
-Mapping runs only at import. To re-run it on an existing e-invoice use Re-extract — which **replaces** the annotation (§9) — or upload a test copy. Test on a disposable annotation, never on one a user has worked on.
+Mapping runs only at import. Existing annotations are **not** updated by a settings change (this also applies to newly added fields such as `e_invoice_validation_json`). To re-run it on an existing e-invoice use Re-extract — which **replaces** the annotation (§9) — or upload a test copy. Test on a disposable annotation, never on one a user has worked on.
 
 ---
 
@@ -332,7 +335,7 @@ Where the result lives:
 
 ### Recipe: readable errors on the annotation [live]
 
-1. Add `e_invoice_validation_json` (hidden, read-only data field, §6.5).
+1. Add `e_invoice_validation_json` — a hidden, read-only **string** data field, defined like `e_invoice_id` in §6.5. It is filled at import only; annotations imported before you add it stay empty.
 2. Add a visible formula field in a visible section, e.g. `e_invoice_validation_errors`:
 
 ```python
@@ -410,6 +413,7 @@ Rejection reporting is French by design (its template states it). Cross-border r
 - A job writes only to fields that **already exist** on the annotation; it checks them before calling B2Brouter and fails the annotation at stage `validation` if one is missing [source].
 - **One failing annotation fails the run.** The job retries (two attempts per run were seen in production), and every later scheduled run tries the same annotation again until its data is fixed; other annotations are still processed [live, source].
 - Progress and failures are in the hook's run log (`rossum_list_hook_logs` with `include_run_log=true`), e.g. `Found 1 cross-border e-invoice(s) to report.` and `1/1 cross-border annotations failed to report: - annotation <id> failed at upload: … Status code: 422 …` [live].
+- Nothing is written to an annotation that fails; the failure is only in the run log [source]. To take one annotation out of the job, change its trigger field (e.g. `e_report_step`) through your customization — the job selects only on those fields [source].
 - The trigger fields below are set by **your own customization** (a function, rules, an ERP status sync). The jobs only read them. Define all of them as hidden, read-only data string fields, as production does [live].
 
 ### 10.2 Cross-border report
@@ -420,7 +424,7 @@ Rejection reporting is French by design (its template states it). Cross-border r
 | Requires | `e_invoice_account_id` (integer B2Brouter account to create the invoice in); fields `e_report_step`, `e_invoice_id`, `e_report_id` present |
 | Does | renders `report_mapping` (§10.3), creates the invoice in that account (sent, and already acknowledged so the importer's poll does not import it back) |
 | Writes | `e_invoice_id`, `e_report_id` (if B2Brouter returned the tax report at once), `e_report_step = "REPORTED"` |
-| Duplicate guard | if `e_invoice_id` is already set while still `TO_REPORT` (an earlier write-back was lost), it skips creation and only writes back |
+| Duplicate guard | if `e_invoice_id` is already set while still `TO_REPORT` (an earlier write-back response was lost), it skips creation and only writes back. If the write-back never reached Rossum at all, `e_invoice_id` stays empty and the next run creates the invoice again — a duplicate in B2Brouter [source] |
 | Lock | annotations in `to_review`/`reviewing`/`split` are locked with an edit session first; a user having the annotation open fails it at stage `edit_pages` |
 | Failure stages | `edit_pages`, `validation`, `build_payload`, `upload`, `write_back` |
 
@@ -440,6 +444,8 @@ Illustrative only (schema ids invented; build the payload B2Brouter's invoice AP
 ```json
 {"report_mapping": {"expression": "{type: '<B2Brouter invoice type>', number: e_report_number, date: e_report_date_issue, currency: upper(e_report_currency) || 'EUR', contact: {name: e_report_sender_name, tin_value: e_report_sender_vat_id, country: country_from_vat(e_report_sender_vat_id)}, invoice_lines_attributes: e_report_lines[].{description: line_description, quantity: line_quantity, price: line_price}}"}}
 ```
+
+An invalid expression fails the whole run before any annotation is processed; an expression that fails at run time for one annotation (e.g. a function given the wrong type) fails that annotation at stage `build_payload` [source].
 
 A B2Brouter `422` at stage `upload` (e.g. "Contact: Tax Identifier Number … is invalid") means the rendered payload was rejected: fix the source field or the mapping [live].
 
@@ -481,7 +487,7 @@ A Rossum-hosted webhook that imports e-invoices **uploaded by another system**, 
 - **Sideload `extracted_archives` is required**; without it every event fails [source].
 - Settings: `configurations` — a list of SFI custom configurations (`trigger_condition`, `fields`, `parse_formats`, `pdf_file`; document splitting not supported) — and optional `job_run_settings` [source]. Mapping syntax: `sfi-reference`.
 - **The first configuration whose trigger matches wins** (unlike the B2Brouter `xml_mapping`, where all matching apply). No match = the document is left to normal extraction [source].
-- No validation, no canonical JSON [source].
+- No validation, no canonical JSON, and no check of the `einvoicing` feature flag [source]. Availability outside the regions where it was seen: [not verified].
 
 ### 11.2 Upload metadata contract [source]
 
@@ -509,7 +515,7 @@ Annotations are created flagged as e-invoices with training disabled [source].
 
 ## 12. Sproom
 
-Sproom is a Danish e-invoicing access point (NemHandel, OIOUBL). There is **no Store extension** for it. Rossum's connectors team has a settings-driven **serverless function** that polls Sproom; get its current code from them [source]. What it does:
+Sproom is a Danish e-invoicing access point (NemHandel, OIOUBL). There is **no Store extension** for it. Rossum's connectors team has a settings-driven **serverless function** (Python 3.13 runtime, stdlib + `requests`) that polls Sproom; get its current code from them [source]. What it does:
 
 ### 12.1 Flow [source]
 
