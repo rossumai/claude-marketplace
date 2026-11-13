@@ -142,9 +142,35 @@ def test_legacy_profile_lists_via_the_legacy_host_path_header_and_sender_field(m
     assert [i.sender for i in invoices] == ["Legacy Sender"]
 
 
+_LEGACY_LISTING = {"invoices": [], "total_count": 0, "offset": 0, "limit": 500}
+
+
+@pytest.mark.parametrize(
+    ("configured_base", "expected_prefix"),
+    [
+        ("https://api.example-router.net", "https://app.example-router.net/projects/900001/received.json?"),
+        (
+            "https://api-staging.example-router.net",
+            "https://app-staging.example-router.net/projects/900001/received.json?",
+        ),
+    ],
+)
+def test_legacy_profile_rehosts_an_api_family_base_url_onto_the_app_family(
+    monkeypatch, configured_base, expected_prefix
+):
+    """An importer hook on a dated B2Brouter version configures the api.
+    family as its base URL; the legacy profile must still reach app."""
+    fake = _CapturingUrlopen(_LEGACY_LISTING)
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+    B2brouterClient("k", configured_base).received_invoices("900001", since=SINCE, until=UNTIL)
+
+    assert fake.requests[0].full_url.startswith(expected_prefix)
+
+
 def test_new_profile_lists_via_the_new_host_path_header_meta_envelope_and_sender_field(monkeypatch):
-    """Also covers the host swap (configured base_url always names the
-    legacy `app.` host; this profile must rehost onto `api.`) and a
+    """Also covers the host swap (a base_url on the legacy `app.` host
+    must rehost onto `api.` for this profile) and a
     millisecond-fraction timestamp, which must parse exactly like the
     legacy generation's whole-second one."""
     fake = _CapturingUrlopen({
