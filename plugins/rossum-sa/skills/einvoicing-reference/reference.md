@@ -376,3 +376,224 @@ Clicking **Re-extract** on an e-invoice annotation (or any annotation whose docu
 3. The original annotation is **deleted and purged**.
 
 The result is a **new annotation with a new ID**; the old one's edits, notes, comments and history are gone. The hook reports "E-invoice recovery completed." [live]. Use it after a mapping change or to retry a failed import — never on documents users have worked on.
+
+---
+
+## 10. France: the B2Brouter Store jobs
+
+Three Store templates support French e-invoicing obligations [live, source]:
+
+| Template | Job | Purpose |
+|---|---|---|
+| B2Brouter Cross-Border Reporting | cross-border report | Create invoices from foreign suppliers (which do not pass through a French platform) in B2Brouter so B2Brouter produces the tax report |
+| B2Brouter Cross-Border Report Polling | cross-border poll | Fetch that tax report's final state and write it back |
+| B2Brouter E-invoice Rejection Reporting | rejection | Mark an e-invoice rejected in the ERP as refused in B2Brouter (the DGFiP "Refusée" status) |
+
+Rejection reporting is French by design (its template states it). Cross-border reporting was built for French e-reporting; the job itself has no country logic, but use outside France is [not verified].
+
+### 10.1 Shared mechanics
+
+- **Store templates**, `type: job`, installed as a copy (`install_action: copy`). They are **private**: only orgs Rossum enables see them in the Store [live]. Production orgs also run them as hand-made job hooks with the same settings [live].
+- Events `invocation.scheduled` + `invocation.manual`. Template schedules: report daily `0 4 * * *`, poll hourly `15 * * * *`, rejection daily `0 5 * * *`; production runs all three every 10 minutes, offset from each other (e.g. `1-59/10`, `6-59/10`) [live].
+- Settings [source, live]:
+
+  | Key | Default | Notes |
+  |---|---|---|
+  | `b2b_router_base_url` | required | Templates ship `https://api.b2brouter.net` / `https://api-staging.b2brouter.net` |
+  | `b2b_router_api_version` | `"Legacy"` (model); templates ship `2026-06-26` or `2026-04-20` | Must match the host (§5) |
+  | `max_annotations_per_run` | `100` | The rest wait for the next run |
+  | `report_mapping` | required (report job only) | §10.3 |
+  | `job_run_settings` | `retries` 2, `max_run_time_s` 3600, `valid_for_s` 86400, `serialization_key` null | Optional |
+
+  Secret: `b2b_router_api_key`.
+- A job acts on **every queue the hook is attached to**, searches annotations **newest first**, and processes each independently [source].
+- A job writes only to fields that **already exist** on the annotation; it checks them before calling B2Brouter and fails the annotation at stage `validation` if one is missing [source].
+- **One failing annotation fails the run.** The job retries (two attempts per run were seen in production), and every later scheduled run tries the same annotation again until its data is fixed; other annotations are still processed [live, source].
+- Progress and failures are in the hook's run log (`rossum_list_hook_logs` with `include_run_log=true`), e.g. `Found 1 cross-border e-invoice(s) to report.` and `1/1 cross-border annotations failed to report: - annotation <id> failed at upload: … Status code: 422 …` [live].
+- The trigger fields below are set by **your own customization** (a function, rules, an ERP status sync). The jobs only read them. Define all of them as hidden, read-only data string fields, as production does [live].
+
+### 10.2 Cross-border report
+
+| | |
+|---|---|
+| Selects | annotations in `to_review`, `confirmed` or `exported` with `crossborder_einvoice` truthy (`true`, `1`, `yes`) and `e_report_step == "TO_REPORT"` |
+| Requires | `e_invoice_account_id` (integer B2Brouter account to create the invoice in); fields `e_report_step`, `e_invoice_id`, `e_report_id` present |
+| Does | renders `report_mapping` (§10.3), creates the invoice in that account (sent, and already acknowledged so the importer's poll does not import it back) |
+| Writes | `e_invoice_id`, `e_report_id` (if B2Brouter returned the tax report at once), `e_report_step = "REPORTED"` |
+| Duplicate guard | if `e_invoice_id` is already set while still `TO_REPORT` (an earlier write-back was lost), it skips creation and only writes back |
+| Lock | annotations in `to_review`/`reviewing`/`split` are locked with an edit session first; a user having the annotation open fails it at stage `edit_pages` |
+| Failure stages | `edit_pages`, `validation`, `build_payload`, `upload`, `write_back` |
+
+[source, live]
+
+### 10.3 `report_mapping`
+
+One JMESPath expression evaluated against the annotation flattened by `schema_id` [source]:
+
+- scalar field → `"<schema_id>": "<value>"` (empty → null);
+- multivalue → `"<schema_id>": [{"<cell schema_id>": "<value>", …}, …]`.
+
+Null/empty object keys are removed from the result, so a missing field omits its key; list items are never removed (positions stay aligned). Extra functions: `upper`, `lower`, `strip`, `single_line`, `country_from_vat` (first two letters, lowercased), `map(value, table)` (case-insensitive lookup; unmapped values pass through unchanged) [source]. The result is the B2Brouter invoice JSON.
+
+Illustrative only (schema ids invented; build the payload B2Brouter's invoice API expects):
+
+```json
+{"report_mapping": {"expression": "{type: '<B2Brouter invoice type>', number: e_report_number, date: e_report_date_issue, currency: upper(e_report_currency) || 'EUR', contact: {name: e_report_sender_name, tin_value: e_report_sender_vat_id, country: country_from_vat(e_report_sender_vat_id)}, invoice_lines_attributes: e_report_lines[].{description: line_description, quantity: line_quantity, price: line_price}}"}}
+```
+
+A B2Brouter `422` at stage `upload` (e.g. "Contact: Tax Identifier Number … is invalid") means the rendered payload was rejected: fix the source field or the mapping [live].
+
+### 10.4 Cross-border report polling
+
+| | |
+|---|---|
+| Selects | same statuses, `crossborder_einvoice` truthy, `e_report_step == "REPORTED"` |
+| Requires | `e_invoice_account_id`, `e_invoice_id`; fields `e_report_step`, `e_report_id`, `e_report_state`, `e_report_error`, `e_report_acknowledged_at`, `e_report_registered_at`, `e_report_refused_at` present |
+| Does | looks up `e_report_id` by invoice if empty (writes it back); fetches the tax report |
+| Pending | report not generated or not final → left for the next run (not a failure) |
+| Final states | `acknowledged`, `registered`, `refused`, `error` |
+| Writes on final | `e_report_state`, `e_report_error` (`code: description; …`, only for `refused`/`error`), the matching `e_report_<state>_at` timestamp (when Rossum observed it; none for `error`), `e_report_step = "STATE_FINAL"` |
+| Failure stages | `validation`, `poll`, `write_back` |
+
+[source]
+
+### 10.5 Rejection reporting
+
+| | |
+|---|---|
+| Selects | annotations in status `rejected` with `e_invoice_rejection_received_at` non-empty and `e_invoice_rejection_submitted_at` empty |
+| Requires | `e_invoice_id`; field `e_invoice_rejection_submitted_at` present |
+| Does | marks the B2Brouter invoice `refused` with `e_invoice_rejection_reason_code` and `e_invoice_rejection_reason`; an invoice already refused counts as done |
+| Writes | `e_invoice_rejection_submitted_at` (when Rossum reported it) |
+| Failure stages | `validation`, `refuse`, `write_back` |
+
+[source, live] Production defines `e_invoice_rejection_reason_code` as an enum of the DGFiP rejection reason codes [live].
+
+---
+
+## 11. Hosted e-invoice upload import
+
+A Rossum-hosted webhook that imports e-invoices **uploaded by another system**, using the SFI configuration model. Coupa uses it to hand e-invoices to Rossum (CIB 2.0, see `coupa-baseline-reference` §8); network pollers such as the Sproom function (§12) use it too [source, live].
+
+### 11.1 Setup
+
+- Webhook on `upload.created`, URL on the org's own host: `https://<org>.rossum.app/svc/webhook-facade/api/v1/coupa-einvoicing` [live].
+- **Sideload `extracted_archives` is required**; without it every event fails [source].
+- Settings: `configurations` — a list of SFI custom configurations (`trigger_condition`, `fields`, `parse_formats`, `pdf_file`; document splitting not supported) — and optional `job_run_settings` [source]. Mapping syntax: `sfi-reference`.
+- **The first configuration whose trigger matches wins** (unlike the B2Brouter `xml_mapping`, where all matching apply). No match = the document is left to normal extraction [source].
+- No validation, no canonical JSON [source].
+
+### 11.2 Upload metadata contract [source]
+
+The uploader sends `metadata` with the upload:
+
+```json
+{"id": "<upstream id>",
+ "files": [
+   {"name": "<id>.xml", "types": ["compliant_data", "attachment"]},
+   {"name": "<id>.pdf", "types": ["visualization"]},
+   {"name": "delivery-note.pdf", "types": ["attachment"]}]}
+```
+
+- One upload = one e-invoice.
+- `compliant_data`: **exactly one** file, XML or a PDF with embedded XML.
+- `visualization`: at most one file. If absent, the PDF comes from `pdf_file.content_selectors` in the XML, else it is rendered from the mapped values.
+- `attachment`: kept in the annotation's `einvoice` relation.
+- `files[].name` must match the uploaded file names exactly; a ZIP upload must declare only the archive, as `compliant_data`.
+- `metadata.id` is written to the schema field `upload_id`; the whole `metadata` is copied to the annotation's metadata.
+- Without metadata, each uploaded file is tried on its own: structured ones become e-invoice annotations, others go through normal extraction.
+
+Annotations are created flagged as e-invoices with training disabled [source].
+
+---
+
+## 12. Sproom
+
+Sproom is a Danish e-invoicing access point (NemHandel, OIOUBL). There is **no Store extension** for it. Rossum's connectors team has a settings-driven **serverless function** that polls Sproom; get its current code from them [source]. What it does:
+
+### 12.1 Flow [source]
+
+1. **Scheduled run** (`invocation.scheduled`, e.g. `*/15 * * * *`; also `invocation.manual`): list documents at Sproom (`GET /api/documents`, scoped to the token's company; OData `$filter` on `Status`, PascalCase values; `$skip` paging, 20 per page; type and recipient filtered client-side).
+2. Download each as OIOUBL 2 (`GET /api/documents/{id}/oioUbl2`). Attachments ride inside the XML as base64 `AdditionalDocumentReference`; Sproom has no attachment endpoint.
+3. Upload to the target queue (`POST /v1/uploads?queue=<queue-id>`) with §11.2 metadata — the XML as `compliant_data` + `attachment`, each embedded file as `attachment` — and the Sproom document id as `upload_id`.
+4. Acknowledge at Sproom **only after** a successful upload: `POST /api/documents/{id}/state` with `{"state": "transmissionCompleted"}` (camelCase in the body).
+5. **Recovery** (`annotation_status.changed`, `failed_import` → `importing`, i.e. Re-extract): read `upload_id`, re-download, re-upload, and only then delete and purge the broken annotation.
+
+The parser on the queue is the hosted upload import (§11), which reads the file roles; plain SFI would parse the XML but ignore the roles [inferred]. A live deployment uses §11.
+
+### 12.2 Settings [source]
+
+| Key | Default | Notes |
+|---|---|---|
+| `sproom_base_url` | required | e.g. `https://sproom.net` |
+| `target_queue_id` | required | Queue receiving the uploads |
+| `poll_statuses` | `["Sent"]` | **Verify per tenant** — the status inbound documents wait in depends on the Sproom account |
+| `sproom_company_ids` | all | Recipient company identifiers (GLN/CVR) to accept |
+| `document_types` | `["invoice", "creditNote"]` | Empty = all types |
+| `include_attachments` | `true` | Extract embedded files |
+| `transmission_completed_status` | `"transmissionCompleted"` | State set after upload |
+| `max_documents_per_run` | `25` | Lower if runs approach the function timeout |
+| `max_retries` / `retry_backoff_base_seconds` | `3` / `2.0` | Transient Sproom errors (connection, 5xx) |
+| `upload_id_schema_id` | `"upload_id"` | Field holding the Sproom id |
+| `file_types` | `["compliant_data", "attachment"]` | Roles of the XML |
+| `deduplicate_uploads` | `true` | Searches the org for an annotation with the same `upload_id` before uploading |
+
+Secret: `sproom_api_token` (Bearer token for the receiving company).
+
+### 12.3 Prerequisites and gotchas [source]
+
+- `upload_id` on the target schema with `"rir_field_names": ["upload:upload_id"]`, hidden.
+- XML accepted on the queue (and not store-only in the organization group); attachment MIME types too (e.g. `application/pdf`).
+- The dedupe search only finds annotations whose current queue's schema has `upload_id` — add it to every schema an e-invoice can be moved to.
+- Wrong `poll_statuses` → every run finds 0 documents. A plain `status=` query parameter is ignored by Sproom (it returns everything); only `$filter` works.
+- `sproom_company_ids` empty → everything the token can see is ingested.
+- Attachments referenced by URI instead of embedded are not downloaded.
+- Upload failed → not acknowledged, retried next run. Acknowledgement failed → reported in the run summary; dedupe stops a second import while the state change is retried.
+- **Move** e-invoice annotations between queues, never copy: a copy loses the e-invoice flag, the `einvoice` relation and the metadata.
+
+The same pattern — poll the network API, upload with §11.2 metadata, acknowledge after upload, dedupe on an upstream id, recover on Re-extract — fits any other network that offers a pull API.
+
+---
+
+## 13. Troubleshooting
+
+| Symptom | Cause | Fix | Tag |
+|---|---|---|---|
+| Every e-invoice fails: "E-invoicing feature is not enabled." | Org group lacks the `einvoicing` feature | Ask Rossum to enable it | [source] |
+| Uploaded/emailed e-invoices fail: "B2Brouter account ID for upload not provided…" | `b2b_router_account_id_upload` unset | Set it | [source] |
+| Upload fails with B2Brouter `422` | Invalid document, or the invoice's buyer company is not registered in the upload account | Register the company in the account; check the file | [reported from a production deployment; not re-verified] |
+| Scheduled run fails: "The hook must be connected to exactly one queue." | Polling hook on 0 or several queues | One hook per receiving queue | [source] |
+| "B2Brouter account <id> does not exist or is not accessible." | Wrong account id, or key cannot see it | Fix id/key; check host and version match (§5) | [source] |
+| An invoice is visible in B2Brouter but never reached Rossum | Not an e-invoice (acknowledged and skipped by the poll), or lost upstream | Check its original format; run `b2brouter-reconciliation` | [source] |
+| Import fails naming a schema field | A `configuration.fields` mapping targets a `schema_id` the schema lacks (`skip_non_existing_schema_ids` defaults to `false`) | Add the field or set the flag `true` | [source] |
+| Fields empty after a B2Brouter API version change | Selectors written for the other generation (`client`/`taxcode` vs `contact`/`tin_value`) | Rewrite selectors; open `<name>-canonical.json` | [live] |
+| IBAN on the annotation differs from the PDF/XML, or empty for a domestic account | `contact_iban` comes from B2Brouter's stored contact, not the invoice | Map BT-84 via `xml_mapping` (§6.6) | [live] |
+| "E-invoice is not valid." with no detail | Normal: detail is in `<name>-validation.json` | Add `e_invoice_validation_json` + formula (§7) | [live] |
+| "E-invoice is not valid." on an old ZUGFeRD 1.0 / openTRANS file | Format not validatable (`not_applicable`) | Accept and review manually | [reported; not re-verified] |
+| Import fails: "No visualization sources available…" | No configured source exists for this file | Add `b2b_canonical_pdf` as a fallback source | [source] |
+| After Re-extract the annotation is gone / has a new ID | Recovery purges and re-imports (§9) | Expected; never Re-extract worked-on documents | [live] |
+| A French job fails every run on the same annotation | Its data is rejected (e.g. B2Brouter `422` at `upload`); the job retries it each run | Read the run log; fix the source field or `report_mapping` | [live] |
+| French job annotation failed at `edit_pages` | A user has the annotation open | Close it; next run retries | [source] |
+| French job failed at `validation` | A required field is missing on the schema or empty (`e_invoice_account_id`, `e_invoice_id`, …) | Add/fill the field (§10) | [source] |
+| Cross-border annotation stays `REPORTED` | Tax report not final yet | Wait; the poll job keeps checking | [source] |
+| Upload import fails: "Metadata filenames don't match uploaded documents." | `metadata.files[].name` ≠ uploaded names | Fix the uploader (§11.2) | [source] |
+| Upload import fails on every event | Hook lacks the `extracted_archives` sideload | Add it | [source] |
+| Sproom function finds 0 documents | `poll_statuses` ≠ the tenant's inbound status | Check a real document's status in Sproom | [source] |
+| Same Sproom document imported twice | Dedupe off, or `upload_id` missing on the schema the first copy moved to | Keep `deduplicate_uploads`; add `upload_id` everywhere | [source] |
+
+---
+
+## 14. Calling the B2Brouter API
+
+For read-only checks (does the invoice exist, is it acknowledged, what did B2Brouter parse). Headers: `X-B2B-API-Key: <key>`; for dated versions also `X-B2B-API-Version: <version>` [source, B2Brouter docs]. Key prefixes: `test_` sandbox, `stag_` staging, `prod_` or none for production [B2Brouter docs].
+
+| Purpose | Legacy (`app.` host) | Dated (`api.` host) |
+|---|---|---|
+| Received invoices not yet acknowledged | `GET /projects/<account-id>/received.json?ack=false` | `GET /accounts/<account-id>/invoices?type=ReceivedInvoice&ack=false` |
+| One invoice (canonical JSON) | `GET /invoices/<id>.json` | `GET /invoices/<id>` |
+| Original file | `GET /invoices/<id>/as/original` | same |
+| Validate a document | `POST /documents/validate` (body: the XML) | same |
+
+[source; dated paths also B2Brouter docs]
+
+On a corporate network that intercepts TLS, see the "TLS interception" section of the `b2brouter-reconciliation` reference.
