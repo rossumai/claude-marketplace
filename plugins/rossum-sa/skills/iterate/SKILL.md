@@ -54,7 +54,7 @@ and the deployed fix would free it". Permitted only with ALL of:
    (fires a real export / approval routing).
 4. **Read the field back** and report observed vs. expected.
 
-Anything broader than one named document is a batch re-automation request, not this skill.
+Anything broader than one named document is a batch re-automation request, not this skill. For re-running matching on many documents after a master-data update, see `delayed-confirmation-reference`.
 
 ## UX entry prompt
 
@@ -272,11 +272,11 @@ What it does and does not do:
 
 Because this re-sends whatever the export target is, treat it exactly like `confirm` for safety: it passes the hard-gate, and **never on prod** — a re-fire against a live connector re-delivers a real document downstream.
 
-### Re-running automation in place — `reautomate` (internal, not available via SA tokens)
+### Re-running automation in place — `reautomate` (internal, feature-flagged, batch only)
 
-Rossum has `POST /api/v1/internal/annotations/reautomate` — a batch endpoint that re-runs the **initialize + automation** pipeline on existing annotations *without re-uploading* (status → `importing`, content preserved, fires `annotation_content.initialize`, then the automation decision → `to_review` or `confirmed`/`exporting`; with `if_modified: try_to_confirm` it simulates open→Confirm for API-modified annotations; non-`to_review` annotations are skipped). It is the natural primitive for *"master data changed — re-run matching/automation on these N documents."*
+Rossum has `POST /api/v1/internal/annotations/reautomate` — a batch endpoint that re-runs the **initialize + automation** pipeline on existing annotations *without re-uploading* (status → `importing`, content preserved, fires `annotation_content.initialize`, then the automation decision → `to_review` or `confirmed`/`exporting`; with `if_modified: try_to_confirm` it simulates open→Confirm for annotations that were already modified (the source repo's docs say "modified by user"; whether edits made only by hooks or the API count is unverified); non-`to_review` annotations are skipped). It is the natural primitive for *"master data changed — re-run matching/automation on these N documents."*
 
-**It is Rossum-staff-only.** Verified live on a customer sandbox (2026-06-18): even an `organization_group_admin` token returns **HTTP 403 `permission_denied`**. No SA/customer token can call it, so it is intentionally **not** wrapped as an MCP tool. Do not reach for it. For an in-place re-run accessible to SAs, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above. If you genuinely need batch re-automation, that is a Rossum-staff / feature request, not an SA-token operation.
+**It is gated by the org feature flag `reautomate`, which Rossum sets.** On a customer sandbox where the flag state was not checked (2026-06-18), even an `organization_group_admin` token returned **HTTP 403 `permission_denied`**. Its supported use is the Delayed Document Confirmation Store hooks (templates 51/52), which call it from a scheduled runner — see `delayed-confirmation-reference`. It is intentionally **not** wrapped as an MCP tool, and it is not an iteration primitive: it works in batches and can confirm and export documents. For an in-place re-run of one annotation, use **status toggle** (re-runs the hook chain) or **re-upload** (true re-extraction, new annotation id) above.
 
 ## Prove the hook ran — before you interpret the result
 
