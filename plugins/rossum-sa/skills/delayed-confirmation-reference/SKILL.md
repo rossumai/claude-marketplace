@@ -20,7 +20,7 @@ See [reference.md](reference.md) for the full reference. Consult it when:
 
 Cross-references:
 
-- `mdh-reference` — the matching hook whose result the re-run changes, and the MDH dataset `PATCH` (merge) endpoint that stamps `_last_modified_date`.
+- `mdh-reference` — the matching hook whose result the re-run changes, and the MDH dataset `PATCH` (merge) endpoint. Which writes stamp `_last_modified_date` is covered only in reference.md → *Prerequisites*, and is partly unverified.
 - `mongodb-reference` — syntax for the `updates_lookup.aggregate_query` pipeline.
 - `rossum-reference` — annotation search syntax (`POST /v1/annotations/search`) used by `annotations_lookup.search`, and Store-template visibility.
 - `iterate` — re-firing one annotation by hand; `reautomate` is for batches and can confirm documents.

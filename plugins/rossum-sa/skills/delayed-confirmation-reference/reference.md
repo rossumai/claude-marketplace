@@ -9,7 +9,7 @@
 | Store template | 51 — *Delayed Document Confirmation* | 52 — *Delayed Document Confirmation Runner* |
 | Repo file | `delayed_document_confirmation.py` | `delayed_document_confirmation_run.py` |
 | Events | `invocation.scheduled`, `invocation.manual` | `invocation.scheduled` |
-| Template cron | `*/10 * * * *` (run every 10–60 min) | `0 3 * * *` (run off-peak) |
+| Template cron | `*/10 * * * *` (run every 10–60 min) | `0 3 * * *` (run off-peak, preferably more than once a day — see [Design notes](#design-notes)) |
 | Job | Finds changed master-data records, searches for affected annotations, queues their URLs | Sends the queued URLs to `reautomate`, removes the ones it accepted |
 
 Both hooks share a Data Storage **service collection** (default `_delayed_document_confirmation`). Several detectors (for example one per dataset) can feed one runner when they use the same collection.
@@ -30,7 +30,7 @@ Both hooks share a Data Storage **service collection** (default `_delayed_docume
 
 1. **`reautomate` feature flag on the org:** `{"reautomate": {"enabled": true}}`. Rossum sets it; customers cannot. An `organization_group_admin` token got **403** from the endpoint on an org where the flag state was not checked (see `iterate`). *Unverified:* that turning the flag on is what makes the same call succeed. Test the runner once on UAT. It ships with only `invocation.scheduled`, but its code accepts any invocation action. For the test, add `invocation.manual` to its events and call `POST /v1/hooks/{id}/invoke`.
 2. **A date attribute that marks changed records.** The detector finds changes with a date comparison, so the attribute must be a real Data Storage **date**, not a string. The usual choice is `_last_modified_date`, an MDH feature that Rossum enables on request. The repo docs say it stamps records written through the MDH dataset `PATCH` (merge) endpoint. *Unverified:* whether a full replace (`PUT`), a new record inserted by the import, or a direct Data Storage write also stamps it. Check one freshly imported record before you rely on it, or have the import job write its own date attribute.
-3. **Template visibility.** Templates 51 and 52 are shown only to organization groups that Rossum has tagged. Without the tag they are missing from `GET /hook_templates`; ask Rossum.
+3. **Template visibility.** Templates 51 and 52 are shown only to organization groups that Rossum has given the visibility tag `ps_eng_delayed_document_confirm`. Without the tag they are missing from `GET /hook_templates`; ask Rossum.
 4. **Token owner.** Create a dedicated admin user (the template guide suggests `delayed_document_confirmation`) and set it as token owner on both hooks. Confirmations and exports done by the runner then show this user, which makes them easy to audit.
 5. **One manual run of the detector after you create it.** A manual invocation (`POST /v1/hooks/{id}/invoke`) creates the service-collection indexes, including the two TTL indexes. It does not look for changes; only scheduled runs do. Skip the manual run and the collection never expires anything.
 
@@ -73,7 +73,7 @@ Both hooks share a Data Storage **service collection** (default `_delayed_docume
 
 ## Placeholders
 
-A placeholder replaces the **whole string value** that starts with it, not text inside a longer string.
+A placeholder must be the **whole string value**. The code replaces any string that *starts with* the placeholder and drops the rest of that string. A placeholder in the middle of a string is not replaced.
 
 | Placeholder | Where | Replaced with |
 |---|---|---|
@@ -98,8 +98,10 @@ A placeholder replaces the **whole string value** that starts with it, not text 
 `POST /api/v1/internal/annotations/reautomate`, body `{"annotations": [<annotation URLs>], "if_modified": "try_to_confirm"}`. The response lists the annotations it accepted, and the runner deletes those from the queue.
 
 - It processes only annotations in **`to_review`**. It skips all others without an error.
-- **Annotations a user has not modified:** they go back through `importing`. `annotation_content.initialize` fires, so the matching hooks run again, then the automation decision is made again: `to_review`, or `confirmed`/`exporting`. The engine does **not** extract again, and the content is kept.
-- **Annotations a user has modified, with `try_to_confirm`:** it fires `annotation_content.started` and then `confirm`, as if a user opened the document and pressed Confirm. An annotation confirmed this way is **excluded from engine training**.
+Which annotations count as modified: the repo docs say annotations "opened" or "edited by user". *Unverified:* whether edits made only by hooks or the API also count — check on UAT before you rely on either mode.
+
+- **Annotations not yet modified:** they go back through `importing`. `annotation_content.initialize` fires, so the matching hooks run again, then the automation decision is made again: `to_review`, or `confirmed`/`exporting`. The engine does **not** extract again, and the content is kept.
+- **Annotations already modified, with `try_to_confirm`:** it fires `annotation_content.started` and then `confirm`, as if a user opened the document and pressed Confirm. An annotation confirmed this way is **excluded from engine training**.
 - It is an internal endpoint, and the flag in [Prerequisites](#prerequisites) gates it. It is not wrapped as an MCP tool. Because it can confirm and export documents, never call it by hand on production.
 
 ## Service collection
@@ -116,7 +118,7 @@ For debugging, read the control records (sort by `started_at` descending) to see
 ## Design notes
 
 - **Search on the extracted value, not on the matched one.** The annotation failed to match, so the matched field (for example the vendor id) is empty. Search on the extracted input that matching uses (VAT id, IBAN, PO number), and make it compare equal to the master-data attribute: same type, same normalization. A `field.<id>.string` clause compares strings, so a numeric master-data attribute needs a `$toString` in the `$project` stage, or a `field.<id>.number` clause.
-- **Queued annotations expire after 24 hours.** If the runner fails or is off for a day, annotations queued only once are lost. The window does not go back to them, because the detector's window moves forward on each successful run.
+- **Queued annotations expire after 24 hours.** With the template's once-a-day runner, a single failed or late run loses the annotations queued only once. The window does not go back to them, because the detector's window moves forward on each successful run. Run the runner more than once a day within the off-peak hours, for example `0 1,4 * * *`.
 - **The window advances only on success.** A failing detector keeps searching from the same `started_at` until the gap passes `lookback_window_days`. After that it jumps forward, and the changes in the skipped period are never searched.
 - **The status filter matters.** The detector refuses a search without `queue` and `status`. Keep `status` at `to_review`, because `reautomate` skips everything else anyway.
 - **Matching must be able to succeed on re-run.** Re-running only helps if the matching hook runs on `annotation_content.initialize` and its query now finds the new record.
