@@ -138,7 +138,9 @@ the authoritative settings schema.
 
 - Rossum webhooks default to a **30 s timeout and 5 attempts** (`retry_count` 4, spread over
   about 8–9 min; see `rossum-reference` → *Timeouts and retries*). Long exports need a higher
-  `timeout_s` (the production export uses 120 s; older docs cite a 60 s cap).
+  `timeout_s` (the production export uses 120 s). Above 60 s the organization group's
+  `maximum_hook_timeout` must first be raised by Rossum (see `rossum-reference` →
+  *Timeouts and retries*).
 - Set **`retry_count: 0` on export hooks**: a retried export repeats the File Cabinet upload,
   which is not idempotent ([Steps 2–3](#steps-23--upload-and-attach-the-pdf)).
 - One hook carries either `import_configs` or `export_configs`, never both.

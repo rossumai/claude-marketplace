@@ -1102,7 +1102,7 @@ serverless functions accept them:
 
 | `config` attribute | Default | Range | Notes |
 |---|---|---|---|
-| `timeout_s` | 30 | 0–60 | Non-interactive calls only; an interactive call is always forced to 30 s |
+| `timeout_s` | 30 | 0–60 by default | Non-interactive calls only; an interactive call is always forced to 30 s. The 60 s cap is the organization group's `maximum_hook_timeout`; only Rossum can raise it (CIB 2.0 needs ≥ 360 s — see `coupa-baseline-reference`). Above the cap the API returns `400 Ensure this value is less than or equal to 60` |
 | `retry_count` | 4 | 0–4 | Retries **after** the first attempt, so the default is 5 attempts in total. Non-interactive calls only |
 | `retry_on_any_non_2xx` | `false` | bool | Webhooks only. With `false`, only `408, 429, 500, 502, 503, 504` are retried |
 | `retry_after_polling_failure` | `true` | bool | Asynchronous webhooks only: retry the original call when polling fails |
