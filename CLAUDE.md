@@ -28,7 +28,7 @@ A Claude Code plugin marketplace for Rossum.ai workflows (https://code.claude.co
 
 ## Tests & CI
 
-- `.github/workflows/ci.yml` runs `ruff` (real-errors-only) + `pytest` on Python 3.12 and 3.14 for every PR and push to `main`.
+- `.github/workflows/ci.yml` runs `ruff` (real-errors-only) + `pytest` on Python 3.12 and 3.14 for every PR and push to `main`, plus an `mcp-server-floor` job that starts the MCP server and runs its suites on Python 3.10 — Cowork launches the server with its Linux VM's own `python3` (3.10), so the server must not depend on 3.11+ stdlib (`tomllib` is guarded with a fallback).
 - Run locally with `pip install -r requirements-dev.txt && pytest`.
 - Repo-level guard tests live in `tests/`: `test_manifests.py` (manifests parse, every SKILL.md has frontmatter), `test_doc_sync.py` (README headline + skills table match the filesystem; plugin/server versions match), `test_runtime_contract.py` (server stays stdlib-only), `test_parts.py` (the parts library: metadata schema, `«param»`↔placeholder parity, and each `fragment.*` parses once its seams are filled). Per-skill suites live under `plugins/.../skills/<name>/tests/`.
 - **Part fragments are `«param»` templates, not runnable source** — the guillemet seams are deliberately invalid in every target language, so `parts/**` is excluded from `ruff` (see `pyproject.toml`). Fragment syntax is checked by `test_parts.py` against the *filled-in* form, not the linter. Any new lint/validate step must also exclude `parts/**`.

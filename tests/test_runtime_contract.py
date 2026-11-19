@@ -11,7 +11,8 @@ import sys
 
 import repo_lib as R
 
-ALLOWED = set(sys.stdlib_module_names) | {"certifi"}
+# tomllib is stdlib only from 3.11; server.py guards it with an ImportError fallback for 3.10.
+ALLOWED = set(sys.stdlib_module_names) | {"certifi", "tomllib"}
 
 
 def _imported_top_level_modules(source: str) -> set[str]:
