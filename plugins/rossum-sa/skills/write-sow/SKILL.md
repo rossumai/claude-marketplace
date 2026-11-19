@@ -1,6 +1,6 @@
 ---
 name: write-sow
-description: Generate or review a Statement of Work (SOW) for a Rossum.ai implementation project. Scopes from a matching recipe so the questions are the ones a build actually stalls on, and reports which decisions the SOW leaves open. Use when the user wants to create, scope, or review a SOW or project proposal. Triggers on requests like "write a SOW", "create a statement of work", "review this SOW", "what does this SOW not answer", "draft a Rossum proposal", "scope this project".
+description: Generate or review a Statement of Work (SOW) for a Rossum.ai implementation project — Coupa Integration Baseline (CIB) SOWs use the approved clause library. Scopes from a matching recipe so the questions are the ones a build actually stalls on, and reports which decisions the SOW leaves open. Use when the user wants to create, scope, or review a SOW or project proposal. Triggers on requests like "write a SOW", "create a statement of work", "review this SOW", "what does this SOW not answer", "draft a Rossum proposal", "scope this project".
 argument-hint: [project description or requirements]
 ---
 
@@ -35,7 +35,14 @@ You are a Rossum.ai Solution Architect writing a Statement of Work. Generate a S
 
    If the customer's Data Storage environment is accessible (via the `rossum-api` MCP tools), use `data_storage_list_collections` to discover existing datasets and `data_storage_aggregate` to sample their structure (e.g. `[{"$sample": {"size": 1}}]`). This reveals what master data is already available, what fields exist, and what matching strategies are feasible — use these findings to inform the Master Data Hub deliverables rather than guessing.
 
-2. **Generate the SOW** using the exact structure from [template.md](template.md). Every generated SOW must follow this template — do not add, remove, or reorder sections.
+2. **Generate the SOW.**
+   - **Coupa target (the default engagement): use [coupa-cib.md](coupa-cib.md).** It holds the
+     approved CIB structure (preamble → Project Goal → Deliverables → Out of Scope) and the approved
+     clause wording. Copy clauses verbatim and change only their `[parameters]` and the sentences its
+     notes allow; its writing rules ("Coupa will…", remove-don't-contradict) override the generic
+     rules below where they conflict, and it has no Delivery Plan or Customer Cooperation section.
+   - **Any other target:** use the exact structure from [template.md](template.md) — do not add,
+     remove, or reorder sections.
 
 3. **Verify deliverability.** Before writing the final SOW, cross-check every deliverable against the Rossum platform reference (auto-loaded via the `rossum-reference` skill) and MongoDB reference (auto-loaded via the `mongodb-reference` skill). Confirm that each promised feature, integration, or configuration is actually supported by the platform. If a deliverable cannot be verified against the reference, flag it to the user before including it. If Data Storage is accessible, verify that referenced collections actually exist and that their field names match what the SOW promises.
 
@@ -54,11 +61,13 @@ You are a Rossum.ai Solution Architect writing a Statement of Work. Generate a S
 Given a SOW to review rather than write, do steps 0 and 5 only: match a recipe, then report which of
 its `decide[]` entries the SOW answers, which it answers ambiguously, and which it does not touch.
 Add anything the SOW promises that the recipe's `platform_contract` says is not buildable as
-described. Do not rewrite the SOW unless asked.
+described. For a Coupa SOW, also diff each clause against [coupa-cib.md](coupa-cib.md): flag reworded
+approved clauses, missing CIB preamble, and any item both delivered and excluded in Out of Scope. Do
+not rewrite the SOW unless asked.
 
 ## Writing Rules
 
-- Always use **future tense**: "Rossum will deliver…", "Rossum will configure…", "Rossum will implement…"
+- Always use **future tense**: "Rossum will deliver…", "Rossum will configure…", "Rossum will implement…" (in a Coupa CIB SoW the party is Coupa: "Coupa will configure…")
 - Always refer to the customer as **"Customer"** (capitalized), never their specific name or "the client".
 - **No assumptions.** If something is uncertain, state it as an explicit requirement on the Customer in the **Customer Cooperation** section (e.g., "Customer will provide sample documents before kickoff"). Do not embed Customer prerequisites in the Deliverables or Delivery Plan sections — deliverables describe only what Rossum will deliver, and the Delivery Plan covers only timeline and dependencies.
 - Keep language clear, professional, and unambiguous. Use concrete, measurable terms (quantities, field counts, document types).
