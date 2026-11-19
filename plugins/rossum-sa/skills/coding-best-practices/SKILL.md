@@ -220,7 +220,8 @@ catch them, log them, return an empty result, and let the document proceed.
 This is the deliberate exception to *"always re-raise after logging"* above. Re-raising in an
 enrichment hook converts "we couldn't add the extra field" into "this document cannot be
 processed", which is a far worse outcome than the missing value — and it fires
-`retry_count + 1` times before it settles.
+`retry_count + 1` times (over about 8–9 min with the default; see `rossum-reference` →
+*Timeouts and retries*) before it settles.
 
 ```python
 # Bad — a flaky third-party lookup now blocks the document

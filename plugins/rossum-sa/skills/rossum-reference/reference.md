@@ -931,7 +931,7 @@ Hooks extend Rossum with custom logic. Types: **webhooks**, **serverless functio
 - `run_after` (array): Hook URLs that must run before this one
 - `description` (string): Human-readable description of what the hook does — always fill this in and keep it up to date when creating or modifying hooks
 - `metadata` (object): Custom JSON (up to 4 KB)
-- `settings` (object): Behavior settings (retry, timeout, queue filters)
+- `settings` (object): Hook-specific settings, passed to the hook in its payload and validated against `settings_schema`. Timeout and retry knobs are **not** here — they are in `config` (see [Timeouts and retries](#timeouts-and-retries))
 - `secrets` (object): Sensitive credential storage — write-only (never returned by GET; declared key names are listed by `GET /hooks/{id}/secrets_keys` once values are saved). Values are entered by a human (UI Secrets editor or a direct API PATCH) or written by the hook's own code at runtime (e.g. Request Processor OAuth token caching) — always outside model context, never through MCP tools
 - `secrets_schema` (object): JSON Schema declaring the hook's expected secret key names — **standard on every hook that carries secrets: never leave the platform default when creating one**. Set it via the `rossum_create_hook` / `rossum_patch_hook` MCP tools (or raw API/prd2; the UI cannot edit the schema itself). The API validates the shape (HTTP 400 otherwise): only `type`/`properties`/`additionalProperties` are accepted at the top level (no `$schema`, no `required`), every declared property must be `{"type": "string", …}` (add `minLength: 1` + a `description` by convention), and `additionalProperties` is required — either `false` (fixed credential keys; the default) or `{"type": "string"}` (open string map — required for hooks whose code writes its own secrets at runtime, e.g. Request Processor OAuth token caching). With `false`, secret writes are validated against the declared keys (undeclared keys and, with `minLength`, empty values are rejected). Under both shapes, the UI Secrets editor prefills `{"<key>": "__change_me__"}` for each declared property instead of an empty `{}` — the open map just also accepts extra keys written at runtime. Hooks created before this validation may carry other shapes — normalize before re-submitting one
 
@@ -1095,17 +1095,48 @@ Store extensions are created from **hook templates** (`GET /hook_templates`,
 - Deploying private hooks with prd2 needs the template visible in the target organization —
   see `prd-reference` → Hooks created from Store templates.
 
-### Hook Settings
+### Timeouts and retries
+
+Timeout and retry knobs live in the hook's **`config`**, not in `settings`. Both webhooks and
+serverless functions accept them:
+
+| `config` attribute | Default | Range | Notes |
+|---|---|---|---|
+| `timeout_s` | 30 | 0–60 | Non-interactive calls only; an interactive call is always forced to 30 s |
+| `retry_count` | 4 | 0–4 | Retries **after** the first attempt, so the default is 5 attempts in total. Non-interactive calls only |
+| `retry_on_any_non_2xx` | `false` | bool | Webhooks only. With `false`, only `408, 429, 500, 502, 503, 504` are retried |
+| `retry_after_polling_failure` | `true` | bool | Asynchronous webhooks only: retry the original call when polling fails |
 
 ```json
 {
-  "settings": {
-    "retry": {"max_attempts": 3, "backoff_seconds": 60},
-    "timeout_seconds": 30,
-    "queue_filter": [8236, 8199]
+  "config": {
+    "url": "https://example.com/webhook",
+    "timeout_s": 30,
+    "retry_count": 4
   }
 }
 ```
+
+**Retry timing (changed November 2026, announced by Rossum product).** The API docs still
+describe the old timing at the time of writing ("retried within 30 seconds"):
+
+- **Old:** a fixed wait of about 30 s between attempts, so 5 attempts gave up after about 2 min.
+  Under infrastructure problems the platform could also run **more** attempts than
+  `retry_count` allowed, which made hook runs very long.
+- **New:** a failed call is put aside and picked up again later, so it no longer holds up the
+  calls of other, healthy hooks. The wait grows with every attempt, with random jitter. 5
+  attempts now give up after about **8–9 min**. The number of attempts is exactly
+  `retry_count + 1`.
+- Applies to non-interactive calls of webhooks and functions. Interactive calls are not affected.
+
+What this means in practice:
+
+- A hook that keeps failing now settles its final error several minutes later than before.
+  When you debug, wait for the last attempt in the hook logs before you conclude anything.
+- In hook logs, attempts of one call are no longer about 30 s apart. Do not read uneven gaps
+  as a sign of a platform problem.
+- A non-idempotent call (an export that creates a record) still repeats on every retry. Set
+  `retry_count: 0` on it, or make the call safe to repeat.
 
 ### Webhook Events
 

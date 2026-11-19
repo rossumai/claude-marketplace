@@ -108,7 +108,9 @@ What makes this expensive to diagnose:
   including the failing line number and `t = TxScript.from_payload(payload)` — is in the row's
   **`output`** field, which most tooling projects away. See
   [Runtime & debugging](#runtime--debugging).
-- It repeats `retry_count + 1` times per annotation (default `retry_count` is 4).
+- It repeats `retry_count + 1` times per annotation (default `retry_count` is 4). With the
+  default, the last attempt lands about 8–9 min after the first (see `rossum-reference` →
+  *Timeouts and retries*).
 - To anyone watching the document rather than the logs, the only symptom is **the target fields
   are empty**.
 
