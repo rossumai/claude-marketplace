@@ -1206,6 +1206,8 @@ def handle_api_response(x, status_code, response_body, message, is_error):
 
 ## 8. E-invoicing [2.0]
 
+For the other ways e-invoices can enter Rossum (the B2Brouter E-Invoicing extension, the hosted upload import, plain SFI), see `einvoicing-reference` → [Choosing a route](../einvoicing-reference/reference.md#0-choosing-a-route).
+
 ### 8.1 Why e-invoices are different
 
 In the classic CIB flow a document arrives as a PDF, Rossum's AI extracts the values, and extraction confidence drives automation. With an e-invoice the data is already structured — there is nothing to extract. What the integration still has to provide is everything *around* extraction: validation against Coupa master data, enrichment, the human review step when something does not reconcile, and the export.

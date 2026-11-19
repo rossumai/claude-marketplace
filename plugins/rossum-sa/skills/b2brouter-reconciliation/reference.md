@@ -257,8 +257,9 @@ defaulting, when the header is omitted, to whatever generation the account
 GROUP is configured for. This client never relies on that default: it sends
 the header explicitly on every request, and knows the host, list/detail
 paths, response envelope shape, and sender-name field for both generations
-(`2025-01-01`, the legacy generation the importer extension itself uses and
-this tool's own default; `2026-06-26`, the newer one). See the version-facts
+(`2025-01-01`, the legacy generation behind the importer extension's default
+`Legacy` setting and this tool's own default; `2026-06-26`, the newer one,
+which importer hooks can also be set to). See the version-facts
 entries under Gotchas below for exactly what was measured to differ.
 
 **By default, the version is auto-detected, per host.** The tool probes each
@@ -800,10 +801,12 @@ of an error, so getting them wrong is silent, not loud.
 - **The new generation lives on a different HOST family — `api.` /
   `api-staging.` — mirroring the legacy `app.` / `app-staging.` pair,
   including its own staging host.** A hook's configured
-  `b2b_router_base_url` always names the legacy host (what the importer
-  extension itself uses); this client derives the other generation's host by
-  swapping the `app.`/`api.` (or `app-staging.`/`api-staging.`) prefix,
-  never by asking the operator for a second URL.
+  `b2b_router_base_url` names whichever family that importer hook uses —
+  `app.` on the extension's default `Legacy` version, `api.` when the hook
+  sets a dated `b2b_router_api_version` (both are seen in production); this
+  client derives the other generation's host by swapping the `app.`/`api.`
+  (or `app-staging.`/`api-staging.`) prefix in either direction, never by
+  asking the operator for a second URL.
 - **The new generation's invoice LISTING wraps its envelope under `meta`;
   everything else stays flat, including `/accounts` on BOTH generations.**
   The legacy listing is `{"invoices": [...], "total_count", "offset",

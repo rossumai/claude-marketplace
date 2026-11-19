@@ -1,10 +1,12 @@
 ---
 name: sfi-reference
-description: Structured Formats Import (SFI) reference for Rossum. Covers end-to-end setup of the SFI extension for processing XML, JSON, and e-invoice documents (ZUGFeRD, X-Rechnung UBL/CII). Includes MIME type configuration, hook setup with environment URLs, field mapping with XPath/JSONPath selectors, document splitting, PDF rendering, value transformation mappings, date parsing, address concatenation patterns, and complete production-ready configuration examples for German e-invoicing. Use when setting up, configuring, or debugging Structured Formats Import.
+description: Structured Formats Import (SFI) reference for Rossum. Covers end-to-end setup of the SFI extension for processing XML, JSON, and e-invoice documents (ZUGFeRD, X-Rechnung UBL/CII). Includes MIME type configuration, hook setup with environment URLs, field mapping with XPath/JSONPath selectors, document splitting, PDF rendering, value transformation mappings, date parsing, address concatenation patterns, and complete production-ready configuration examples for German e-invoicing. Use when setting up, configuring, or debugging Structured Formats Import. For choosing an e-invoicing route, or for the B2Brouter E-Invoicing extension, see einvoicing-reference.
 user-invocable: false
 ---
 
 # Structured Formats Import (SFI) Reference
+
+> For choosing how e-invoices should enter Rossum (B2Brouter E-Invoicing extension, hosted e-invoice upload import, plain SFI), and for the B2Brouter extension itself, see `einvoicing-reference`.
 
 This skill provides the complete setup and configuration reference for **Structured Formats Import (SFI)**, Rossum's extension for processing non-visual structured documents (XML, JSON, EDI) and rendering them as PDFs for human review.
 
