@@ -1233,6 +1233,19 @@ def test_autoconnect_uses_the_only_rdc_token(fresh_autoconnect, tmp_path):
     assert fresh_autoconnect == [("https://acme.rossum.app", "rdc-tok")]
 
 
+def test_rdc_project_reads_without_tomllib(tmp_path, monkeypatch):
+    # Cowork's VM runs python3 3.10, which has no tomllib.
+    _rdc_project(tmp_path, {"prod": "rdc-tok"})
+    with open(tmp_path / "rdc.toml", "a") as f:
+        f.write('\n[defaults]\napi_base = "https://not-an-env.rossum.app"\n')
+    monkeypatch.setitem(sys.modules, "tomllib", None)  # makes `import tomllib` raise ImportError
+    envs = server._read_rdc_project(str(tmp_path))
+    assert {k: v[:2] for k, v in envs.items()} == {
+        "dev": ("https://acme-dev.rossum.app/api/v1", None),
+        "prod": ("https://acme.rossum.app/api/v1", "rdc-tok"),
+    }
+
+
 def test_autoconnect_uses_the_only_prd2_token(fresh_autoconnect, tmp_path):
     _prd2_project(tmp_path, {"production-org": "prd-tok"})
     assert server._autoconnect_from_env() is True

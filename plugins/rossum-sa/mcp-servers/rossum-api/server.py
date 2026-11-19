@@ -230,7 +230,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.49.3"
+_SERVER_VERSION = "0.49.4"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -315,10 +315,26 @@ def _env_base_url():
 def _read_rdc_project(root):
     """{env: (api_base, token_or_None, how_to_fix)} for an rdc project root."""
     import os
-    import tomllib  # stdlib since 3.11
 
-    with open(os.path.join(root, "rdc.toml"), "rb") as f:
-        envs = tomllib.load(f).get("envs") or {}
+    try:
+        import tomllib  # stdlib since 3.11
+        with open(os.path.join(root, "rdc.toml"), "rb") as f:
+            envs = tomllib.load(f).get("envs") or {}
+    except ImportError:
+        # Cowork's VM runs the server on Python 3.10 (no tomllib); read just [envs.<name>] api_base.
+        # shortcut: no inline tables / multi-line strings, upgrade if rdc.toml ever uses them.
+        envs, current = {}, None
+        with open(os.path.join(root, "rdc.toml"), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"""^\s*\[\s*envs\.(?:"([^"]+)"|'([^']+)'|([\w-]+))\s*\]""", line)
+                if m:
+                    current = next(g for g in m.groups() if g)
+                    envs[current] = {}
+                elif line.lstrip().startswith("["):
+                    current = None
+                m = re.match(r"""^\s*api_base\s*=\s*["']([^"']+)["']""", line)
+                if m and current is not None:
+                    envs[current]["api_base"] = m.group(1)
     out = {}
     for env, cfg in envs.items():
         token = None
