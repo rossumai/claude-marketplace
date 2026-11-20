@@ -638,6 +638,10 @@ Annotations represent extracted data from documents and track the full processin
 | POST | `/v1/annotations/{id}/page_data/translate` | Translate spatial data |
 | POST | `/v1/annotations/search` | Search annotations |
 
+#### Annotation comments (`/v1/notes`) — not in the API docs
+
+The comments users add on the annotation screen are served by `GET /v1/notes?annotation={id}&ordering=-created_at&include_total=true`. **This endpoint is not in the public API docs / OpenAPI spec** — it was captured only from the web app's own request in Chrome DevTools → Network, so Rossum may change it without notice. Reading works with `rossum_get` (verified live). Each result: `id`, `url`, `type` (`"comment"`), `content`, `metadata`, `annotation`, `creator`, `created_at`, `modifier`/`modified_by`, `modified_at`. Writes (create/edit/delete) were not tested.
+
 ### Annotation Content (Extracted Data)
 
 | Method | Endpoint | Purpose |
