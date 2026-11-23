@@ -14,8 +14,8 @@ hardcoding one generation.
 Everything below was measured live against BOTH versions, with two different
 keys, on two different account groups:
 
-    LEGACY (`2025-01-01`, the generation behind the importer extension's
-    default `Legacy` setting, and this client's default -- matches the
+    LEGACY (`2025-01-01`, this client's default; the importer's `Legacy`
+    setting sends no header -> group default, usually this generation -- matches the
     behaviour this tool has always had):
       host:   https://app.b2brouter.net      (staging: app-staging.)
       list:   GET /projects/{ACCOUNT_ID}/received.json?...
@@ -178,11 +178,13 @@ def _rehost(base_url: str, profile: ApiProfile) -> str:
     matches neither known family at all (an unrecognised host shape must
     fail loudly downstream, not be silently rewritten here).
     """
+    # Only the leading host label is a family marker -- `myapp.` elsewhere is not.
+    parts = urllib.parse.urlsplit(base_url)
     for own, other in zip(profile.host_own, profile.host_other):
-        if own in base_url:
+        if parts.netloc.startswith(own):
             return base_url
-        if other in base_url:
-            return base_url.replace(other, own)
+        if parts.netloc.startswith(other):
+            return parts._replace(netloc=own + parts.netloc[len(other):]).geturl()
     return base_url
 
 

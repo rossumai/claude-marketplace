@@ -257,8 +257,9 @@ defaulting, when the header is omitted, to whatever generation the account
 GROUP is configured for. This client never relies on that default: it sends
 the header explicitly on every request, and knows the host, list/detail
 paths, response envelope shape, and sender-name field for both generations
-(`2025-01-01`, the legacy generation behind the importer extension's default
-`Legacy` setting and this tool's own default; `2026-06-26`, the newer one,
+(`2025-01-01`, the legacy generation and this tool's own default — the
+importer's `Legacy` setting sends no header, so the group default applies,
+usually this generation; `2026-06-26`, the newer one,
 which importer hooks can also be set to). See the version-facts
 entries under Gotchas below for exactly what was measured to differ.
 

@@ -146,7 +146,7 @@ Notes:
 
 - **Polling needs exactly one queue** on the hook ("The hook must be connected to exactly one queue.") [source]. One hook per receiving queue.
 - Drop `invocation.scheduled` and `b2b_router_account_id` for an upload-only setup (validation of emailed/uploaded e-invoices without network polling).
-- `timeout_s: 360`, `max_polling_time_s: 3600`, cron `*/10 * * * *` are the values production hooks run with [live]. The import job is sized to finish within a one-hour poll window, so a short `max_polling_time_s` can report a failure for an import that later succeeds [source; the 300 s default was seen on a working dev hook, live].
+- `timeout_s: 360`, `max_polling_time_s: 3600`, cron `*/10 * * * *` are the values production hooks run with [live]; the API stores a webhook `timeout_s` above 60 s (also seen at 120 s on a production export, see `netsuite-reference`). The import job is sized to finish within a one-hour poll window, so a short `max_polling_time_s` can report a failure for an import that later succeeds [source; the 300 s default was seen on a working dev hook, live].
 - `sideload: ["features"]` is recommended by the service (it saves a lookup of the feature flag); hooks without it work [source, live].
 - For a dated B2Brouter API version, set `b2b_router_api_version` and use `https://api.b2brouter.net` (§5).
 - `annotation_status.changed` is what makes **Re-extract** work: it purges the annotation and imports the e-invoice again as a new annotation with a new ID (§9). Never Re-extract an e-invoice a user has worked on [source, live].
@@ -259,7 +259,7 @@ Canonical mappings first; `xml_mapping` results then **override** canonical valu
       "trigger_condition": {"file_type": "xml"},
       "fields": [
         {"schema_id": "iban",
-         "selectors": ["/*[local-name()='Invoice']/*[local-name()='PaymentMeans']/*[local-name()='PayeeFinancialAccount']/*[local-name()='ID']"]}
+         "selectors": ["/*[local-name()='Invoice' or local-name()='CreditNote']/*[local-name()='PaymentMeans']/*[local-name()='PayeeFinancialAccount']/*[local-name()='ID']"]}
       ]
     }
   ]
@@ -294,11 +294,11 @@ Recommended definition: hidden, read-only data fields:
 
 Map the account from the XML, not from `contact_iban` (§5):
 
-- **UBL / Peppol BIS (BT-84)**: the selector in §6.4. It holds an IBAN or a domestic account number, whatever the supplier sent. Verified live: it replaced a stale canonical IBAN [live]. For credit notes too, use the root `/*[local-name()='Invoice' or local-name()='CreditNote']/…` [not verified].
-- **Remove** any `configuration.fields` mapping of the bank field from `invoice.contact_iban`: `xml_mapping` overrides only when the XML has a value, so for an XML without an account the stale stored IBAN would still be written [source].
+- **UBL / Peppol BIS (BT-84)**: the selector in §6.4. It holds an IBAN or a domestic account number, whatever the supplier sent. Verified live on an invoice: it replaced a stale canonical IBAN [live]. The `Invoice or CreditNote` root covers UBL credit notes, which carry the same `PaymentMeans` path [not verified on a live credit note].
+- **Remove** any `configuration.fields` mapping of the bank field from `invoice.contact_iban`: `xml_mapping` overrides only when the XML has a value, so for an XML without an account the stale stored IBAN would still be written [source]. Keep the selector rooted at `Invoice or CreditNote` when you do — an `Invoice`-only root leaves the bank field blank on every credit note.
 - Check that the schema field's validation accepts a domestic (non-IBAN) number, or map it to a separate field.
 - **CII (XRechnung/ZUGFeRD)**: `//*[local-name()='PayeePartyCreditorFinancialAccount']/*[local-name()='IBANID']`, with `…/*[local-name()='ProprietaryID']` for a domestic account [not verified].
-- BIC (UBL): `/*[local-name()='Invoice']/*[local-name()='PaymentMeans']/*[local-name()='PayeeFinancialAccount']/*[local-name()='FinancialInstitutionBranch']/*[local-name()='ID']` [not verified].
+- BIC (UBL): `/*[local-name()='Invoice' or local-name()='CreditNote']/*[local-name()='PaymentMeans']/*[local-name()='PayeeFinancialAccount']/*[local-name()='FinancialInstitutionBranch']/*[local-name()='ID']` [not verified].
 
 ### 6.7 Testing a mapping change
 
@@ -406,7 +406,7 @@ Rejection reporting is French by design (its template states it). Cross-border r
   | Key | Default | Notes |
   |---|---|---|
   | `b2b_router_base_url` | required | Templates ship `https://api.b2brouter.net` / `https://api-staging.b2brouter.net` |
-  | `b2b_router_api_version` | `"Legacy"` (model); templates ship `2026-06-26` or `2026-04-20` | Must match the host (§5) |
+  | `b2b_router_api_version` | `"Legacy"` (model); templates ship `2026-06-26` or `2026-04-20` | Must match the host (§5). `b2brouter-reconciliation` only knows `2025-01-01` and `2026-06-26` — leave its version on auto-detect rather than copying `2026-04-20` into its credentials |
   | `max_annotations_per_run` | `100` | The rest wait for the next run |
   | `report_mapping` | required (report job only) | §10.3 |
   | `job_run_settings` | `retries` 2, `max_run_time_s` 3600, `valid_for_s` 86400, `serialization_key` null | Optional |
@@ -518,7 +518,7 @@ Annotations are created flagged as e-invoices with training disabled [source].
 
 ## 12. Sproom
 
-Sproom is a Danish e-invoicing access point (NemHandel, OIOUBL). There is **no Store extension** for it. Rossum's connectors team has a settings-driven **serverless function** (Python 3.13 runtime, stdlib + `requests`) that polls Sproom; get its current code from them [source]. What it does:
+Sproom is a Danish e-invoicing access point (NemHandel, OIOUBL). There is **no Store extension** for it. Rossum's connectors team has a settings-driven **serverless function** (`python3.13` runtime, stdlib + `requests`) that polls Sproom; get its current code from them [source]. What it does:
 
 ### 12.1 Flow [source]
 
@@ -594,7 +594,7 @@ The same pattern — poll the network API, upload with §11.2 metadata, acknowle
 
 ## 14. Calling the B2Brouter API
 
-For read-only checks (does the invoice exist, is it acknowledged, what did B2Brouter parse). Headers: `X-B2B-API-Key: <key>`; for dated versions also `X-B2B-API-Version: <version>` [source, B2Brouter docs]. Key prefixes: `test_` sandbox, `stag_` staging, `prod_` or none for production [B2Brouter docs].
+For read-only or side-effect-free checks (does the invoice exist, is it acknowledged, what did B2Brouter parse). Headers: `X-B2B-API-Key: <key>`; for dated versions also `X-B2B-API-Version: <version>` [source, B2Brouter docs]. Key prefixes: `test_` sandbox, `stag_` staging, `prod_` or none for production [B2Brouter docs].
 
 | Purpose | Legacy (`app.` host) | Dated (`api.` host) |
 |---|---|---|

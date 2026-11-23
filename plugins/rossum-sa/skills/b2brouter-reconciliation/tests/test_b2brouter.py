@@ -153,6 +153,8 @@ _LEGACY_LISTING = {"invoices": [], "total_count": 0, "offset": 0, "limit": 500}
             "https://api-staging.example-router.net",
             "https://app-staging.example-router.net/projects/900001/received.json?",
         ),
+        # a family marker inside a later label must not be rewritten
+        ("https://api.myapi.example-router.net", "https://app.myapi.example-router.net/projects/900001/received.json?"),
     ],
 )
 def test_legacy_profile_rehosts_an_api_family_base_url_onto_the_app_family(
