@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-18 skills · 18 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+19 skills · 18 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -146,6 +146,7 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | Skill | Description |
 |-------|-------------|
 | `/rossum-sa:write-sow` | Generate a Statement of Work from project requirements |
+| `/rossum-sa:peer-review [document] [focus]` | Peer-review a SOW, solution design, effort estimate or project plan — blockers only, grouped by deliverable; re-review ("did they fix it?") and reply-to-author modes |
 | `/rossum-sa:analyze [path]` | Check an implementation for configuration errors |
 | `/rossum-sa:document [path]` | Produce a queue-focused reference document |
 | `/rossum-sa:implement` | Plan and execute an integration project end-to-end |
