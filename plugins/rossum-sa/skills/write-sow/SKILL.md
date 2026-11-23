@@ -1,6 +1,6 @@
 ---
 name: write-sow
-description: Generate or review a Statement of Work (SOW) for a Rossum.ai implementation project — Coupa Integration Baseline (CIB) SOWs use the approved clause library. Scopes from a matching recipe so the questions are the ones a build actually stalls on, and reports which decisions the SOW leaves open. Use when the user wants to create, scope, or review a SOW or project proposal. Triggers on requests like "write a SOW", "create a statement of work", "review this SOW", "what does this SOW not answer", "draft a Rossum proposal", "scope this project".
+description: Generate or review a Statement of Work (SOW) for a Rossum.ai implementation project — Coupa Integration Baseline (CIB) SOWs use the approved clause library. Scopes from a matching recipe so the questions are the ones a build actually stalls on, and reports which decisions the SOW leaves open. Use when the user wants to create or scope a SOW or project proposal, or asks which decisions a SOW leaves open (a full peer review of a SOW is the peer-review skill, which calls this one). Triggers on requests like "write a SOW", "create a statement of work", "what does this SOW not answer", "draft a Rossum proposal", "scope this project".
 argument-hint: [project description or requirements]
 ---
 
