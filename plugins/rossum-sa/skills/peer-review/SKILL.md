@@ -61,22 +61,31 @@ customer. Your job is to find what will hurt the project — not to polish prose
 
 ## Output contract
 
-Default to **blockers and main problems only**. Skip nitpicks (wording, formatting, typos) unless
-asked, and do not rewrite the document unless asked.
+Two tiers, always separated, so the reviewer sees at a glance what must change and what is optional:
+**main problems** (anything that changes scope, feasibility, effort, money, acceptance or meaning)
+on top, **minor points** (wording, formatting, typos, undefined abbreviations, leftover notes,
+naming) in one list at the bottom. A minor point never appears in the top part. Do not rewrite the
+document unless asked.
 
 **First review** — in this order:
 
-1. One-line verdict (e.g. "Not ready: 3 blockers, all in e-invoicing and master data.").
-2. For each deliverable/section **that has findings**, in document order: its name in bold, then
-   1–3 bullets. Each bullet is one plain sentence of at most ~30 words: the problem, then the fix or suggested
-   wording. Optional tag: `[Blocker]` `[Scope]` `[Risk]` `[Commercial]`.
-3. One closing line: what you deliberately left out as non-blocking, and any claim you could not verify.
+1. One-line verdict with the counts (e.g. "Not ready: 3 blockers, 5 other main problems, 7 minor.").
+2. **Main problems.** For each deliverable/section **that has findings**, in document order: its
+   name in bold, then 1–3 bullets, blockers first. Each bullet is one plain sentence of at most
+   ~30 words: the problem, then the fix or suggested wording. Tag each: `[Blocker]` or `[Scope]`
+   `[Risk]` `[Commercial]`. `[Blocker]` is only for what makes the document unsignable as
+   written — undeliverable, a contradiction the customer can hold Rossum to, or effort clearly
+   under the fee. That is usually a handful; if you have more than ~5, re-tag the weaker ones.
+3. **Minor (non-blocking)** — one flat bullet list, each prefixed with the deliverable name
+   ("T&E Export — 'routes' → 'export pipeline'."). Short fragments are fine. Omit the heading
+   if there are none; if the user said "no nitpicks", replace the list with one line giving the count.
+4. One closing line: any claim you could not verify.
 
-Bullets, not numbered lists. No tables, no headers beyond the bold names — the text is pasted into
+Bullets, not numbered lists. No tables, no headers beyond the bold names and "Minor (non-blocking)" — the text is pasted into
 Google Docs or a comment thread.
 
 **Re-review** — "Fixed:" in one line listing the resolved points; then "Still open:" grouped by
-deliverable, only items that are still real blockers; then the verdict: approve / approve with
+deliverable, main problems only; then remaining minor points as one line; then the verdict: approve / approve with
 listed changes / do not approve.
 
 **Reply to author** — per comment: agree, or withdraw the point with the reason, plus the suggested
@@ -93,7 +102,8 @@ content that conflicts with or is missing from the surrounding text.
 
 ## Common mistakes
 
-- Burying the blockers among style remarks — the user asked for blockers.
+- Mixing tiers — a wording remark among the main problems dilutes the blockers; a scope gap in
+  the minor list hides it. If fixing it changes what is delivered or paid, it is a main problem.
 - Commenting on every deliverable — leave out the ones with nothing to fix.
 - Long explanations per point — one sentence, the author knows the context.
 - Inventing rates, durations or platform limits without saying they are assumptions.

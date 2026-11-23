@@ -146,7 +146,7 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | Skill | Description |
 |-------|-------------|
 | `/rossum-sa:write-sow` | Generate a Statement of Work from project requirements |
-| `/rossum-sa:peer-review [document] [focus]` | Peer-review a SOW, solution design, effort estimate or project plan — blockers only, grouped by deliverable; re-review ("did they fix it?") and reply-to-author modes |
+| `/rossum-sa:peer-review [document] [focus]` | Peer-review a SOW, solution design, effort estimate or project plan — main problems by deliverable on top, minor points listed below; re-review ("did they fix it?") and reply-to-author modes |
 | `/rossum-sa:analyze [path]` | Check an implementation for configuration errors |
 | `/rossum-sa:document [path]` | Produce a queue-focused reference document |
 | `/rossum-sa:implement` | Plan and execute an integration project end-to-end |
