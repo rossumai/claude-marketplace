@@ -22,6 +22,8 @@ _cached_base_url = None
 _cached_token = None
 _token_validated = False
 _client_capabilities = {}
+# clientInfo.name from initialize: "claude-ai" is the desktop app / Cowork, "claude-code" the CLI.
+_client_name = ""
 _server_request_counter = 0
 
 
@@ -230,7 +232,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.50.0"
+_SERVER_VERSION = "0.50.1"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -1961,11 +1963,31 @@ def handle_set_token(request_id, arguments):
     ok, detail = _probe_token(base_url, token)
     if not ok and from_project:
         _invalidate_connection()
+        if _client_name != "claude-code":
+            # Cowork refuses a token pasted into chat, so outside the CLI the project file is the only way in.
+            return tool_result(
+                request_id,
+                f"The {label} token was rejected by {base_url} ({detail}) — it has most likely "
+                f"expired. Ask the user to {_project_refresh_hint}, then call rossum_set_token "
+                "with project_dir again. Do not ask them to paste the token.",
+                is_error=True,
+            )
+        content = _elicit(
+            f"The {label} token was rejected by {base_url} — it has most likely expired. "
+            "Paste a fresh Rossum API token for this org.",
+            {"type": "object",
+             "properties": {"token": {"type": "string", "title": "API Token"}},
+             "required": ["token"]},
+        )
+        fresh = ((content or {}).get("token") or "").strip()
+        if fresh:
+            return handle_set_token(request_id, {"token": fresh, "baseUrl": base_url})
         return tool_result(
             request_id,
             f"The {label} token was rejected by {base_url} ({detail}) — it has most likely "
-            f"expired. Ask the user to {_project_refresh_hint}, then call rossum_set_token "
-            "with project_dir again. Do not ask them to paste the token.",
+            f"expired. Ask the user for a fresh Rossum API token for {base_url} and call "
+            "rossum_set_token with token and baseUrl. That connects these tools only: prd2/rdc "
+            f"still need the project refreshed — {_project_refresh_hint}.",
             is_error=True,
         )
     if not ok:
@@ -8671,8 +8693,9 @@ def main():
 
         try:
             if method == "initialize":
-                global _client_capabilities
+                global _client_capabilities, _client_name
                 _client_capabilities = message.get("params", {}).get("capabilities", {})
+                _client_name = (message.get("params", {}).get("clientInfo") or {}).get("name", "")
                 respond(request_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
@@ -8708,10 +8731,11 @@ def main():
                         "/home/claude) — add project_env (rdc env / prd2 org folder) if the error "
                         "says several envs hold a token. The server reads the project's own token; "
                         "you never open the credential file. If it reports the token rejected or "
-                        "missing, relay the refresh step from its message to the user verbatim "
-                        "(rdc: `rdc auth <env>` in a terminal in that folder; prd2: a new `token:` "
-                        "line in <org-folder>/credentials.yaml), wait for them, then call "
-                        "rossum_set_token with project_dir again. The same applies when a token "
+                        "missing, do what its message says: in Cowork relay the refresh step to the "
+                        "user verbatim (rdc: `rdc auth <env>` in a terminal in that folder; prd2: a "
+                        "new `token:` line in <org-folder>/credentials.yaml), wait for them, then "
+                        "call rossum_set_token with project_dir again; in Claude Code ask the user "
+                        "for a fresh token and connect with it. The same applies when a token "
                         "expires mid-session. "
                         "EDITING RULE — local file workflow: "
                         "When modifying hook code or formula logic in a prd project, only edit the local .py files. "
