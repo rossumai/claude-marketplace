@@ -187,7 +187,7 @@ When `rossum-sa` is enabled, Claude automatically gets domain knowledge for:
 - **Business rules & validation** — native Rules vs. the legacy Business Rules Validation extension, conditions, actions, automation blocking
 - **Email Body Converter** — hosted webhook that turns email HTML bodies (and HTML/TXT attachments or uploads) into PDF documents for extraction — setup, full settings schema, regional availability, body-only email recipes
 - **Delayed Document Confirmation** — the two Store hooks (templates 51/52) that re-run matching and automation on `to_review` documents once missing master data arrives: prerequisites (`reautomate` flag, `_last_modified_date`), settings and placeholders, the service collection, defects in older template copies
-- **Parts library** — vetted, parameterized, composable building blocks (master-data import, matching & export) the SA and Claude compose from instead of rebuilding; indexed by the `parts-index` pack
+- **Parts library** — vetted, parameterized, composable building blocks (master-data import, matching, routing & export) the SA and Claude compose from instead of rebuilding; indexed by the `parts-index` pack
 
 ## 💡 What can you do with this?
 

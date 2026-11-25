@@ -25,7 +25,7 @@ parts/<axis>/<part-name>/
 ```
 
 Axes: `capture`, `master-data`, `matching`, `validation`, `export`, `formula`,
-`diagnostics`.
+`diagnostics`, `routing`.
 
 `diagnostics` is the odd one out: those parts are not composed into a document flow, they are
 SA tools run by hand against a live environment to answer a question the config cannot. They
@@ -34,6 +34,9 @@ still carry the same contract, and they never auto-compose.
 `master-data` holds the feeds that fill the collections matching reads — scheduled importers
 from an external system into MDH datasets. Their fragments are whole function hooks; they
 `produce` no schema field (they write datasets), so `produces`/`consumes` are legitimately empty.
+
+`routing` holds what moves a document from an intake queue to the queue for its type, and what
+carries the type decided there across the move. Its parts work as a set, declared with `requires`.
 
 ## Category-qualified reference
 
@@ -47,7 +50,7 @@ with no glob and no ambiguity.
 | key | required | meaning |
 |-----|----------|---------|
 | `name` | yes | unique, kebab-case, equals the folder name |
-| `axis` | yes | one of the five axes |
+| `axis` | yes | one of the axes listed above |
 | `summary` | yes | one line, shown in the index |
 | `maturity` | yes | `candidate` \| `reviewed` \| `standard` (only `standard` is safe to auto-compose) |
 | `params` | yes | object: `{ "<name>": { "type": "string" \| "number", "required": true \| "default": <v>, "description": "..." } }`. `type` is mandatory and drives the seam: a `number` param must appear **bare** in a JSON fragment (`"$gte": «threshold»`), a `string` param **quoted** (`"«dataset»"`). Quote a number and the filled config compares a string against a numeric value — zero rows, no error. CI rejects both mismatches. |
@@ -55,6 +58,7 @@ with no glob and no ambiguity.
 | `consumes` | yes | array of **post-fill schema field ids** the fragment *reads* (an input, a gate/condition, a query input, a mapping source) — same literal-or-declared-seam grounding rule as `produces`. Empty is legitimate only when the fragment genuinely reads no schema field. No duplicates. |
 | `provenance` | yes | where it was lifted from |
 | `reference` | yes | `"<pack-name>#<anchor>"` — links down to the grammar |
+| `requires` | no | array of category-qualified refs (`<axis>/<name>`) to parts this one cannot work without. Use it when two parts depend on each other through something `produces`/`consumes` cannot show, such as `annotation.metadata`: taking one alone then fails silently. Each entry must resolve to `parts/<axis>/<name>/part.json`; no self-reference, no duplicates. |
 | `notes` | no | soft gotchas not mechanically checkable |
 
 ## Placeholder convention

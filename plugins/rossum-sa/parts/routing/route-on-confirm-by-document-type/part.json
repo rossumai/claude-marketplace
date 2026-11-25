@@ -1,0 +1,44 @@
+{
+  "name": "route-on-confirm-by-document-type",
+  "axis": "routing",
+  "summary": "Native rule on the intake queue: on annotation_confirmed (automated or human), change_queue to the destination for the listed document types, always with reimport: true. One rule per destination.",
+  "maturity": "standard",
+  "params": {
+    "rule_name": {
+      "required": true,
+      "type": "string",
+      "description": "rule name, max 255 characters; name the destination role, e.g. 'Inbox - route invoices and credit notes to <destination>'"
+    },
+    "inbox_queue_url": {
+      "required": true,
+      "type": "string",
+      "description": "URL of the intake (inbox) queue the rule is attached to"
+    },
+    "document_type_field": {
+      "default": "document_type",
+      "type": "string",
+      "description": "schema id of the document-type enum field; the same value in all three routing parts"
+    },
+    "document_types": {
+      "required": true,
+      "type": "string",
+      "description": "the types this destination takes, as comma-separated single-quoted Python literals, e.g. 'tax_invoice', 'credit_note'; each must be an option of the enum"
+    },
+    "destination_queue_url": {
+      "required": true,
+      "type": "string",
+      "description": "URL of the queue the document moves to"
+    }
+  },
+  "produces": [],
+  "consumes": [
+    "«document_type_field»"
+  ],
+  "requires": [
+    "routing/document-type-record-in-metadata",
+    "routing/document-type-restore-from-metadata"
+  ],
+  "provenance": "Lifted from a production deployment of a classic intake (test 2026-11-12/13, production 2026-11-16): one rule per destination on the inbox. Both paths verified live: an automated confirm and a human confirm after review each moved the document and ran the destination's initialize hooks. reimport: true was chosen after reimport: false was measured skipping the destination's initialize chain and carrying the source queue's automation blockers; a second, independent SA reported the same. Senior-SA sign-off for standard: JŠ (2026-11-25).",
+  "reference": "business-rules-reference#payload-shapes-for-the-side-effect-actions",
+  "notes": "Always reimport: true into a destination; the one exception is a return trip whose content must survive, and only while the target runs automation never. Keep the intake queue on use_confirmed_state: true (a historic reimport skip, 6 of 19 moves, was tied to use_confirmed_state: false on the source). Without the Record and Restore parts, a re-import re-predicts the type and a person's correction on the inbox is lost. A plain manual move fires no initialize, so nothing is restored on it."
+}
