@@ -1313,8 +1313,12 @@ def test_set_token_project_dir_for_a_shared_server(fresh_autoconnect, tmp_path, 
     (lambda root: _rdc_project(root, {"prod": "old"}), "rdc auth prod"),
     (lambda root: _prd2_project(root, {"production-org": "old"}), "production-org/credentials.yaml"),
 ])
-def test_expired_project_token_names_the_refresh_step(fresh_autoconnect, tmp_path, monkeypatch, make, refresh):
+@pytest.mark.parametrize("client", ["claude-ai", ""])
+def test_expired_project_token_names_the_refresh_step(fresh_autoconnect, tmp_path, monkeypatch, make, refresh, client):
+    """Cowork (claude-ai) and any non-CLI client: file refresh only, no prompt, no paste."""
     make(tmp_path)
+    monkeypatch.setattr(server, "_client_name", client)
+    monkeypatch.setattr(server, "_elicit", lambda *a: pytest.fail("must not prompt outside the CLI"))
     monkeypatch.setattr(server, "_probe_token", lambda base, tok: (False, "HTTP 401"))
     out = []
     monkeypatch.setattr(server, "tool_result",
@@ -1323,3 +1327,29 @@ def test_expired_project_token_names_the_refresh_step(fresh_autoconnect, tmp_pat
     text, is_error = out[-1]
     assert is_error and refresh in text and "project_dir again" in text
     assert "old" not in text.replace("folder", "")  # the token itself never echoes
+
+
+def test_expired_project_token_in_the_cli_prompts_and_connects(fresh_autoconnect, tmp_path, monkeypatch):
+    _prd2_project(tmp_path, {"production-org": "old"})
+    monkeypatch.setattr(server, "_client_name", "claude-code")
+    monkeypatch.setattr(server, "_probe_token", lambda base, tok: (tok == "new-tok", "HTTP 401"))
+    monkeypatch.setattr(server, "_elicit", lambda *a: {"token": " new-tok "})
+    out = []
+    monkeypatch.setattr(server, "tool_result",
+                        lambda rid, text, is_error=False: out.append((text, is_error)))
+    server.handle_set_token(1, {"project_dir": str(tmp_path)})
+    assert out[-1][1] is False and server._cached_token == "new-tok"
+
+
+def test_expired_project_token_in_the_cli_without_a_prompt_asks_in_chat(fresh_autoconnect, tmp_path, monkeypatch):
+    _prd2_project(tmp_path, {"production-org": "old"})
+    monkeypatch.setattr(server, "_client_name", "claude-code")
+    monkeypatch.setattr(server, "_probe_token", lambda base, tok: (False, "HTTP 401"))
+    monkeypatch.setattr(server, "_elicit", lambda *a: None)
+    out = []
+    monkeypatch.setattr(server, "tool_result",
+                        lambda rid, text, is_error=False: out.append((text, is_error)))
+    server.handle_set_token(1, {"project_dir": str(tmp_path)})
+    text, is_error = out[-1]
+    assert is_error and "Ask the user for a fresh Rossum API token" in text
+    assert "production-org/credentials.yaml" in text and "Do not ask them to paste" not in text
