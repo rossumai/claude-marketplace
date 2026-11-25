@@ -39,6 +39,11 @@ key, Restore reads another, and the engine's re-prediction stays.
    `validation_sources`. `"human"` alone only means a person visited the field. A write by a hook
    (Restore included) or an engine re-prediction never carries `"human"`, so neither loops back.
 
+**Limit:** `"human"` stays in `validation_sources` once a person has visited the field. If another
+hook later rewrites the type on the same annotation, that write also passes both checks and is
+recorded as a correction. Record and Restore ran together in production without this happening.
+Check any other hook that writes the type field before you add this part.
+
 The public API describes `updated_datapoints` as datapoint (content-node) ids. The hook also accepts
 the schema id, so the check holds under either reading.
 

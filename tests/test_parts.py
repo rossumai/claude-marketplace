@@ -164,9 +164,36 @@ def _requires_errors(d: Path, meta: dict) -> list[str]:
             errs.append(f"{d.name}: requires lists itself ({ref!r})")
             continue
         axis, name = ref.split("/")
-        if axis not in AXES or not (root / axis / name / "part.json").is_file():
+        other_path = root / axis / name / "part.json"
+        if axis not in AXES or not other_path.is_file():
             errs.append(f"{d.name}: requires {ref!r}, which does not resolve to "
                         f"parts/{ref}/part.json")
+            continue
+        errs += _shared_param_errors(d.name, meta, ref, other_path)
+    return errs
+
+
+def _shared_param_errors(name: str, meta: dict, ref: str, other_path: Path) -> list[str]:
+    """Parts in a `requires` set often share a seam (a field id, a metadata key) that
+    must hold the same value in each. A param with the same name must therefore
+    declare the same type and the same default (or both be required); otherwise
+    the defaults fill one part with one id and its partner with another, and the
+    pair fails silently."""
+    try:
+        other = json.loads(other_path.read_text("utf-8")).get("params") or {}
+    except json.JSONDecodeError:
+        return []  # reported when the other part is validated
+    mine = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+    errs: list[str] = []
+    for pname in sorted(set(mine) & set(other)):
+        a, b = mine[pname], other[pname]
+        if not (isinstance(a, dict) and isinstance(b, dict)):
+            continue
+        sig_a = (a.get("type"), a.get("default"), a.get("required"))
+        sig_b = (b.get("type"), b.get("default"), b.get("required"))
+        if sig_a != sig_b:
+            errs.append(f"{name}: param «{pname}» is (type, default, required) "
+                        f"{sig_a} here but {sig_b} in required part {ref!r}")
     return errs
 
 
@@ -366,6 +393,20 @@ def test_requires_resolves_to_an_existing_part(tmp_path):
     bare = tmp_path / "matching" / "needs-bare-bp"
     _write_bp(bare, {}, "{}", requires=["needs-other-bp"])
     assert any("is not '<axis>/<name>'" in e for e in validate_part(bare)), validate_part(bare)
+
+
+def test_requires_set_shares_param_defaults(tmp_path):
+    """Two parts that require each other and share a seam must default it alike."""
+    key = {"default": "intake_type", "type": "string", "description": "x"}
+    _write_bp(tmp_path / "matching" / "pair-a-bp", {"key": key}, '{"k": "«key»"}')
+    same = tmp_path / "matching" / "pair-same-bp"
+    _write_bp(same, {"key": dict(key, description="y")}, '{"k": "«key»"}',
+              requires=["matching/pair-a-bp"])
+    assert not validate_part(same), validate_part(same)
+    drift = tmp_path / "matching" / "pair-drift-bp"
+    _write_bp(drift, {"key": dict(key, default="other_key")}, '{"k": "«key»"}',
+              requires=["matching/pair-a-bp"])
+    assert any("param «key»" in e for e in validate_part(drift)), validate_part(drift)
 
 
 def test_requires_rejects_self_reference(tmp_path):

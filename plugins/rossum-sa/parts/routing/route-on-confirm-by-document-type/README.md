@@ -32,6 +32,11 @@ on the inbox, then routed) and its alternative (Option A: a constant formula on 
 `«document_types»` is spliced into the `trigger_condition` string, so use single-quoted Python
 literals separated by commas. Each value must be an option of the enum.
 
+**Every enum option needs exactly one rule.** A type that no rule lists is confirmed and then stays
+on the inbox, and nothing reports it. List each option of the type field in one rule's
+`«document_types»`, including a catch-all type such as "other" (route it to an other-documents
+queue).
+
 ## Why `annotation_confirmed`
 
 It fires on the **automated** confirm and on a **human** confirm alike. So one mechanism covers both
@@ -93,6 +98,7 @@ Structured formats that arrive by email and are mapped at `upload.created`:
 
 ## Verify
 
+- Every option of the type enum appears in exactly one rule's `«document_types»`.
 - Per type: one real document lands on its destination with the right type, and the
   destination's `initialize` hooks ran.
 - One document below the threshold stops on the inbox for review.
