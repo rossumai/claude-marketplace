@@ -24,8 +24,9 @@ customer. Your job is to find what will hurt the project — not to polish prose
 ## Read before judging
 
 1. Read the whole document. Note its section order and deliverable names — the review follows them.
-2. **SOW or proposal:** run the review mode of `write-sow` (`${CLAUDE_PLUGIN_ROOT}/skills/write-sow/SKILL.md`,
-   section "Reviewing an existing SOW"): match a recipe, list the `decide[]` entries left open,
+2. **SOW or proposal:** run the review mode of `write-sow` — invoke it with the Skill tool (`rossum-sa:write-sow`), which
+   fills in its `${CLAUDE_PLUGIN_ROOT}` paths; reading the file raw leaves them unresolved. Follow
+   its section "Reviewing an existing SOW": match a recipe, list the `decide[]` entries left open,
    and for a Coupa CIB SOW diff the clauses against `coupa-cib.md`. Use the result as input;
    do not paste it as the review.
 3. Verify every platform claim the document relies on against the autoloaded references
