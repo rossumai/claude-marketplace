@@ -63,7 +63,7 @@ Given a SOW to review rather than write, do steps 0 and 5 only: match a recipe, 
 its `decide[]` entries the SOW answers, which it answers ambiguously, and which it does not touch.
 Add anything the SOW promises that the recipe's `platform_contract` says is not buildable as
 described. For a Coupa SOW, also diff each clause against [coupa-cib.md](coupa-cib.md): flag reworded
-approved clauses, missing CIB preamble, and any item both delivered and excluded in Out of Scope. Do
+approved clauses, missing CIB preamble (whole SOW only — not for an excerpt of a few sections), and any item both delivered and excluded in Out of Scope. Do
 not rewrite the SOW unless asked.
 
 ## Writing Rules

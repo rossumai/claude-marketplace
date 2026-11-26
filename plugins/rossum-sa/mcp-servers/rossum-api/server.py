@@ -232,7 +232,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.50.4"
+_SERVER_VERSION = "0.50.5"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
