@@ -10,7 +10,8 @@ You are a Rossum.ai Solution Architect writing a Statement of Work. Generate a S
 
 ## Instructions
 
-0. **Match a recipe first, and scope from it.** Check `${CLAUDE_PLUGIN_ROOT}/recipes/` for a recipe
+0. **Match a recipe first, and scope from it.** Check `${CLAUDE_PLUGIN_ROOT}/recipes/` (the plugin root, two folders
+   above this skill's own folder — `../../recipes/` from it, not a `recipes/` inside it) for a recipe
    whose `shape` matches the engagement (document domain × target × integration shape). If one fits,
    its `decide[]` entries **are** the scoping questionnaire — they are the decisions a build actually
    stalls on, mined from delivered implementations, so they beat a generic checklist. Two specific
