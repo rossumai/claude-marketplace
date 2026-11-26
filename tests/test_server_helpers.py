@@ -1354,3 +1354,19 @@ def test_expired_project_token_in_the_cli_without_a_prompt_asks_in_chat(fresh_au
     text, is_error = out[-1]
     assert is_error and "Ask the user for a fresh Rossum API token" in text
     assert "production-org/credentials.yaml" in text and "Do not ask them to paste" not in text
+
+
+def test_expired_project_token_in_the_cli_accepts_username_and_password(fresh_autoconnect, tmp_path, monkeypatch):
+    """Partners usually hold a login, not a token: the prompt must take either."""
+    _prd2_project(tmp_path, {"production-org": "old"})
+    monkeypatch.setattr(server, "_client_name", "claude-code")
+    monkeypatch.setattr(server, "_probe_token", lambda base, tok: (tok == "login-tok", "HTTP 401"))
+    monkeypatch.setattr(server, "_elicit", lambda *a: {"username": "partner@example.com", "password": "pw"})
+    monkeypatch.setattr(server, "_login_with_password",
+                        lambda base, u, pw: ("login-tok", None) if (u, pw) == ("partner@example.com", "pw") else (None, "bad"))
+    out = []
+    monkeypatch.setattr(server, "tool_result",
+                        lambda rid, text, is_error=False: out.append((text, is_error)))
+    server.handle_set_token(1, {"project_dir": str(tmp_path)})
+    assert out[-1][1] is False and "username+password" in out[-1][0]
+    assert server._cached_token == "login-tok"

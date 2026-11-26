@@ -232,7 +232,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.50.2"
+_SERVER_VERSION = "0.50.3"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -1975,19 +1975,29 @@ def handle_set_token(request_id, arguments):
             )
         content = _elicit(
             f"The {label} token was rejected by {base_url} — it has most likely expired. "
-            "Paste a fresh Rossum API token for this org.",
+            "Enter a fresh API token, OR your username and password (implementation partners).",
             {"type": "object",
-             "properties": {"token": {"type": "string", "title": "API Token"}},
-             "required": ["token"]},
+             "properties": {
+                 "token": {"type": "string", "title": "API Token",
+                           "description": "Leave empty to log in with username + password"},
+                 "username": {"type": "string", "title": "Username",
+                              "description": "Rossum account email (leave empty if using a token)"},
+                 "password": {"type": "string", "title": "Password"},
+             }},
         )
-        fresh = ((content or {}).get("token") or "").strip()
-        if fresh:
-            return handle_set_token(request_id, {"token": fresh, "baseUrl": base_url})
+        content = content or {}
+        fresh = (content.get("token") or "").strip()
+        user = (content.get("username") or "").strip()
+        if fresh or user:
+            return handle_set_token(request_id, {
+                "token": fresh, "username": "" if fresh else user,
+                "password": "" if fresh else content.get("password") or "", "baseUrl": base_url})
         return tool_result(
             request_id,
             f"The {label} token was rejected by {base_url} ({detail}) — it has most likely "
-            f"expired. Ask the user for a fresh Rossum API token for {base_url} and call "
-            "rossum_set_token with token and baseUrl. That connects these tools only: prd2/rdc "
+            f"expired. Ask the user for a fresh Rossum API token — or their username and password, "
+            f"which implementation partners use — for {base_url} and call rossum_set_token with "
+            "token (or username + password) and baseUrl. That connects these tools only: prd2/rdc "
             f"still need the project refreshed — {_project_refresh_hint}. "
             "Tell the user now, before any other work: say the Rossum token is not working, give the refresh step, and ask whether to wait for it or to continue from local files only (name what that leaves unchecked). Do not fall back to local files on your own.",
             is_error=True,
