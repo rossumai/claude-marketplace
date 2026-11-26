@@ -1326,6 +1326,7 @@ def test_expired_project_token_names_the_refresh_step(fresh_autoconnect, tmp_pat
     server.handle_set_token(1, {"project_dir": str(tmp_path)})
     text, is_error = out[-1]
     assert is_error and refresh in text and "project_dir again" in text
+    assert "local files only" in text  # the user is asked before any silent local-only fallback
     assert "old" not in text.replace("folder", "")  # the token itself never echoes
 
 
