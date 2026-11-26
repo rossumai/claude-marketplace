@@ -232,7 +232,7 @@ def _invalidate_connection():
     _connection_source = None
 
 
-_SERVER_VERSION = "0.50.1"
+_SERVER_VERSION = "0.50.2"
 _USER_AGENT = f"rossum-sa-mcp/{_SERVER_VERSION}"
 _current_tool = None  # name of the in-flight tool; emitted as X-Rossum-MCP-Tool
 
@@ -252,7 +252,7 @@ def _auth_headers(extra=None, token=None):
     return headers
 
 
-_NOT_CONNECTED_MSG = "Not connected to Rossum. Call rossum_set_token to establish a connection."
+_NOT_CONNECTED_MSG = "Not connected to Rossum. Call rossum_set_token to establish a connection — with project_dir=<the project folder's absolute local path> when the session has an rdc/prd2 project folder. If that fails, tell the user right away and ask whether to fix the token or continue from local files only; never continue silently."
 
 
 # Non-interactive bootstrap. rossum_set_token is the only way in, and its
@@ -1969,7 +1969,8 @@ def handle_set_token(request_id, arguments):
                 request_id,
                 f"The {label} token was rejected by {base_url} ({detail}) — it has most likely "
                 f"expired. Ask the user to {_project_refresh_hint}, then call rossum_set_token "
-                "with project_dir again. Do not ask them to paste the token.",
+                "with project_dir again. Do not ask them to paste the token. "
+                "Tell the user now, before any other work: say the Rossum token is not working, give the refresh step, and ask whether to wait for it or to continue from local files only (name what that leaves unchecked). Do not fall back to local files on your own.",
                 is_error=True,
             )
         content = _elicit(
@@ -1987,7 +1988,8 @@ def handle_set_token(request_id, arguments):
             f"The {label} token was rejected by {base_url} ({detail}) — it has most likely "
             f"expired. Ask the user for a fresh Rossum API token for {base_url} and call "
             "rossum_set_token with token and baseUrl. That connects these tools only: prd2/rdc "
-            f"still need the project refreshed — {_project_refresh_hint}.",
+            f"still need the project refreshed — {_project_refresh_hint}. "
+            "Tell the user now, before any other work: say the Rossum token is not working, give the refresh step, and ask whether to wait for it or to continue from local files only (name what that leaves unchecked). Do not fall back to local files on your own.",
             is_error=True,
         )
     if not ok:
@@ -8735,7 +8737,11 @@ def main():
                         "user verbatim (rdc: `rdc auth <env>` in a terminal in that folder; prd2: a "
                         "new `token:` line in <org-folder>/credentials.yaml), wait for them, then "
                         "call rossum_set_token with project_dir again; in Claude Code ask the user "
-                        "for a fresh token and connect with it. The same applies when a token "
+                        "for a fresh token and connect with it. Either way, say so to the user at once and "
+                        "ask whether to wait for the fix or continue from local files only — never "
+                        "fall back to local files silently, and never tell the user there is no "
+                        "Rossum access or no Rossum tool without having called rossum_set_token first. "
+                        "The same applies when a token "
                         "expires mid-session. "
                         "EDITING RULE — local file workflow: "
                         "When modifying hook code or formula logic in a prd project, only edit the local .py files. "
