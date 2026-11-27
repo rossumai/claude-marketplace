@@ -13,8 +13,9 @@ in the same corpus: 2 do both HTTPS and file, 1 is file-only.
 
 ## What it covers
 
-9 phases, 54 enumerated intents. The phases are the delivery chunks; each carries `decide[]`
-(what an SA resolves per customer) and `verify` (how the phase is proven).
+9 phases, 58 enumerated intents (4 of them routing intents from 2 implementations). The phases are
+the delivery chunks; each carries `decide[]` (what an SA resolves per customer) and `verify` (how the
+phase is proven).
 
 The layer most people underestimate is **master data**: import hooks outnumber export hooks in 20 of
 24 trees in the corpus. A recipe that describes only the export leg describes the minority of the

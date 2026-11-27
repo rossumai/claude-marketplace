@@ -1,0 +1,19 @@
+{
+  "name": "«rule_name»",
+  "description": "Classic intake: when an inbox document is confirmed, automatically or by a person, as one of the listed types, move it to the destination queue and re-import it there.",
+  "enabled": true,
+  "queues": ["«inbox_queue_url»"],
+  "trigger_condition": "not is_empty(field.«document_type_field») and field.«document_type_field» in [«document_types»]",
+  "actions": [
+    {
+      "id": "route-on-confirm",
+      "enabled": true,
+      "type": "change_queue",
+      "event": "annotation_confirmed",
+      "payload": {
+        "queue": "«destination_queue_url»",
+        "reimport": true
+      }
+    }
+  ]
+}

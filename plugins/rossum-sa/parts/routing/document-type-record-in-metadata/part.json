@@ -1,0 +1,28 @@
+{
+  "name": "document-type-record-in-metadata",
+  "axis": "routing",
+  "summary": "Function hook: write the intake decision (initialize on intake queues) and any human correction (updated, human validation source) of the document type into annotation.metadata, so it survives a re-import.",
+  "maturity": "reviewed",
+  "params": {
+    "document_type_field": {
+      "default": "document_type",
+      "type": "string",
+      "description": "schema id of the document-type enum field; the same value in all three routing parts"
+    },
+    "metadata_key": {
+      "default": "intake_document_type",
+      "type": "string",
+      "description": "annotation.metadata key that carries the type; the same value in the Record and Restore parts"
+    }
+  },
+  "produces": [],
+  "consumes": [
+    "«document_type_field»"
+  ],
+  "requires": [
+    "routing/document-type-restore-from-metadata"
+  ],
+  "provenance": "Lifted from a production function hook (test 2026-11-12/13, production 2026-11-16), generalized: the field id and metadata key became seams, and the human-correction path now reads metadata fresh before its PATCH, as the intake path already did. Verified live: the engine's prediction is in the initialize payload (rir_confidence present, no human source). The generalized fragment, seams filled with the defaults, passed 6 Record cases on the real txscript 1.2.0 runtime with a stubbed rossum_api client (not committed: the repo has no harness for running part fragments). Senior-SA sign-off for standard: JŠ (2026-11-25).",
+  "reference": "txscript-reference#hook-object-prerequisites",
+  "notes": "Writes annotation.metadata, not a schema field, so produces is empty and the dependency on the Restore part is declared in requires. Uses the rossum_api client (needs the runtime's default third-party library pack), unlike the urllib-based parts. annotation_content.updated blocks the validation screen while it runs and fires on every field edit: about 0.2 s warm, 4.3-5.0 s on a cold start. Moving the correction capture to annotation_content.confirm runs it once per confirm instead; still blocking."
+}

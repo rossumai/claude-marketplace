@@ -98,14 +98,37 @@
       "goal": "each document lands in the queue whose rules and coding apply to it",
       "decide": [
         "Route by country, legal entity, or document type? This choice fixes queue_axis and is expensive to change later.",
-        "Routing mechanism: native rule change_queue vs a sorting store-extension. Measured: both occur; a store extension holds routing rules for 3 of 6 implementations."
+        "Routing mechanism: native rule change_queue vs a sorting store-extension. Measured: both occur; a store extension holds routing rules for 3 of 6 implementations.",
+        "Routing by document type: Option A or Option B? Option A: each target queue carries the type as a constant formula and rules route on annotation_imported; nothing needs carrying because a formula is not re-predicted, and a manually misrouted document gets the right type automatically. Its costs: no review gate (it routes on any prediction at import), no correction before the move, one type per target queue. Option B: an inbox decides the type (the engine at a confident score, or a person), a rule routes on annotation_confirmed, and a hook pair carries the type in annotation.metadata. Choose B when a target queue takes several types or a person must be able to correct the type before the move.",
+        "Which document types exist, and which queue takes each? Option B needs one routing rule per destination, and every option of the type enum must be listed by exactly one rule: a type no rule lists is confirmed and stays on the inbox, with no error.",
+        "Option B: the confidence threshold on the type field, and who reviews below it. automation_level confident plus the field's score_threshold decides auto-route versus review. A minority class (e.g. 'other') can score weakly, so measure before choosing.",
+        "Do owner allocation or prioritisation run on the inbox? They need their input fields on the inbox schema.",
+        "Multi-document files without automatic splitting: accepted as one document, or split manually in the UI? A manual split still creates edit relations.",
+        "Cutover: documents already in the inbox. Drain them first, then re-extract the rest in place. Switch the inbox with automation never first (a human confirm routes), then enable it."
       ],
-      "verify": "20 real documents land in the expected queue; zero in the inbox after processing",
+      "verify": "20 real documents land in the expected queue; zero in the inbox after processing. For routing by document type: per type, one real document lands on its queue with the right type and the destination's initialize hooks ran; one low-score document stops on the inbox; one document corrected on the inbox and then confirmed keeps the corrected type downstream; zero documents arrive on a destination in exporting or failed_export.",
       "requires": {
         "intents": [
-          "M2"
+          "M2",
+          "R1",
+          "R2",
+          "R3",
+          "R4"
         ]
-      }
+      },
+      "constraints": [
+        "Always reimport: true into a destination. reimport: false skips the destination's initialize chain (measured: an initialize-only owner allocator assigned no owner) and carries the source queue's automation blockers onto it. Exception: a return trip whose content must survive, safe only while the target runs automation never.",
+        "Keep the inbox on use_confirmed_state: true. reimport: true once skipped the re-import in 6 of 19 moves from a source with use_confirmed_state: false; reported fixed in 2026-11, not measured again.",
+        "A re-import re-predicts every captured field on the destination, the type included. Under Option B the type must travel in annotation.metadata, which a move keeps.",
+        "An annotation_content.updated hook blocks the validation screen on every field edit: about 0.2 s warm, 4.3-5.0 s on a cold start.",
+        "A plain manual move fires no initialize, so nothing restores or fixes the type on it. Accepted gap: the person who moves the document sets the type.",
+        "A queue duplicated from a sorting inbox inherits the split screen. For the standard validation screen: ui_validation_screen_enabled true, ui_edit_always_split_document false, ui_on_edit_confirm validate_first, no ui_edit_values, suggested_edit disable."
+      ],
+      "parts": [
+        "routing/route-on-confirm-by-document-type",
+        "routing/document-type-record-in-metadata",
+        "routing/document-type-restore-from-metadata"
+      ]
     },
     {
       "phase": "3_matching",
@@ -232,7 +255,7 @@
     }
   ],
   "intents": {
-    "note": "Mechanism-free statements. realized_by lists what was OBSERVED first, then alternatives. constraint states what forces or forbids a mechanism. Ids match the three catalogues.",
+    "note": "Mechanism-free statements. realized_by lists what was OBSERVED first, then alternatives. constraint states what forces or forbids a mechanism. Ids match the five catalogues: gating, operator_guidance, derivation, matching, routing.",
     "gating": [
       {
         "id": "A1",
@@ -749,6 +772,70 @@
         "configs_seen": 1,
         "provenance": "baseline"
       }
+    ],
+    "routing": [
+      {
+        "id": "R1",
+        "statement": "a document reaches the queue for its type only once its type is decided",
+        "realized_by": [
+          "native_rule change_queue on annotation_confirmed (Option B)"
+        ],
+        "alternatives": [
+          "native_rule change_queue on annotation_imported, the type a constant formula on the target (Option A)"
+        ],
+        "constraint": "annotation_confirmed fires on the automated and on the human confirm alike, so one rule per destination covers both auto-routed and reviewed documents; the review gate is automation_level confident plus the type field's score_threshold",
+        "parts": [
+          "routing/route-on-confirm-by-document-type"
+        ],
+        "implementations_seen": 2,
+        "provenance": "routing intents: 2 implementations, one running Option B and one Option A"
+      },
+      {
+        "id": "R2",
+        "statement": "the type decided at intake survives the move",
+        "realized_by": [
+          "function hook pair: record the type in annotation.metadata on the inbox, restore it at initialize on the destination (Option B)"
+        ],
+        "alternatives": [
+          "constant formula on the target queue (Option A): a formula is not re-predicted"
+        ],
+        "constraint": "a re-import re-predicts every captured field on the destination, the type included; metadata travels with the annotation, content does not. The restore runs at initialize, before rules on annotation_imported evaluate",
+        "parts": [
+          "routing/document-type-record-in-metadata",
+          "routing/document-type-restore-from-metadata"
+        ],
+        "implementations_seen": 2,
+        "provenance": "routing intents: 2 implementations, one running Option B and one Option A"
+      },
+      {
+        "id": "R3",
+        "statement": "the destination's own import chain runs on arrival",
+        "realized_by": [
+          "change_queue with reimport: true"
+        ],
+        "constraint": "reimport: false skips the destination's initialize chain and carries the source queue's automation blockers; exception: a return trip whose content must survive, safe only while the target runs automation never",
+        "parts": [
+          "routing/route-on-confirm-by-document-type"
+        ],
+        "implementations_seen": 1,
+        "provenance": "routing intents: 2 implementations, one running Option B and one Option A; a second SA reported the same rule independently"
+      },
+      {
+        "id": "R4",
+        "statement": "a person's correction of the type, on any queue, is the type used from then on",
+        "realized_by": [
+          "annotation_content.updated hook: the datapoint is in updated_datapoints AND 'human' is in its validation_sources, then the type is written to annotation.metadata"
+        ],
+        "alternatives": [
+          "capture the correction on annotation_content.confirm: once per confirm, still blocking"
+        ],
+        "constraint": "an updated hook blocks the validation screen on every field edit (about 0.2 s warm, 4.3-5.0 s cold); 'human' alone only means a person visited the field, so both checks are needed",
+        "parts": [
+          "routing/document-type-record-in-metadata"
+        ],
+        "implementations_seen": 1,
+        "provenance": "routing intents: 2 implementations, one running Option B and one Option A"
+      }
     ]
   },
   "hook_chain": {
@@ -992,14 +1079,15 @@
     "cluster_basis": "shape records over local prd2 pulls, deduplicated (second pulls of one customer and copies of a baseline counted once); cluster is ap_invoice x coupa x https_out",
     "intents_extracted_from": 1,
     "intents_cross_checked_against": 1,
+    "routing_intents_extracted_from": 2,
     "mined_from": 2,
-    "honest_statement": "The CLUSTER is 7 implementations - that is what justifies publishing this shape at all. The INTENTS were extracted from 1 implementation and cross-checked against 1 hand-authored baseline, which added 17 and withdrew 0. Do not read 54 intents as the consensus of 7 trees; the other 5 have been clustered, not mined.",
+    "honest_statement": "The CLUSTER is 7 implementations - that is what justifies publishing this shape at all. The INTENTS were extracted from 1 implementation and cross-checked against 1 hand-authored baseline, which added 17 and withdrew 0. Do not read the 54 spine intents as the consensus of 7 trees; the other 5 have been clustered, not mined. The 4 routing intents (R1-R4) were extracted from 2 implementations: one runs Option B, the other Option A, so R3 and R4 rest on 1 implementation each.",
     "next": "extract intents from the remaining 5 cluster members; expect the count to keep rising - the baseline alone added 17",
     "sibling_shapes_seen": {
       "both": 2,
       "file_out": 1
     },
-    "intents_enumerated": 54,
+    "intents_enumerated": 58,
     "validation": "39/49 of the baseline's rules covered by mined intents, 17 added, 0 withdrawn",
     "built_end_to_end": "one worked recipe from a single-country SOW: 31 objects, 8 phases, invoices created in a live target with line-level tax and tags",
     "scope": "The SPINE is the shape of every IDP delivery and is not tied to one target. The counts below describe the cluster the intents were mined from; a new target needs a PROFILE, not a new recipe."

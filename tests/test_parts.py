@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parent.parent
 PARTS = ROOT / "plugins" / "rossum-sa" / "parts"
 SKILLS = ROOT / "plugins" / "rossum-sa" / "skills"
 AXES = {"capture", "master-data", "matching", "validation", "export", "formula",
-        "diagnostics"}
+        "diagnostics", "routing"}
 MATURITIES = {"candidate", "reviewed", "standard"}
 REQUIRED = {"name", "axis", "summary", "maturity", "params",
             "produces", "consumes", "provenance", "reference"}
-OPTIONAL = {"notes"}
+OPTIONAL = {"notes", "requires"}
 PARAM_TYPES = {"string", "number"}
 _PLACEHOLDER = re.compile(r"«([^»]+)»")
 
@@ -135,6 +135,69 @@ def _io_grounding_errors(
     return errs
 
 
+def _requires_errors(d: Path, meta: dict) -> list[str]:
+    """`requires` names the parts this one cannot work without, category-qualified.
+
+    `produces`/`consumes` only list schema fields, so a pair that talks through
+    something else (e.g. `annotation.metadata`) has a dependency they cannot show:
+    taking one part alone then fails silently. Each entry must resolve to
+    `parts/<axis>/<name>/part.json` next to this part's own axis folder, and a
+    part never requires itself.
+    """
+    if "requires" not in meta:
+        return []
+    reqs = meta["requires"]
+    if not isinstance(reqs, list):
+        return [f"{d.name}: requires must be a list"]
+    errs: list[str] = []
+    root = d.parent.parent
+    own = f"{d.parent.name}/{d.name}"
+    seen: set[str] = set()
+    for ref in reqs:
+        if not isinstance(ref, str) or ref.count("/") != 1:
+            errs.append(f"{d.name}: requires entry {ref!r} is not '<axis>/<name>'")
+            continue
+        if ref in seen:
+            errs.append(f"{d.name}: requires lists {ref!r} twice")
+            continue  # already resolved and checked on its first occurrence
+        seen.add(ref)
+        if ref == own:
+            errs.append(f"{d.name}: requires lists itself ({ref!r})")
+            continue
+        axis, name = ref.split("/")
+        other_path = root / axis / name / "part.json"
+        if axis not in AXES or not other_path.is_file():
+            errs.append(f"{d.name}: requires {ref!r}, which does not resolve to "
+                        f"parts/{ref}/part.json")
+            continue
+        errs += _shared_param_errors(d.name, meta, ref, other_path)
+    return errs
+
+
+def _shared_param_errors(name: str, meta: dict, ref: str, other_path: Path) -> list[str]:
+    """Parts in a `requires` set often share a seam (a field id, a metadata key) that
+    must hold the same value in each. A param with the same name must therefore
+    declare the same type and the same default (or both be required); otherwise
+    the defaults fill one part with one id and its partner with another, and the
+    pair fails silently."""
+    try:
+        other = json.loads(other_path.read_text("utf-8")).get("params") or {}
+    except json.JSONDecodeError:
+        return []  # reported when the other part is validated
+    mine = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+    errs: list[str] = []
+    for pname in sorted(set(mine) & set(other)):
+        a, b = mine[pname], other[pname]
+        if not (isinstance(a, dict) and isinstance(b, dict)):
+            continue
+        sig_a = (a.get("type"), a.get("default"), a.get("required"))
+        sig_b = (b.get("type"), b.get("default"), b.get("required"))
+        if sig_a != sig_b:
+            errs.append(f"{name}: param «{pname}» is (type, default, required) "
+                        f"{sig_a} here but {sig_b} in required part {ref!r}")
+    return errs
+
+
 def part_dirs() -> list[Path]:
     return sorted(p.parent for p in PARTS.glob("*/*/part.json"))
 
@@ -173,6 +236,8 @@ def validate_part(d: Path) -> list[str]:
     for fld in ("produces", "consumes"):
         if not isinstance(meta.get(fld), list):
             errs.append(f"{d.name}: {fld} must be a list")
+
+    errs += _requires_errors(d, meta)
 
     if not (d / "README.md").exists():
         errs.append(f"{d.name}: missing README.md")
@@ -250,12 +315,12 @@ def test_fragment_parse_catches_broken_python(tmp_path):
     assert any("not valid Python" in e for e in errs), errs
 
 
-def _write_bp(d: Path, params: dict, fragment_json: str) -> None:
+def _write_bp(d: Path, params: dict, fragment_json: str, **extra) -> None:
     d.mkdir(parents=True)
     (d / "part.json").write_text(json.dumps({
         "name": d.name, "axis": "matching", "summary": "x",
         "maturity": "candidate", "params": params, "produces": [], "consumes": [],
-        "provenance": "x", "reference": "mdh-reference",
+        "provenance": "x", "reference": "mdh-reference", **extra,
     }), "utf-8")
     (d / "README.md").write_text("x", "utf-8")
     (d / "fragment.json").write_text(fragment_json, "utf-8")
@@ -315,6 +380,44 @@ def test_fragment_parse_accepts_correctly_typed_seams(tmp_path):
     )
     errs = validate_part(d)
     assert not errs, errs
+
+
+def test_requires_resolves_to_an_existing_part(tmp_path):
+    """A `requires` entry that names no part is a dependency nobody can satisfy."""
+    _write_bp(tmp_path / "matching" / "needs-other-bp", {}, "{}")
+    ok = tmp_path / "matching" / "needs-ok-bp"
+    _write_bp(ok, {}, "{}", requires=["matching/needs-other-bp"])
+    assert not validate_part(ok), validate_part(ok)
+    bad = tmp_path / "matching" / "needs-missing-bp"
+    _write_bp(bad, {}, "{}", requires=["matching/does-not-exist"])
+    assert any("does not resolve" in e for e in validate_part(bad)), validate_part(bad)
+    bare = tmp_path / "matching" / "needs-bare-bp"
+    _write_bp(bare, {}, "{}", requires=["needs-other-bp"])
+    assert any("is not '<axis>/<name>'" in e for e in validate_part(bare)), validate_part(bare)
+    dup = tmp_path / "matching" / "needs-dup-bp"
+    _write_bp(dup, {}, "{}", requires=["matching/does-not-exist"] * 2)
+    errs = validate_part(dup)
+    assert sum("twice" in e for e in errs) == 1 and sum("does not resolve" in e for e in errs) == 1, errs
+
+
+def test_requires_set_shares_param_defaults(tmp_path):
+    """Two parts that require each other and share a seam must default it alike."""
+    key = {"default": "intake_type", "type": "string", "description": "x"}
+    _write_bp(tmp_path / "matching" / "pair-a-bp", {"key": key}, '{"k": "«key»"}')
+    same = tmp_path / "matching" / "pair-same-bp"
+    _write_bp(same, {"key": dict(key, description="y")}, '{"k": "«key»"}',
+              requires=["matching/pair-a-bp"])
+    assert not validate_part(same), validate_part(same)
+    drift = tmp_path / "matching" / "pair-drift-bp"
+    _write_bp(drift, {"key": dict(key, default="other_key")}, '{"k": "«key»"}',
+              requires=["matching/pair-a-bp"])
+    assert any("param «key»" in e for e in validate_part(drift)), validate_part(drift)
+
+
+def test_requires_rejects_self_reference(tmp_path):
+    d = tmp_path / "matching" / "self-bp"
+    _write_bp(d, {}, "{}", requires=["matching/self-bp"])
+    assert any("requires lists itself" in e for e in validate_part(d)), validate_part(d)
 
 
 def _index_rows(text: str) -> set[str]:

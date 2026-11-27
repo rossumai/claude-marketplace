@@ -1,0 +1,30 @@
+{
+  "name": "document-type-restore-from-metadata",
+  "axis": "routing",
+  "summary": "TxScript function hook on destination queues at initialize: set the document type from a per-queue fixed type, else from annotation.metadata, else keep the current value (never blank it).",
+  "maturity": "reviewed",
+  "params": {
+    "document_type_field": {
+      "default": "document_type",
+      "type": "string",
+      "description": "schema id of the document-type enum field; the same value in all three routing parts"
+    },
+    "metadata_key": {
+      "default": "intake_document_type",
+      "type": "string",
+      "description": "annotation.metadata key that carries the type; the same value in the Record and Restore parts"
+    }
+  },
+  "produces": [
+    "«document_type_field»"
+  ],
+  "consumes": [
+    "«document_type_field»"
+  ],
+  "requires": [
+    "routing/document-type-record-in-metadata"
+  ],
+  "provenance": "Lifted from a production function hook (test 2026-11-12/13, production 2026-11-16), generalized: the split-screen resolution steps (a hidden schema field and a reverse queue lookup) were dropped, and the field id and metadata key became seams. Verified live: it runs before rules on annotation_imported (a rule keyed on the restored value moved the document); a fixed-type queue applied its type to a document with no metadata and to one with older metadata, and rewrote the metadata. The generalized fragment, seams filled with the defaults, passed the 4 production test cases plus 2 no-resolve cases on the real txscript 1.2.0 runtime with a stubbed rossum_api client (not committed: the repo has no harness for running part fragments). Senior-SA sign-off for standard: JŠ (2026-11-25).",
+  "reference": "txscript-reference#hook-object-prerequisites",
+  "notes": "Requires sideload: [\"schemas\"] (TxScript). Per-queue fixed types are hook settings, not seams: a list of {queue_id, document_type} objects, because rdc migrate and prd2 deploy remap ids in settings values but never in dict keys. Every value it writes must be an option of the destination's enum. Uses the rossum_api client (default third-party library pack)."
+}

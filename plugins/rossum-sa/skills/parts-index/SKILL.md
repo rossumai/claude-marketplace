@@ -1,6 +1,6 @@
 ---
 name: parts-index
-description: Index of the rossum-sa parts library — vetted, parameterized, composable building blocks (capture, master-data import, matching, export) lifted from the reference packs and from production implementations. Consult when assembling a Rossum implementation to reuse a known-good pattern instead of writing one from scratch; tells you which parts exist, what they produce/consume, their maturity, and where they live.
+description: Index of the rossum-sa parts library — vetted, parameterized, composable building blocks (capture, master-data import, matching, routing, export) lifted from the reference packs and from production implementations. Consult when assembling a Rossum implementation to reuse a known-good pattern instead of writing one from scratch; tells you which parts exist, what they produce/consume, their maturity, and where they live.
 user-invocable: false
 ---
 
@@ -22,6 +22,10 @@ fragment, fill the `«param»` seams, and confirm its `consumes` fields exist in
 schema. See `${CLAUDE_PLUGIN_ROOT}/parts/README.md` for the full contract — including
 what `produces`/`consumes` mean (post-fill schema field ids) and the `type` a param declares.
 
+**Take every part a `requires` names.** `requires` lists parts (as `<axis>/<name>`) that this one
+cannot work without, because they talk through something `produces`/`consumes` cannot show, such
+as `annotation.metadata`. Taking one part of such a set alone fails silently.
+
 ## Capture (`parts/capture/`)
 
 | part | summary | produces |
@@ -37,6 +41,21 @@ what `produces`/`consumes` mean (post-fill schema field ids) and the `type` a pa
 | `mdh-fuzzy-score-normalization` | fuzzy name search with length-ratio normalization | matched_id, match_score |
 | `mdh-picker-with-exact-preselect` | auto-select exact; else placeholder + pick-list | selected_key, selected_label |
 | `mdh-lookup-join-then-match` | match parent, $lookup to sub-collection, match child | matched_child_id |
+
+## Routing (`parts/routing/`)
+
+A classic intake: the inbox decides the document type, a rule moves the document to the queue for
+that type, and a hook pair carries the type across the re-import. The three parts work as a set.
+They are `reviewed`, not `standard`: proven in one production deployment, but the runtime cases are not
+committed yet — compose them with review, not automatically.
+The spine recipe's `2_routing` phase holds the choice between this (Option B) and a constant
+formula on each target queue (Option A).
+
+| part | summary | requires |
+|--------|---------|----------|
+| `route-on-confirm-by-document-type` | rule on the inbox: on `annotation_confirmed`, `change_queue` with `reimport: true` for the listed types; one rule per destination | both parts below |
+| `document-type-record-in-metadata` | hook: record the inbox decision (`initialize`) and any human correction (`updated`) in `annotation.metadata` | `routing/document-type-restore-from-metadata` |
+| `document-type-restore-from-metadata` | hook on destinations: on `initialize`, set the type from a fixed per-queue type, else from metadata, else keep the current value | `routing/document-type-record-in-metadata` |
 
 ## Export (`parts/export/`)
 
