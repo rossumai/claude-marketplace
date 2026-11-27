@@ -24,17 +24,17 @@ Detail for `coupa-bulk-replication`, loaded on demand from SKILL.md.
 
 ### Unresolved: a hook that imports nothing despite a verified non-zero delta
 
-Recorded because it cost a field run hours and a full re-load, and because the cause was **not** established — do not assume any of the eliminated candidates below. That run predates the operation log (step 3): **read the dataset's operation log first** — a streak of `failed` / `Terminated by signal` rows means you are in "A hook that fails every run" below, which has a known mechanism and a recovery.
+Recorded because it cost a field run hours and a full re-load, and because the cause was **not** established — do not assume any of the eliminated candidates below. That run predates the operation log (SKILL.md Phase 5, Path B step 3): **read the dataset's operation log first** — a streak of `failed` / `Terminated by signal` rows means you are in "A hook that fails every run" below, which has a known mechanism and a recovery.
 
 Symptom: for two datasets (the two largest, both with deeply nested `fields` projections), Coupa demonstrably held qualifying records (verified by direct query against the hook's own filter, ids above the bulk crawl's ceiling), the hook was active with a literal anchor covering them, dispatches logged clean `INFO`, and **zero records were ever imported** across many cron firings and manual invokes. Other datasets in the same org, same OAuth client, same run, imported correctly.
 
 Eliminated with evidence, so don't re-spend time on them: the unique partial index (dropped it — no change); the projection/`fields` list (the bulk script fetched millions of records with those exact lists); `dir: desc` and `order_by` (removed/varied — no change *in this case*; `dir: desc` IS the cause of a different failure, the first-page hang below); collection size; `__digest_md5` absence on bulk-inserted rows (the service updates digest-less rows fine and does not re-stamp the digest on updates); MDH registration; malformed source data. A clone of the failing hook, identical except for `dataset_name`, imported its delta correctly on the first try — so the hook's own configuration is not at fault.
 
-If you hit this: confirm the expected delta from Coupa (step 3), confirm it is genuinely absent from the collection by id, then treat it as service-side and escalate with those two observations. Meanwhile the data itself is recoverable without the hook — a bulk re-run picks the records up, since its fresh probe re-counts from Coupa.
+If you hit this: confirm the expected delta from Coupa (SKILL.md Phase 5, Path B step 3), confirm it is genuinely absent from the collection by id, then treat it as service-side and escalate with those two observations. Meanwhile the data itself is recoverable without the hook — a bulk re-run picks the records up, since its fresh probe re-counts from Coupa.
 
 ### Variant — early handoff: activate hooks while the bulk run still crawls
 
-When freshness matters more than a clean verification window, the hooks can go live **before** the bulk run finishes. This is sound because the two jobs' target sets are disjoint by construction: the bulk run only fetches `updated-at ≤ anchor`, and the hook is seeded with the literal `updated-at[gt_or_eq] = anchor` (step 1). The hook upserts by the id field and the bulk run skips existing ids, so any overlap converges to the correct final state — a record updated mid-run simply migrates from the bulk's set to the hook's, and the keyset cursor cannot skip anything because of it. (This variant was unsafe under the old offset pagination — mid-run set changes shifted the stream.)
+When freshness matters more than a clean verification window, the hooks can go live **before** the bulk run finishes. This is sound because the two jobs' target sets are disjoint by construction: the bulk run only fetches `updated-at ≤ anchor`, and the hook is seeded with the literal `updated-at[gt_or_eq] = anchor` (Phase 5, Path B step 1). The hook upserts by the id field and the bulk run skips existing ids, so any overlap converges to the correct final state — a record updated mid-run simply migrates from the bulk's set to the hook's, and the keyset cursor cannot skip anything because of it. (This variant was unsafe under the old offset pagination — mid-run set changes shifted the stream.)
 
 Two costs, both manageable:
 
@@ -45,7 +45,7 @@ Default recipe stays verify-then-activate; use this variant deliberately.
 
 ### Restoring `${last_modified_date}` — only where a data-bearing run is confirmed
 
-Step 1 says to flip the literal anchor back to `${last_modified_date}` "after the first successful run". Be strict about what counts: the placeholder is safe once the service has recorded a successful operation for that `dataset_name`, and if it has **not**, the placeholder resolves to epoch and the next cron attempts the full import this whole skill exists to avoid. Require both kinds of evidence: a **`finished` row in the operation log** (step 3) **and records having landed** from that job. A `finished` row alone is not enough: a job over an empty window finishes in under a second with nothing to import, and whether such a row counts as history is not established.
+Phase 5, Path B Phase 5, Path B step 1 in SKILL.md says to flip the literal anchor back to `${last_modified_date}` "after the first successful run". Be strict about what counts: the placeholder is safe once the service has recorded a successful operation for that `dataset_name`, and if it has **not**, the placeholder resolves to epoch and the next cron attempts the full import this whole skill exists to avoid. Require both kinds of evidence: a **`finished` row in the operation log** (SKILL.md Phase 5, Path B step 3) **and records having landed** from that job. A `finished` row alone is not enough: a job over an empty window finishes in under a second with nothing to import, and whether such a row counts as history is not established.
 
 So restore the placeholder per dataset, as each earns it:
 
@@ -68,7 +68,7 @@ Field-verified on a live org where three Coupa import hooks failed every run for
 
 **Why it hides:** each job writes its first pages before it dies, and the walk order puts the *newest-created* records first — so new records keep arriving and the collection looks fresh. What goes stale is **old records that change**: they sit at the far end of the walk, which no job reaches. A dataset can sit in this state for weeks.
 
-**Signature:** in the operation log (step 3), a long streak of `failed` rows at ~60.0 min, the newest `finished` row weeks old, and the dispatch log still all `INFO`.
+**Signature:** in the operation log (SKILL.md Phase 5, Path B step 3), a long streak of `failed` rows at ~60.0 min, the newest `finished` row weeks old, and the dispatch log still all `INFO`.
 
 **Two causes seen, with different fixes:**
 
@@ -91,8 +91,6 @@ Field-verified on a live org where three Coupa import hooks failed every run for
 3. Restore `${last_modified_date}` and confirm the next job finishes in seconds (see the section above).
 
 A job that started before your PATCH runs on the old settings and blocks the dataset until it is killed — expect to wait up to an hour plus one cron interval before the first job on the new settings.
-
-**Artifact:** Hooks active for every dataset, first delta canary verified, and `${last_modified_date}` restored on every dataset with a confirmed data-bearing run (others explicitly parked on a literal anchor). A day after handoff, every dataset's operation log shows `finished` rows, not a `failed` streak.
 
 ---
 

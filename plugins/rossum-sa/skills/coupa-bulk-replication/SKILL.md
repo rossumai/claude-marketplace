@@ -392,7 +392,7 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 | `fields` | **Exactly the bulk config's `fields` list** (absent when the bulk config has `fields: null`) — record shapes then match (both sides store Coupa's hyphenated-key JSON) |
 | Coupa credentials | The new org's `coupa_base_url` / `client_id` / scope; `client_secret` via secrets (step 4) |
 | `"updated-at[gt_or_eq]"` | The delta seeding value — step 1 |
-| `dir` | **Absent.** Remove it if the reference hook carries `"dir": "desc"` — the service then processes only the first page and hangs until killed (see "A hook that fails every run"). `order_by` follows the reference (`created_at` or none) |
+| `dir` | **Absent.** Remove it if the reference hook carries `"dir": "desc"` — the service then processes only the first page and hangs until killed (see "A hook that fails every run" in [reference.md](reference.md)). `order_by` follows the reference (`created_at` or none) |
 
 1. **Dodge the epoch-fallback trap (delta seeding).** `${last_modified_date}` resolves to the start of the last successful operation per (org, `dataset_name`) in the scheduled-imports service's own operation log. A brand-new hook has **no history → epoch → the first activation attempts a FULL import.** Field-verified fix: where the reference hook has `${last_modified_date}` (the `"updated-at[gt_or_eq]"` query value), put the dataset's **literal** `anchor_updated_at` instead. The first activation then pulls only the post-anchor delta AND establishes operation history. After the first successful run, flip the value back to `${last_modified_date}`.
 
@@ -422,7 +422,7 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
                       "create_ts": ..., "status_ts": ..., "error": {"type": ..., "text": ...} | null}, ...]}
    ```
 
-   Newest first; the default page is 100 rows and `limit` raises it (5,000 worked). It lives outside `/api/v1`, so call it directly with the org bearer token. `create_ts` of the newest `finished` row is what `${last_modified_date}` resolves to; `status_ts - create_ts` is the job's real duration; a `processing` row's `status_ts` advances while it runs. **This is the first thing to read for any import hook that looks wrong** — see "A hook that fails every run" below. Data Storage remains the check for *what* landed (by id), the operation log is the check for *whether the job finished*.
+   Newest first; the default page is 100 rows and `limit` raises it (5,000 worked). It lives outside `/api/v1`, so call it directly with the org bearer token. `create_ts` of the newest `finished` row is what `${last_modified_date}` resolves to; `status_ts - create_ts` is the job's real duration; a `processing` row's `status_ts` advances while it runs. **This is the first thing to read for any import hook that looks wrong** — see "A hook that fails every run" in [reference.md](reference.md). Data Storage remains the check for *what* landed (by id), the operation log is the check for *whether the job finished*.
 
 4. **Secrets.** Hook `secrets` are write-only (GET returns null) — set via `PATCH {"secrets": {"client_secret": "..."}}`. ALWAYS set `secrets_schema` too (typed properties, `additionalProperties: false`); without it the UI shows no secret field at all. A hook with secrets but no `secrets_schema` is a defect.
 
@@ -435,6 +435,8 @@ Mirror settings from any org with working Coupa Webhook Import hooks — the CIB
 ### Troubleshooting the handoff
 
 Read [reference.md](reference.md) § *Phase 5 handoff troubleshooting* when a hook imports nothing despite a non-zero delta, when you want to activate hooks while the bulk run is still crawling, before restoring `${last_modified_date}`, or when a hook fails every run (the 60-minute kill).
+
+**Artifact:** Hooks active for every dataset, first delta canary verified, and `${last_modified_date}` restored on every dataset with a confirmed data-bearing run (others explicitly parked on a literal anchor). A day after handoff, every dataset's operation log shows `finished` rows, not a `failed` streak.
 
 ## Phase 6: Debrief
 

@@ -158,7 +158,7 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | `/rossum-sa:queue-engine-binding [mode] [queue-id]` | Bind queues to custom extraction engines — convert from generic, create engine-bound queues, attach to an existing engine, or revert |
 | `/rossum-sa:evaluate-namings [path]` | Audit naming conventions across workspaces, queues, hooks, schema fields, and MDH datasets |
 | `/rossum-sa:coding-best-practices [path]` | Review serverless hook functions (custom Python extensions) for code quality, security, and correctness |
-| `/rossum-sa:init-project-context [path]` | Generate a project-specific `CLAUDE.md` for a pulled prd2 project so future Claude Code sessions recognize it as a Rossum implementation |
+| `/rossum-sa:init-project-context [path]` | Formerly `/rossum-sa:init-claude-md`. Generate a project-specific `CLAUDE.md` for a pulled prd2 project so future Claude Code sessions recognize it as a Rossum implementation |
 | `/rossum-sa:coupa-bulk-replication [dataset]` | Bulk-replicate Coupa master data into Data Storage when import-hook timeouts block standard sync — resumable, sync writes, automatic token refresh |
 | `/rossum-sa:render-export-template [hook-id] [annotation-id]` | Render a Custom Format Templating export hook against a real annotation to preview the exact file it outputs, then extract/edit/generate the Jinja2 template — legacy template export, not the Request Processor |
 | `/rossum-sa:automation-report [queue-id-or-url]` | Diagnose what blocks queue automation and produce an actionable report with threshold, schema, and rule recommendations |

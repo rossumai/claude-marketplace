@@ -199,7 +199,24 @@ def test_skill_frontmatter_known_keys(name, skill_md):
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _XML_TAG_RE = re.compile(r"<[A-Za-z/][^>]*>")
-_LINK_RE = re.compile(r"\]\(([^)#:\s]+\.md)(?:#[^)]*)?\)")
+_LINK_RE = re.compile(r"\]\(([^)#:\s]*\.md)?(?:#([^)\s]+))?\)")
+
+
+def _heading_slugs(path):
+    """GitHub-style anchors for a Markdown file's headings (fenced code ignored, -N for repeats)."""
+    slugs, seen, fence = set(), {}, None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^(```|~~~)", line)
+        if m:
+            fence = None if fence == m.group(1) else (fence or m.group(1))
+            continue
+        h = re.match(r"^#{1,6}\s+(.*?)\s*#*\s*$", line)
+        if fence is None and h:
+            base = re.sub(r"[^\w\- ]", "", h.group(1).lower()).replace(" ", "-")
+            n = seen.get(base, 0)
+            slugs.add(base if n == 0 else f"{base}-{n}")
+            seen[base] = n + 1
+    return slugs
 
 
 @pytest.mark.parametrize(
@@ -218,8 +235,10 @@ def test_skill_meets_anthropic_frontmatter_rules(name, skill_md):
     "name,skill_md", _all_skill_mds(), ids=[n for n, _ in _all_skill_mds()]
 )
 def test_skill_body_under_500_lines(name, skill_md):
-    body = skill_md.read_text(encoding="utf-8").split("---", 2)[2]
-    lines = body.count("\n")
+    # The frontmatter ends at the first line that is exactly '---' — a '---' inside a value doesn't count.
+    lines_all = skill_md.read_text(encoding="utf-8").splitlines()
+    end = next(i for i, ln in enumerate(lines_all[1:], start=1) if ln.strip() == "---")
+    lines = len(lines_all) - end - 1
     assert lines < 500, f"{name}/SKILL.md body is {lines} lines — move detail to a reference file"
 
 
@@ -248,6 +267,14 @@ def test_long_reference_file_opens_with_contents(ref):
     ids=lambda p: f"{p.parent.name}/{p.name}",
 )
 def test_relative_markdown_links_resolve(md):
-    text = md.read_text(encoding="utf-8")
-    missing = [t for t in _LINK_RE.findall(text) if not (md.parent / t).resolve().exists()]
-    assert not missing, f"{md} links to missing file(s): {missing}"
+    """Every relative .md link points at an existing file, and its #section at a real heading."""
+    problems = []
+    for target, anchor in _LINK_RE.findall(md.read_text(encoding="utf-8")):
+        if not target and not anchor:
+            continue
+        path = (md.parent / target).resolve() if target else md
+        if not path.exists():
+            problems.append(f"missing file {target}")
+        elif anchor and anchor.lower() not in _heading_slugs(path):
+            problems.append(f"no heading for #{anchor} in {path.name}")
+    assert not problems, f"{md}: " + "; ".join(problems)

@@ -1,6 +1,6 @@
 ---
 name: init-project-context
-description: Generate a project-specific CLAUDE.md for a pulled Rossum prd2 project so future Claude Code sessions immediately recognize the directory as a Rossum implementation and apply the right safety rules. Inspects environments, queues, hooks, schemas, and integration targets locally — no remote API calls. Triggers on "init claude md", "set up project context for Claude", "onboard this Rossum project to Claude Code", "generate CLAUDE.md", "claude.md for this project".
+description: Formerly init-claude-md, renamed because skill names may not contain the word claude. Generate a project-specific CLAUDE.md for a pulled Rossum prd2 project so future Claude Code sessions immediately recognize the directory as a Rossum implementation and apply the right safety rules. Inspects environments, queues, hooks, schemas, and integration targets locally — no remote API calls. Triggers on "init claude md", "set up project context for Claude", "onboard this Rossum project to Claude Code", "generate CLAUDE.md", "claude.md for this project".
 argument-hint: [path-to-prd2-project]
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
