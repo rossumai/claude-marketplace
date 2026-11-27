@@ -40,7 +40,7 @@ Pulled directory tree:
 
 ## Testing & Quality
 
-- After any behavior-preserving change: `/rossum-sa:test-behavioral-equivalence`.
+- After any change: prove it on a sandbox document with `/rossum-sa:iterate` (no real document for the case? `/rossum-sa:generate-test-invoice`, operator-approved). Only after a large upgrade: `/rossum-sa:test-behavioral-equivalence`.
 - Full audits: `/rossum-sa:analyze`. Pruning unused configs: `/rossum-sa:dead-code`. Naming conventions: `/rossum-sa:evaluate-namings`.
 
 ## Recommended Skills

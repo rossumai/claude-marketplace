@@ -1,0 +1,67 @@
+{
+  "title": "INVOICE",
+  "currency": "EUR",
+  "number_format": "en",
+  "sender": [
+    "Northwind Components GmbH",
+    "Industriestrasse 12",
+    "70565 Stuttgart",
+    "Germany",
+    "VAT ID: DE000000000"
+  ],
+  "recipient": [
+    "Example Buyer s.r.o.",
+    "Na Example 1",
+    "110 00 Praha",
+    "Czech Republic",
+    "VAT ID: CZ00000000"
+  ],
+  "fields": [
+    [
+      "Invoice number",
+      "TEST-2026-0001"
+    ],
+    [
+      "Issue date",
+      "2026-11-27"
+    ],
+    [
+      "Due date",
+      "2026-12-27"
+    ],
+    [
+      "PO number",
+      "4500000001"
+    ],
+    [
+      "Payment terms",
+      "30 days net"
+    ]
+  ],
+  "lines": [
+    {
+      "code": "NW-100",
+      "description": "Hex bolt M8 x 40, zinc plated",
+      "quantity": 200,
+      "unit_price": "0.35",
+      "tax_rate": 19
+    },
+    {
+      "code": "NW-210",
+      "description": "Bearing assembly, sealed, for conveyor rollers type B (long description to show wrapping)",
+      "quantity": 4,
+      "unit_price": "86.50",
+      "tax_rate": 19
+    },
+    {
+      "code": "SHIP",
+      "description": "Freight",
+      "quantity": 1,
+      "unit_price": "45.00",
+      "tax_rate": 7
+    }
+  ],
+  "notes": [
+    "Bank: IBAN DE00 0000 0000 0000 0000 00, BIC TESTDEFFXXX"
+  ]
+}

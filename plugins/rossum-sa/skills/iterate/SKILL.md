@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met. Provides the re-fire primitives via MCP — soft re-fire (start → content/validate → cancel), status toggle, in-place re-extract, re-upload, and export re-fire (status → exporting) — to re-evaluate a document after a code change without leaving Claude Code. Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", "re-test the export", "export this document again", or when the user invokes a goal-style prompt. Also use when a formula, schema or rule change must be re-evaluated on a document that already exists — "trigger the recalc", "recompute the formulas", "refresh this document", "the field still shows the old value after my push", "re-run matching on this annotation".
+description: Iterate on a Rossum deliverable (hook, formula, rule, schema change) against a specific annotation until a stated goal is met — the default way to prove a fix or feature works. The document is a real sandbox annotation or, only when the operator chooses it, a test invoice from generate-test-invoice. Provides the MCP re-fire primitives (soft re-fire, status toggle, re-extract, re-upload, export re-fire). Use when finishing a deliverable, when the user says "iterate until you reach the goal", "test this against annotation X", "verify this works on document Y", "show that the fix works", "re-test the export", "export this document again", or when the user invokes a goal-style prompt. Also use when a formula, schema or rule change must be re-evaluated on a document that already exists — "trigger the recalc", "recompute the formulas", "refresh this document", "the field still shows the old value after my push", "re-run matching on this annotation".
 argument-hint: "[annotation-id-or-url] [--goal=<short description>] [--env=<name>] [--max-iterations=<N>]"
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 ---
@@ -19,7 +19,7 @@ Pick this up automatically when **any** of the following holds:
 - A `goal:` line, a `Goal:` heading, or a `/goal …` prompt appears in the request.
 - You have just delivered **or updated** a hook/formula/rule/schema change in a `prd2` project and the user has not yet confirmed it works end-to-end on a real annotation. **Whenever you finish a deliverable, proactively offer to verify it — do not wait to be asked** (see "UX entry prompt" below). Always verify against a **sandbox/UAT** annotation, never production.
 
-Do **not** pick this up for cross-environment regression testing — that is `test-behavioral-equivalence`. The split is: `iterate` = tight inner loop on one document during development; `test-behavioral-equivalence` = full regression suite before promoting.
+For one fix or feature, this skill is **the** way to prove it works. `test-behavioral-equivalence` is a heavyweight snapshot-and-replay of a whole implementation, meant only for verifying a large upgrade across many documents — rarely needed; do not suggest it for a single change.
 
 ## Safety: Remote API Confirmation Gate
 
@@ -60,9 +60,11 @@ Anything broader than one named document is a batch re-automation request, not t
 
 When you have just finished a deliverable (hook/formula/rule change pushed via `prd2 push`, or any equivalent), ask the user **once**, in a single message:
 
-> Want to verify this against a real annotation? Paste a **sandbox/UAT** annotation ID or URL (or say "skip").
+> Want to verify this? Paste a **sandbox/UAT** annotation ID or URL, say "build a test invoice" if no real document covers this case, or say "skip".
 
 - If they paste an ID/URL → continue with the loop below.
+- If they ask for a test invoice → run `generate-test-invoice`, then continue here with the annotation it uploads. That skill shows the operator the case and the values it will change and generates **only after their explicit yes**.
+- **Never choose the test-invoice route yourself** — not when no annotation is offered, and not in an autonomous `/goal` run. Offer it; the operator decides.
 - If they say "skip" or anything dismissive → end the skill, no further prompts.
 
 If the user already provided an annotation ID in their request, skip this prompt and use that ID directly.
@@ -371,7 +373,8 @@ Look for:
 
 - **All assertions green** → confirm with user, end the loop. If you tested on a throwaway copy, offer to delete it now (`rossum_delete_annotation`, gated; default is soft-delete, add `purge=true` for permanent) — don't leave it orphaned.
 - **Max iterations reached without success** → stop, present current state + root-cause hypothesis, let user decide.
-- **The deliverable needs cross-environment verification** → hand off to `test-behavioral-equivalence` for a full corpus regression. `iterate` confirms one document; equivalence confirms the population.
+- **No real document covers the case** → offer `generate-test-invoice` (operator approval required), then loop on the annotation it uploads.
+- **A large upgrade must be verified across many documents** → `test-behavioral-equivalence` exists for that, but it is heavyweight and rarely needed; mention it only for upgrades, never for a single fix.
 - **Goal turns out to be wrong / ambiguous** → stop and ask the user to clarify before another iteration.
 
 ## Important

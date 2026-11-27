@@ -1,6 +1,6 @@
 ---
 name: test-behavioral-equivalence
-description: Verify that changes to a Rossum implementation preserve behavior. Captures a "before" snapshot of annotation outputs, replays the same documents against the upgraded implementation, and diffs the "after" outputs against the snapshot. Use after an upgrade, refactor, or any change intended to be behavior-preserving. Triggers on "test this upgrade", "verify this change", "regression test", "check behavioral equivalence", "did my changes break anything", "test before promoting".
+description: Verify that changes to a Rossum implementation preserve behavior. Captures a "before" snapshot of annotation outputs, replays the same documents against the upgraded implementation, and diffs the "after" outputs against the snapshot. Heavyweight and rarely needed — use only to verify a large upgrade or refactor of a whole implementation across many documents. For one fix or feature, use iterate instead. Triggers on "test this upgrade", "regression test the whole implementation", "check behavioral equivalence".
 argument-hint: "[path-to-target-impl] [--source-env=<name>] [--target-env=<name>] [--corpus=<ids-file>] [--canary] [--skip-static]"
 allowed-tools: Read, Grep, Glob, Bash, Agent
 context: fork
@@ -282,6 +282,7 @@ Force-include edge cases specific to each queue:
 - Any annotation that triggered a business rule the upgrade touched in that queue
 - At least one line-item-heavy annotation (≥10 line items) per queue when line-item formulas changed
 - Region/variant-specific cases — when the upgrade has region-scoped hooks or formulas (e.g., country-specific regulatory logic, currency-specific rounding), force-include an annotation per regional variant
+- A case no real annotation covers → `generate-test-invoice` can build one from real master data, only after the operator approves it
 
 ### 2c. Capture before-snapshots
 
