@@ -1,5 +1,27 @@
 # Rossum Field-Expression Reference: TxScript, Rules, Formulas
 
+## Contents
+
+- Overview
+- TxScript Baseline Pattern
+- Key TxScript API
+- Creating / Replacing Line-Item Rows
+- Applying Labels to Annotations
+- Best Practices
+- Schema Field Mapping
+- trigger_condition expression language
+- Defensive `not is_empty(field.X)` guard convention
+- Formula constraints
+- Where formulas live
+- Formula shape
+- Header vs. line-item formulas
+- Helper inventory
+- Annotation and date-component access
+- The "absorb" pattern
+- A rule can observe a formula's pre-recompute value
+- A queue move does NOT recompute formulas
+- Multi-variant formulas across queues
+
 ## Overview
 
 Rossum has three surfaces where you write Python-flavored expressions over annotation data:

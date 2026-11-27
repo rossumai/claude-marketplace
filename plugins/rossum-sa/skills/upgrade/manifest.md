@@ -1,5 +1,15 @@
 # Upgrade Manifest — Requirements
 
+## Contents
+
+- Identity and location
+- Required sections
+- Skeleton
+- Validation rules
+- What the `test-behavioral-equivalence` skill does with this
+- What the `analyze` skill does with this
+- What the `review` skill does with this
+
 The `upgrade` skill's output contract toward everything downstream (review, `test-behavioral-equivalence`, audit trail, humans). One file per upgrade, produced at the end of the upgrade phase, stored in the project root. The `test-behavioral-equivalence` skill reads it in Phase 0a to scope the run; the `analyze` skill can cross-reference it when auditing; a human reviewer uses the rendered markdown form as the change log.
 
 ## Identity and location

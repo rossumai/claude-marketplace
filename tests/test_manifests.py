@@ -6,6 +6,7 @@ The frontmatter check catches a skill shipping with no YAML frontmatter
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 import yaml
@@ -188,3 +189,65 @@ def test_skill_frontmatter_known_keys(name, skill_md):
         R.parse_frontmatter(skill_md), SKILL_FM_REQUIRED, SKILL_FM_OPTIONAL,
         f"{name}/SKILL.md frontmatter",
     )
+
+
+# --- Anthropic skill-authoring rules -------------------------------------------------
+# https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices
+# name: <=64 chars, lowercase/digits/hyphens, no reserved words; description: <=1024
+# chars, no XML tags; SKILL.md body <500 lines; reference files >100 lines open with a
+# table of contents; relative links between skill files must resolve.
+
+_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_XML_TAG_RE = re.compile(r"<[A-Za-z/][^>]*>")
+_LINK_RE = re.compile(r"\]\(([^)#:\s]+\.md)(?:#[^)]*)?\)")
+
+
+@pytest.mark.parametrize(
+    "name,skill_md", _all_skill_mds(), ids=[n for n, _ in _all_skill_mds()]
+)
+def test_skill_meets_anthropic_frontmatter_rules(name, skill_md):
+    fm = yaml.safe_load(_raw_frontmatter_block(skill_md))
+    assert len(name) <= 64 and _NAME_RE.match(name), f"{name}: invalid skill name"
+    assert not re.search(r"anthropic|claude", name), f"{name}: reserved word in name"
+    desc = str(fm["description"])
+    assert len(desc) <= 1024, f"{name}: description is {len(desc)} chars (max 1024)"
+    assert not _XML_TAG_RE.search(desc), f"{name}: description contains an XML-like tag"
+
+
+@pytest.mark.parametrize(
+    "name,skill_md", _all_skill_mds(), ids=[n for n, _ in _all_skill_mds()]
+)
+def test_skill_body_under_500_lines(name, skill_md):
+    body = skill_md.read_text(encoding="utf-8").split("---", 2)[2]
+    lines = body.count("\n")
+    assert lines < 500, f"{name}/SKILL.md body is {lines} lines — move detail to a reference file"
+
+
+def _skill_reference_files():
+    out = []
+    for _, skill_md in _all_skill_mds():
+        for md in sorted(skill_md.parent.rglob("*.md")):
+            if md.name != "SKILL.md" and "tests" not in md.parts:
+                out.append(md)
+    return out
+
+
+@pytest.mark.parametrize("ref", _skill_reference_files(), ids=lambda p: f"{p.parent.name}/{p.name}")
+def test_long_reference_file_opens_with_contents(ref):
+    lines = ref.read_text(encoding="utf-8").splitlines()
+    if len(lines) <= 100:
+        return
+    head = [ln.strip().lower() for ln in lines[:30]]  # "at the top": after the title and a short intro
+    assert any(h in ("## contents", "## table of contents") for h in head), (
+        f"{ref} is {len(lines)} lines — add a '## Contents' list in its first 30 lines"
+    )
+
+
+@pytest.mark.parametrize(
+    "md", [s for _, s in _all_skill_mds()] + _skill_reference_files(),
+    ids=lambda p: f"{p.parent.name}/{p.name}",
+)
+def test_relative_markdown_links_resolve(md):
+    text = md.read_text(encoding="utf-8")
+    missing = [t for t in _LINK_RE.findall(text) if not (md.parent / t).resolve().exists()]
+    assert not missing, f"{md} links to missing file(s): {missing}"

@@ -1,5 +1,27 @@
 # Structured Formats Import (SFI) — Complete Reference
 
+## Contents
+
+- Overview
+- Step 1: Allow Structured Documents in Rossum
+- Step 2: Create the SFI Extension Hook
+- Step 3: Configure Hook Settings
+- Field Mapping Reference
+- Value Transformation Mapping
+- Date Parsing
+- XPath Selector Patterns
+- JSON Selector Patterns
+- PDF Rendering
+- Document Splitting
+- Non-Existing Schema IDs
+- Testing XPath Queries Locally
+- Complete Configuration Examples
+- German E-Invoicing: UBL X-Rechnung Configuration
+- German E-Invoicing: CII / ZUGFeRD Configuration
+- Additional Mapping Examples
+- E-Invoice Schema Reference
+- Troubleshooting
+
 ## Overview
 
 SFI processes non-visual structured documents (XML, JSON) and renders a PDF for human review in Rossum. It extracts data from structured files using XPath (XML) or JMESPath (JSON) selectors and maps them to Rossum schema datapoints.

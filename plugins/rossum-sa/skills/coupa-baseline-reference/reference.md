@@ -1,5 +1,28 @@
 # Coupa Integration Baseline (CIB) — Detailed Reference
 
+## Contents
+
+- 0. Which CIB am I looking at?
+- 1. Architecture Overview
+- 2. Scoping the Deployment [2.0]
+- 3. Schema Structure
+- 4. Data Import — Coupa to Rossum
+- 5. Master Data Hub — Matching & Enrichment
+- 6. Business Rules Validation
+- 7. Export Pipeline — Rossum to Coupa
+- 8. E-invoicing [2.0]
+- 9. Serverless Functions
+- 10. Duplicate Detection
+- 11. Tagging System
+- 12. UOM & Line Type Logic
+- 13. Credit Note Handling
+- 14. Customization Guide
+- 15. Hook Execution Order
+- 16. Required OAuth Scopes
+- 17. Troubleshooting Guide
+- 18. Quick Reference — All Datasets
+- 19. Quick Reference — All Hooks
+
 ## 0. Which CIB am I looking at?
 
 Two baselines are in production. **CIB 2.0 is a fresh install only — there is no in-place upgrade path from 1.x**, so an organisation runs one or the other, never a mixture. Establish which one before answering anything about a live org: the queue topology, the export chain and the hook names all differ.

@@ -1,5 +1,18 @@
 # rdc (Rossum Deployment as Code) — Full Reference
 
+## Contents
+
+- Version
+- prd2 → rdc, side by side
+- Project layout
+- `rdc sync [env]`
+- `rdc migrate [src] [tgt]` — promotion
+- Other commands
+- Testing with `testkit/`
+- CI (`.gitlab-ci.yml`)
+- Known limitations
+- How the rossum-sa skills apply to an rdc tree
+
 Verified against `rdc 0.9.0` (`rdc --help`, every subcommand's `--help`, and the scaffold files `rdc init` writes). rdc is moving fast: when a flag below is missing or behaves differently, trust `rdc <command> --help` over this page, and say so.
 
 ## Version
@@ -187,6 +200,6 @@ The analysis skills read files and work on `envs/<env>/` once you translate path
 | Skill | In an rdc project |
 |---|---|
 | `refine-deployment` | prd2 deploy files only. rdc's equivalents are `overlay.toml` and `.rdc/mapping.toml` — edit those directly. |
-| `init-claude-md` | Not needed: `rdc init` already generates `CLAUDE.md`. Put project notes under its `## Project-Specific Notes` section, which regeneration preserves. |
+| `init-project-context` | Not needed: `rdc init` already generates `CLAUDE.md`. Put project notes under its `## Project-Specific Notes` section, which regeneration preserves. |
 | `dead-code` | Point `detect.py` at `envs/<env>/` — hooks, rules, labels and orphan formulas work. **Engines are a false positive:** the detector matches queue → engine by the numeric id in an API URL, and rdc writes `"engine": "rdc://engines/<slug>"`, so every engine is reported unused. Check engines by hand against `_index.md`. |
 | `iterate` | Works unchanged — it drives annotations through the MCP. Push code changes with `rdc sync <env>` instead of `prd2 push`. |
