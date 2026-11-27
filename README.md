@@ -2,7 +2,7 @@
 
 Turn Claude into a Rossum implementation partner — audit hooks, analyze schemas, query Data Storage, upgrade extensions, and generate SOWs, all from your terminal.
 
-19 skills · 19 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
+20 skills · 19 reference packs · 93 MCP tools — [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for Rossum.ai.
 
 <!-- TODO: add a terminal demo GIF here (e.g. invoice extraction or hook audit) -->
 
@@ -152,8 +152,9 @@ From here the full skill set applies — see **Skills** below. New to `prd2`? Th
 | `/rossum-sa:implement` | Plan and execute an integration project end-to-end |
 | `/rossum-sa:refine-deployment [deploy-file] [impl-path]` | Enhance prd2 deploy files with target IDs and attribute overrides |
 | `/rossum-sa:upgrade [path]` | Upgrade deprecated extensions to formula fields and bump old Python runtimes on function hooks to `python3.12` |
-| `/rossum-sa:iterate [annotation-id]` | Tight inner loop on a deliverable — re-fire a hook/formula/rule against one annotation and check the result until the goal is met |
-| `/rossum-sa:test-behavioral-equivalence [path]` | Snapshot-replay-diff an implementation against a baseline env to verify a change preserved behavior |
+| `/rossum-sa:iterate [annotation-id]` | Prove a deliverable works — re-fire a hook/formula/rule against one annotation (a real one, or a generated test invoice) and check the result until the goal is met |
+| `/rossum-sa:generate-test-invoice [case]` | Build a test invoice PDF from real Master Data Hub records that hits one exact case, upload it to a sandbox queue, and hand it to `iterate` |
+| `/rossum-sa:test-behavioral-equivalence [path]` | Heavyweight, rarely needed: snapshot-replay-diff a whole implementation against a baseline env after a large upgrade. For one fix or feature, use `iterate` |
 | `/rossum-sa:dead-code [path]` | Find unused hooks, formulas, rules, labels, and engines with a deterministic detector |
 | `/rossum-sa:queue-engine-binding [mode] [queue-id]` | Bind queues to custom extraction engines — convert from generic, create engine-bound queues, attach to an existing engine, or revert |
 | `/rossum-sa:evaluate-namings [path]` | Audit naming conventions across workspaces, queues, hooks, schema fields, and MDH datasets |
