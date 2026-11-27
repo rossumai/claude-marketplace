@@ -1,5 +1,20 @@
 # MDH Matching Query Guide
 
+## Contents
+
+- Configuration Schema
+- Query Design Rules
+- `$limit` must directly follow `$search`
+- Score Normalization Pattern
+- Diagnostic: "we get candidates but the correct one isn't among them"
+- Unique-Result Filter Pattern (`$setWindowFields`)
+- GL Coding / Dropdown Pre-selection Pattern
+- Query Examples
+- Atlas Search Index Pre-flight (run before shipping any `$search` query)
+- Atlas Search Index Recommendations
+- Required Input from Solution Architect
+- Output Requirements
+
 Complete reference for building MongoDB aggregation queries in Rossum Master Data Hub matching configurations. Use this when creating or modifying MDH hook configurations that match extracted document data against master data records.
 
 ---

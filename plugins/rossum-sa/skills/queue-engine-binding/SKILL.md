@@ -90,4 +90,4 @@ under `seed_type_overrides`.
 
 1. If the org is managed as a prd2 project: `prd2 pull` to refresh the local tree (engines/, engine_fields/, queue.json, schema.json all changed).
 2. Set expectations: pretrained-seeded fields extract at catalog quality immediately; custom fields (`pre_trained_field_id: null`) start cold and learn from confirmed annotations in `training_queues`.
-3. For behavior comparison before/after, see `rossum-sa:test-behavioral-equivalence`.
+3. To check extraction on a document after the change, use `rossum-sa:iterate` (re-extract or re-upload a sandbox annotation).

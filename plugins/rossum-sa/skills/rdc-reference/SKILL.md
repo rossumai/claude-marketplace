@@ -1,6 +1,6 @@
 ---
 name: rdc-reference
-description: rdc (Rossum Deployment as Code) CLI reference — the newer alternative to prd2 for snapshotting a Rossum org as files and deploying it. Covers telling an rdc project from a prd2 project, the envs/<env>/ tree with slug-named files and rdc:// references, `rdc sync` (three-way merge, dry-run, --no-push audit, --no-pull deploy, --allow-deletes, conflict shadows), `rdc migrate` promotion with overlay.toml and .rdc/mapping.toml, `rdc auth`, `rdc doctor`, the testkit formula/hook harness, and how the rossum-sa skills map onto an rdc tree. Use whenever the working directory has an rdc.toml, or the user mentions rdc, rdc sync, rdc migrate, overlay.toml, _index.md, or rdc:// refs.
+description: rdc (Rossum Deployment as Code) CLI reference — the newer alternative to prd2 for snapshotting a Rossum org as files and deploying it. Covers telling an rdc project from a prd2 project, the envs/ENV/ tree with slug-named files and rdc:// references, `rdc sync` (three-way merge, dry-run, --no-push audit, --no-pull deploy, --allow-deletes, conflict shadows), `rdc migrate` promotion with overlay.toml and .rdc/mapping.toml, `rdc auth`, `rdc doctor`, the testkit formula/hook harness, and how the rossum-sa skills map onto an rdc tree. Use whenever the working directory has an rdc.toml, or the user mentions rdc, rdc sync, rdc migrate, overlay.toml, _index.md, or rdc:// refs.
 user-invocable: false
 ---
 

@@ -1,5 +1,21 @@
 # SAP Integration Guide for Rossum
 
+## Contents
+
+- SAP Product Landscape
+- Master Data
+- SAP Customisations
+- AP/AR Terminology
+- Three integration shapes, measured
+- Shape A: OData through an API gateway
+- Shape B: customer HTTPS middleware wrapping RFCs
+- Shape C: S/4 Cloud OData via a CPI passthrough
+- Master data from SAP: what Rossum needs and where SAP keeps it
+- Writing invoices into SAP
+- Operating a sync
+- Rossum-SAP Implementation Examples
+- Parts
+
 Two halves. The first is the landscape an SA needs to scope an SAP deal. The second is what
 three real Rossum–SAP integrations taught us about *building* one: the three shapes they take,
 the API contracts as measured (not as documented), how master data comes out of SAP and how an

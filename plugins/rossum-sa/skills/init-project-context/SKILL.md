@@ -1,6 +1,6 @@
 ---
-name: init-claude-md
-description: Generate a project-specific CLAUDE.md for a pulled Rossum prd2 project so future Claude Code sessions immediately recognize the directory as a Rossum implementation and apply the right safety rules. Inspects environments, queues, hooks, schemas, and integration targets locally — no remote API calls. Triggers on "init claude md", "set up project context for Claude", "onboard this Rossum project to Claude Code", "generate CLAUDE.md", "claude.md for this project".
+name: init-project-context
+description: Formerly init-claude-md, renamed because skill names may not contain the word claude. Generate a project-specific CLAUDE.md for a pulled Rossum prd2 project so future Claude Code sessions immediately recognize the directory as a Rossum implementation and apply the right safety rules. Inspects environments, queues, hooks, schemas, and integration targets locally — no remote API calls. Triggers on "init claude md", "set up project context for Claude", "onboard this Rossum project to Claude Code", "generate CLAUDE.md", "claude.md for this project".
 argument-hint: [path-to-prd2-project]
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
@@ -13,7 +13,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 Generates a `CLAUDE.md` at the root of a pulled prd2 project so future Claude Code sessions know it's a Rossum implementation and apply the right safety rules (edit `.py` not JSON, never push/deploy without approval, MDH targets are enums).
 
-The auto-generated portion is wrapped in `<!-- BEGIN/END rossum-sa:init-claude-md auto-generated -->` markers. Re-running this skill rewrites only the marked block; the "Project-Specific Notes" section below the markers is preserved.
+The auto-generated portion is wrapped in `<!-- BEGIN/END rossum-sa:init-claude-md auto-generated -->` markers. The markers keep the skill's former name (`init-claude-md`) on purpose, so files generated before the rename are still found. Re-running this skill rewrites only the marked block; the "Project-Specific Notes" section below the markers is preserved.
 
 ## Why a project-specific CLAUDE.md
 
@@ -40,17 +40,17 @@ If `$ARGUMENTS` is a path, use it. Otherwise use the current working directory. 
 ### Step 2: Run the inspector
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/inspect.py <project_dir>
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/init-project-context/inspect.py <project_dir>
 ```
 
 Capture stdout as JSON. Check the `tool` field first:
 
 - If `tool` is `"prd2"`, proceed — the JSON also contains `project_name`, `environments`, `workspace_count`, `queue_count`, `queues[]` (each with `name`, `workspace`, `environment`, `schema_field_count`, `engine`), `hook_count`, `hooks[]`, and `integration_target`.
-- If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}` — also returned for a degenerate `prd_config.yaml` with no usable directory entries), **stop** and tell the user: "This doesn't look like a usable prd2 project — there's no `prd_config.yaml`, or it has no usable directory entries (each needs an `org_id` or `api_base`). `init-claude-md` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
+- If `tool` is anything else (e.g. `{"tool": "unknown", "supported": false}` — also returned for a degenerate `prd_config.yaml` with no usable directory entries), **stop** and tell the user: "This doesn't look like a usable prd2 project — there's no `prd_config.yaml`, or it has no usable directory entries (each needs an `org_id` or `api_base`). `init-project-context` currently supports prd2 projects; other deployment tools/formats aren't supported yet." Do not write a CLAUDE.md.
 
 ### Step 3: Render the template
 
-Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placeholders:
+Read `${CLAUDE_PLUGIN_ROOT}/skills/init-project-context/template.md`. Replace placeholders:
 
 | Placeholder | Value source |
 |---|---|
@@ -64,7 +64,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/template.md`. Replace placehol
 | `{{integration_target}}` | `facts["integration_target"]` (if `"unknown"`, append a "fill in — integration target not auto-detected" note) |
 | `{{tree_listing}}` | Output of `tree -L 4 -I '__pycache__|node_modules' <project_dir>` truncated to ~40 lines. If `tree` is not installed, fall back to `find <project_dir> -maxdepth 4 -type d \| sort \| head -40`. |
 | `{{conditional_skills_block}}` | See Step 4 |
-| `{{deployment_workflow_block}}` | The full contents of `${CLAUDE_PLUGIN_ROOT}/skills/init-claude-md/fragments/<tool>.md` (today `fragments/prd2.md`), inserted verbatim — the deployment-tool-specific workflow, layout, commands, and safety rules. |
+| `{{deployment_workflow_block}}` | The full contents of `${CLAUDE_PLUGIN_ROOT}/skills/init-project-context/fragments/<tool>.md` (today `fragments/prd2.md`), inserted verbatim — the deployment-tool-specific workflow, layout, commands, and safety rules. |
 
 `{{tree_listing}}` is filled as before; `{{deployment_workflow_block}}` is filled by reading `fragments/<tool>.md` for the `tool` the inspector reported.
 

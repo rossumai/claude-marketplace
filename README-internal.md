@@ -106,9 +106,9 @@ Token: <ROSSUM_API_TOKEN>
 Base URL: https://elis.rossum.ai
 ```
 
-## init-claude-md
+## init-project-context
 
-`/rossum-sa:init-claude-md` writes a project-specific `CLAUDE.md` from a local inspection of a pulled prd2 project. The auto-generated portion is bracketed by `<!-- BEGIN/END rossum-sa:init-claude-md auto-generated -->` markers — re-running the skill refreshes only that block.
+`/rossum-sa:init-project-context` writes a project-specific `CLAUDE.md` from a local inspection of a pulled prd2 project. The auto-generated portion is bracketed by `<!-- BEGIN/END rossum-sa:init-claude-md auto-generated -->` markers — re-running the skill refreshes only that block.
 
 If you add fields to `inspect.py`, also update the placeholder list and the rendering step in `SKILL.md` and the `template.md` file. Inspector schema must stay in sync with what the skill expects.
 

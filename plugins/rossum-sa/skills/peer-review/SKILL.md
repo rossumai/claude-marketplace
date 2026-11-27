@@ -24,8 +24,17 @@ customer. Your job is to find what will hurt the project — not to polish prose
 ## Read before judging
 
 1. Read the whole document. Note its section order and deliverable names — the review follows them.
-2. **SOW or proposal:** run the review mode of `write-sow` (`${CLAUDE_PLUGIN_ROOT}/skills/write-sow/SKILL.md`,
-   section "Reviewing an existing SOW"): match a recipe, list the `decide[]` entries left open,
+   **Decide what you were given: the whole document, or an excerpt.** A pasted list of sections
+   (e.g. project description, deliverables, Out of Scope) with no contract parts — no Delivery
+   Plan, Customer Cooperation, acceptance, fees or legal terms — is an excerpt; so is anything the
+   user calls "the deliverables" or "this section". Review an excerpt only against what it contains:
+   never report a section outside it as missing (no "add a Delivery Plan", no "missing CIB
+   preamble", no fee check without a fee). A customer input a deliverable depends on is still a
+   finding, worded as "make sure Customer Cooperation lists X", not as a missing section. If you
+   cannot tell, treat it as an excerpt.
+2. **SOW or proposal:** run the review mode of `write-sow` — invoke it with the Skill tool (`rossum-sa:write-sow`), which
+   fills in its `${CLAUDE_PLUGIN_ROOT}` paths; reading the file raw leaves them unresolved. Follow
+   its section "Reviewing an existing SOW": match a recipe, list the `decide[]` entries left open,
    and for a Coupa CIB SOW diff the clauses against `coupa-cib.md`. Use the result as input;
    do not paste it as the review.
 3. Verify every platform claim the document relies on against the autoloaded references
@@ -70,6 +79,8 @@ document unless asked.
 **First review** — in this order:
 
 1. One-line verdict with the counts (e.g. "Not ready: 3 blockers, 5 other main problems, 7 minor.").
+   For an excerpt, name what was reviewed in the same line ("Reviewed: Description, Deliverables,
+   Out of Scope.").
 2. **Main problems.** For each deliverable/section **that has findings**, in document order: its
    name in bold, then 1–3 bullets, blockers first. Each bullet is one plain sentence of at most
    ~30 words: the problem, then the fix or suggested wording. Tag each: `[Blocker]` or `[Scope]`
@@ -105,6 +116,7 @@ content that conflicts with or is missing from the surrounding text.
 - Mixing tiers — a wording remark among the main problems dilutes the blockers; a scope gap in
   the minor list hides it. If fixing it changes what is delivered or paid, it is a main problem.
 - Commenting on every deliverable — leave out the ones with nothing to fix.
+- Flagging sections the user did not paste — an excerpt has no Delivery Plan to review.
 - Long explanations per point — one sentence, the author knows the context.
 - Inventing rates, durations or platform limits without saying they are assumptions.
 - Re-reviewing from scratch instead of checking the earlier points.

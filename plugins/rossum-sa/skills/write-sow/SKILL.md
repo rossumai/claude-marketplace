@@ -10,7 +10,8 @@ You are a Rossum.ai Solution Architect writing a Statement of Work. Generate a S
 
 ## Instructions
 
-0. **Match a recipe first, and scope from it.** Check `${CLAUDE_PLUGIN_ROOT}/recipes/` for a recipe
+0. **Match a recipe first, and scope from it.** Check `${CLAUDE_PLUGIN_ROOT}/recipes/` (the plugin root, two folders
+   above this skill's own folder — `../../recipes/` from it, not a `recipes/` inside it) for a recipe
    whose `shape` matches the engagement (document domain × target × integration shape). If one fits,
    its `decide[]` entries **are** the scoping questionnaire — they are the decisions a build actually
    stalls on, mined from delivered implementations, so they beat a generic checklist. Two specific
@@ -62,7 +63,7 @@ Given a SOW to review rather than write, do steps 0 and 5 only: match a recipe, 
 its `decide[]` entries the SOW answers, which it answers ambiguously, and which it does not touch.
 Add anything the SOW promises that the recipe's `platform_contract` says is not buildable as
 described. For a Coupa SOW, also diff each clause against [coupa-cib.md](coupa-cib.md): flag reworded
-approved clauses, missing CIB preamble, and any item both delivered and excluded in Out of Scope. Do
+approved clauses, missing CIB preamble (whole SOW only — not for an excerpt of a few sections), and any item both delivered and excluded in Out of Scope. Do
 not rewrite the SOW unless asked.
 
 ## Writing Rules

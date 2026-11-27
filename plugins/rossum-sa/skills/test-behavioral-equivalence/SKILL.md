@@ -1,6 +1,6 @@
 ---
 name: test-behavioral-equivalence
-description: Verify that changes to a Rossum implementation preserve behavior. Captures a "before" snapshot of annotation outputs, replays the same documents against the upgraded implementation, and diffs the "after" outputs against the snapshot. Use after an upgrade, refactor, or any change intended to be behavior-preserving. Triggers on "test this upgrade", "verify this change", "regression test", "check behavioral equivalence", "did my changes break anything", "test before promoting".
+description: Verify that changes to a Rossum implementation preserve behavior. Captures a "before" snapshot of annotation outputs, replays the same documents against the upgraded implementation, and diffs the "after" outputs against the snapshot. Heavyweight and rarely needed — use only to verify a large upgrade or refactor of a whole implementation across many documents. For one fix or feature, use iterate instead. Triggers on "test this upgrade", "regression test the whole implementation", "check behavioral equivalence".
 argument-hint: "[path-to-target-impl] [--source-env=<name>] [--target-env=<name>] [--corpus=<ids-file>] [--canary] [--skip-static]"
 allowed-tools: Read, Grep, Glob, Bash, Agent
 context: fork
@@ -282,6 +282,7 @@ Force-include edge cases specific to each queue:
 - Any annotation that triggered a business rule the upgrade touched in that queue
 - At least one line-item-heavy annotation (≥10 line items) per queue when line-item formulas changed
 - Region/variant-specific cases — when the upgrade has region-scoped hooks or formulas (e.g., country-specific regulatory logic, currency-specific rounding), force-include an annotation per regional variant
+- A case no real annotation covers → `generate-test-invoice` can build one from real master data, only after the operator approves it
 
 ### 2c. Capture before-snapshots
 
@@ -459,65 +460,7 @@ Write `TEST-[customer-or-folder-name]-[timestamp].md`. **Location is a choice, n
 
 Ask the user if the target isn't obvious from context.
 
-Report template:
-
-```markdown
-# Test Report: [Customer/Project Name]
-
-**Test run:** [timestamp]
-**Scope:** [one sentence describing what was tested]
-**Export architecture:** [Pattern 1 / Pattern 2 / Hybrid — from Phase 0d]
-**Verdict:** **Pass** / **Pass-with-warnings** / **Fail**
-
-## Summary
-
-- Corpus size: N annotations (A automated, M manually reviewed, spread across K queues)
-- Pass / soft-fail / hard-fail: X / Y / Z
-- Automation rate: before A% → after B% (Δ)
-- Out-of-scope changes (documented, not diffed): [list]
-
-## Static Validation
-
-| Check | Result | Details |
-|---|---|---|
-
-## Equivalence Results
-
-| Annotation ID | Queue | Verdict | Field diffs | Message diffs | Blocker diffs | Export signal | Link |
-|---|---|---|---|---|---|---|---|
-
-## Grouped Failures
-
-### P0 — Formula crashes (if any)
-
-| Annotation | Schema ID | Message |
-|---|---|---|
-
-### Group 1: [schema_id or pattern]
-- Fan-out: N/K corpus annotations
-- Affected annotations: [list]
-- Example diffs: [2-3 before/after pairs]
-- Likely cause: [cross-ref to change manifest; include migration-trace ID if available]
-- Suggested fix: [...]
-
-(Repeat per group)
-
-## Coverage
-
-| Change | Exercised by corpus? | Severity if uncovered |
-|---|---|---|
-
-Uncovered changes (risk-ranked): [list, elevate to P0 any gap where observed regressions suggest the uncovered path is likely broken]
-
-## Automation Parity
-
-| Metric | Before | After | Delta |
-|---|---|---|---|
-
-## Manual Sign-off Items
-
-- [ ] ...
-```
+Use the template in [report-template.md](report-template.md) — read it when you reach this step.
 
 **Artifact:** `TEST-*.md` report.
 

@@ -99,7 +99,7 @@ At each phase, reference the appropriate skill for detailed guidance rather than
 | 4 — Extensions & Serverless Functions | `txscript-reference`, `rossum-reference` (hook patterns), `coding-best-practices` (hook code quality/security) |
 | 5 — Business Rules | `business-rules-reference` (native Rules + legacy BRV extension), `txscript-reference` (`trigger_condition` syntax) |
 | 6 — Export Pipeline | `export-pipeline-reference` (Request Processor config), `render-export-template` (legacy Jinja2 export templates), `sap-reference` / `coupa-baseline-reference` (target-specific) |
-| 7 — Test & Promote | `prd-reference` (deployment), `iterate` (single-annotation loop), `test-behavioral-equivalence` (corpus regression) |
+| 7 — Test & Promote | `iterate` (prove each deliverable on a document — the default), `generate-test-invoice` (operator-approved test document when no real one covers the case), `prd-reference` (deployment) |
 
 ---
 
@@ -149,7 +149,7 @@ Create a task list with one task per applicable phase to track progress.
 
 3. **`prd2 pull`** to get the current state of the environment. This is a read-only operation.
 
-4. **Generate `CLAUDE.md` for the project** — run `/rossum-sa:init-claude-md` so future sessions in this directory recognize it as a Rossum implementation and apply the right safety rules. This is optional but recommended for any project that will be touched by Claude Code multiple times.
+4. **Generate `CLAUDE.md` for the project** — run `/rossum-sa:init-project-context` so future sessions in this directory recognize it as a Rossum implementation and apply the right safety rules. This is optional but recommended for any project that will be touched by Claude Code multiple times.
 
 5. **Review what exists.** If there are already queues, hooks, and schemas, use the `analyze` skill to check for issues before adding to the implementation.
 
@@ -325,7 +325,7 @@ See `business-rules-reference` for the full picture — it owns both validation 
    - Verify export sends correct payload
    - Verify response parsing captures returned values
 
-   For the tight inner loop on a single annotation — "did my hook/formula/rule produce the right value on this document?" — hand off to the `iterate` skill. It owns the re-fire primitives (soft re-fire via `content/validate`, status toggle, re-upload) and the iterate-edit-push-retest cadence. Ask the user for a **sandbox/UAT** annotation ID when this phase opens — never iterate against production.
+   For the tight inner loop on a single annotation — "did my hook/formula/rule produce the right value on this document?" — hand off to the `iterate` skill. It owns the re-fire primitives (soft re-fire via `content/validate`, status toggle, re-upload) and the iterate-edit-push-retest cadence. Ask the user for a **sandbox/UAT** annotation ID when this phase opens — never iterate against production. If no real document covers the case, offer `generate-test-invoice`; it builds one from real master data only after the operator approves.
 
 2. **Fix issues** found during testing. Iterate on schema, MDH queries, serverless functions, and rules as needed.
 

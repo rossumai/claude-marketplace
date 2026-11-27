@@ -1,5 +1,12 @@
 # Automation analytics endpoints — empirical reference
 
+## Contents
+
+- `GET /api/v1/queues/{id}/automation_insights`
+- `POST /api/v1/queues/{id}/automation_projections`
+- Enrichment sources (existing MCP tools)
+- Known method caveats
+
 Everything below was established by live calls (June 2026) against multiple
 production/sandbox organizations (two live orgs — "org A" and "org B" below —
 plus a reference payload from a third, "org C"), per the repo rule that API

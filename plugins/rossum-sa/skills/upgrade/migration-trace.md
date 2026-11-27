@@ -1,5 +1,12 @@
 # Migration-Trace Convention
 
+## Contents
+
+- Why
+- The convention
+- Parser (what downstream skills do)
+- What the `upgrade` skill needs to do
+
 A lightweight, grep-friendly way for the `upgrade` skill to leave breadcrumbs that the `test-behavioral-equivalence` skill (and humans doing triage) can follow.
 
 ## Why

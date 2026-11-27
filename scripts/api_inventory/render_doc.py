@@ -58,7 +58,10 @@ def render_coverage_doc(inventory: list[dict], coverage_map: dict) -> str:
         "rather than open-coding a request around the gap. ⚠️ deprecated = deprecated "
         "by Rossum._",
         "", head, "",
+        "## Contents", "",
     ]
+    # A TOC on top: skill-authoring best practice for any reference file over 100 lines.
+    lines += [f"- {tag}" for tag in sorted(rows_by_tag)] + [""]
     for tag in sorted(rows_by_tag):
         lines += [f"## {tag}", "", "| Operation | Status | Tool(s) |", "|---|---|---|"]
         for endpoint, decision, tools in rows_by_tag[tag]:
