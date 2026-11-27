@@ -1,5 +1,16 @@
 # B2Brouter reconciliation — reference
 
+## Contents
+
+- Requirements
+- Usage
+- B2Brouter API version
+- Reading the report
+- Guarantees
+- Exit codes
+- Gotchas
+- TLS interception
+
 Full note taxonomy, all flags, exit codes, and the measured API gotchas
 behind `recon.py`. Read alongside `SKILL.md`, which covers the operator
 walkthrough; this document doesn't repeat that.

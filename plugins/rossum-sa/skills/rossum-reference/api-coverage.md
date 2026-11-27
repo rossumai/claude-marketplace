@@ -6,6 +6,55 @@ _**This table is about tool coverage, not about what the Rossum API supports.** 
 
 **65 covered · 85 via rossum_get · 4 pending · 128 not planned · 282 total operations**
 
+## Contents
+
+- Annotation
+- Annotation Content
+- Audit Log
+- Automation Blocker
+- Configuration Changelog
+- Connector
+- Dedicated Engine
+- Dedicated Engine Schema
+- Delete Recommendation
+- Document
+- Document Relation
+- Documents Download
+- Email
+- Email Template
+- Email Thread
+- Engine
+- Engine Field
+- Generic Engine
+- Generic Engine Schema
+- Hook
+- Hook Run
+- Hook Template
+- Inbox
+- Integration Credential
+- Label
+- Membership
+- Organization
+- Organization Group
+- Page
+- Queue
+- Relation
+- Rule
+- Rules Execution Log
+- Saved View
+- Schema
+- Suggested Edit
+- Task
+- Trigger
+- Upload
+- User
+- User Role
+- Workflow
+- Workflow Activity
+- Workflow Run
+- Workflow Step
+- Workspace
+
 ## Annotation
 
 | Operation | Status | Tool(s) |

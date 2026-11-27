@@ -1,5 +1,14 @@
 # Master Data Hub (MDH) API Reference
 
+## Contents
+
+- Endpoints: Dataset
+- Endpoints: Operation
+- Endpoints: Fuzzy Search
+- Endpoints: Search Indexes V2
+- Key Schemas: Hook Configuration Model
+- MDH Hook Configuration Pattern
+
 Rossum's **Master Data Hub (MDH)** manages master data datasets (suppliers, GL codes, cost centers, remit-to addresses, etc.) for use in document processing workflows. MDH provides dataset CRUD, CSV/XLSX upload, fuzzy search, and a powerful hook configuration model for matching extracted document data against master data records using MongoDB-style queries.
 
 - **Base URL:** `/svc/master-data-hub`

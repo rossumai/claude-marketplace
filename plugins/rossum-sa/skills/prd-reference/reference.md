@@ -1,5 +1,18 @@
 # prd2 (Project Rossum Deploy) Reference
 
+## Contents
+
+- Terms
+- Prerequisites
+- Installation
+- Commands
+- Configuration Files
+- Attribute Override
+- Project Folder Structure
+- Working in a prd2 Tree
+- Important Notes
+- Typical Workflow
+
 prd2 is a CLI tool for tracking changes, deploying, and releasing Rossum platform configurations across environments. Source: https://github.com/rossumai/prd
 
 IMPORTANT: The original prd (v1) from the `deployment-manager` package is deprecated. Always use prd2. Key differences: prd2 uses `prd_config.yaml` (not `credentials.json`), per-directory `credentials.yaml` (not centralized JSON), deploy YAML files (not `mapping.yaml`-based release), and supports additional object types (rules, labels, engines, email templates, workflows).

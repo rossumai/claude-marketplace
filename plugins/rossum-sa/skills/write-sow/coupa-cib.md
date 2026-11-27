@@ -1,5 +1,15 @@
 # Coupa Integration Baseline (CIB) SoW — Approved Wording
 
+## Contents
+
+- Document structure
+- Writing rules for CIB SoWs
+- Standard CIB deliverables (always included unless explicitly removed)
+- Country clauses (one per country in scope)
+- E-invoicing clauses (only if e-invoicing is in scope)
+- Add-on clauses (only when sold)
+- Out of Scope library
+
 Use this file instead of [template.md](template.md) whenever the target system is Coupa. The wording
 below has been reviewed and approved; it is the clause library, not inspiration. **Copy clauses
 verbatim** and change only the `[bracketed parameters]` and the sentences a clause's note says may be

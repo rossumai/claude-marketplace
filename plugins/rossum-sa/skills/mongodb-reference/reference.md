@@ -1,6 +1,21 @@
 # MongoDB Query Reference for Rossum Master Data Hub
 
-MongoDB query syntax reference for building MDH matching configurations. For how matching works (cascade model, placeholders, pipe modifiers, result actions), see [mdh-api-reference.md](mdh-api-reference.md) and [mdh-matching-queries.md](mdh-matching-queries.md). This file covers the MongoDB operators, stages, and patterns available in queries.
+## Contents
+
+- Query Types
+- Find Query Operators
+- Regex Patterns
+- Aggregation Pipeline
+- `$function` — Custom JavaScript
+- `$lookup` — Cross-Collection Joins
+- `$unionWith` — Combine Multiple Collections
+- Atlas Search (`$search`)
+- Practical Rossum Matching Patterns
+- Data Type Handling
+- Performance Tips
+- Debugging Queries
+
+MongoDB query syntax reference for building MDH matching configurations. For how matching works (cascade model, placeholders, pipe modifiers, result actions), see [mdh-api-reference.md](../mdh-reference/mdh-api-reference.md) and [mdh-matching-queries.md](../mdh-reference/mdh-matching-queries.md). This file covers the MongoDB operators, stages, and patterns available in queries.
 
 ---
 

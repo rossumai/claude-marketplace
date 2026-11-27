@@ -1,5 +1,17 @@
 # Rossum Data Storage API Reference
 
+## Contents
+
+- Key Concepts
+- Healthz
+- Status
+- Collection Operations
+- Data Operations (CRUD + Query)
+- Index Operations
+- Search Index Operations (Atlas Search) -- MOVED TO MASTER DATA HUB
+- Response Schemas Summary
+- MongoDB Query Pattern Quick Reference
+
 Rossum's **Data Storage** service is a MongoDB-compatible data layer exposed as a REST API. It provides document-oriented storage with collections, indexes, and full support for MongoDB query patterns including `find`, `aggregate`, and `bulk_write`.
 
 - **Base URL:** `/svc/data-storage`

@@ -5,7 +5,7 @@ Usage: python3 inspect.py <project_dir>
 
 Output: a single JSON object on stdout with project facts. Stderr is reserved
 for errors. No remote API calls; pure local file reading. Designed to be
-called by the init-claude-md skill, which renders the facts into CLAUDE.md.
+called by the init-project-context skill, which renders the facts into CLAUDE.md.
 """
 from __future__ import annotations
 
