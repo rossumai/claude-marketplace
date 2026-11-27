@@ -44,6 +44,13 @@ hook later rewrites the type on the same annotation, that write also passes both
 recorded as a correction. Record and Restore ran together in production without this happening.
 Check any other hook that writes the type field before you add this part.
 
+**Limit: a re-import into an intake queue overwrites the recorded type.** The intake path records on
+*every* `initialize` on an intake queue. If a document is moved back to the inbox with `reimport: true`,
+the engine's re-prediction replaces a type a person corrected earlier. Do not route documents back to
+an intake queue with re-import while this part is attached; if a flow needs it, skip the intake write
+when `metadata[«metadata_key»]` is already set (not implemented here — the change is not covered by the
+runtime cases above).
+
 The public API describes `updated_datapoints` as datapoint (content-node) ids. The hook also accepts
 the schema id, so the check holds under either reading.
 

@@ -159,6 +159,7 @@ def _requires_errors(d: Path, meta: dict) -> list[str]:
             continue
         if ref in seen:
             errs.append(f"{d.name}: requires lists {ref!r} twice")
+            continue  # already resolved and checked on its first occurrence
         seen.add(ref)
         if ref == own:
             errs.append(f"{d.name}: requires lists itself ({ref!r})")
@@ -393,6 +394,10 @@ def test_requires_resolves_to_an_existing_part(tmp_path):
     bare = tmp_path / "matching" / "needs-bare-bp"
     _write_bp(bare, {}, "{}", requires=["needs-other-bp"])
     assert any("is not '<axis>/<name>'" in e for e in validate_part(bare)), validate_part(bare)
+    dup = tmp_path / "matching" / "needs-dup-bp"
+    _write_bp(dup, {}, "{}", requires=["matching/does-not-exist"] * 2)
+    errs = validate_part(dup)
+    assert sum("twice" in e for e in errs) == 1 and sum("does not resolve" in e for e in errs) == 1, errs
 
 
 def test_requires_set_shares_param_defaults(tmp_path):

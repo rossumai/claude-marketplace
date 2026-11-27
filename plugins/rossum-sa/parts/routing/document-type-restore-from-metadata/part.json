@@ -2,7 +2,7 @@
   "name": "document-type-restore-from-metadata",
   "axis": "routing",
   "summary": "TxScript function hook on destination queues at initialize: set the document type from a per-queue fixed type, else from annotation.metadata, else keep the current value (never blank it).",
-  "maturity": "standard",
+  "maturity": "reviewed",
   "params": {
     "document_type_field": {
       "default": "document_type",

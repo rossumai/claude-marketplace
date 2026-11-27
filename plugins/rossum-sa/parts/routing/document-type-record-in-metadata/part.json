@@ -2,7 +2,7 @@
   "name": "document-type-record-in-metadata",
   "axis": "routing",
   "summary": "Function hook: write the intake decision (initialize on intake queues) and any human correction (updated, human validation source) of the document type into annotation.metadata, so it survives a re-import.",
-  "maturity": "standard",
+  "maturity": "reviewed",
   "params": {
     "document_type_field": {
       "default": "document_type",

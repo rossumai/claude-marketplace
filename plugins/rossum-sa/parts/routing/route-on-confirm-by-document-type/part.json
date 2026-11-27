@@ -2,7 +2,7 @@
   "name": "route-on-confirm-by-document-type",
   "axis": "routing",
   "summary": "Native rule on the intake queue: on annotation_confirmed (automated or human), change_queue to the destination for the listed document types, always with reimport: true. One rule per destination.",
-  "maturity": "standard",
+  "maturity": "reviewed",
   "params": {
     "rule_name": {
       "required": true,

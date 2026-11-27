@@ -46,6 +46,8 @@ as `annotation.metadata`. Taking one part of such a set alone fails silently.
 
 A classic intake: the inbox decides the document type, a rule moves the document to the queue for
 that type, and a hook pair carries the type across the re-import. The three parts work as a set.
+They are `reviewed`, not `standard`: proven in one production deployment, but the runtime cases are not
+committed yet — compose them with review, not automatically.
 The spine recipe's `2_routing` phase holds the choice between this (Option B) and a constant
 formula on each target queue (Option A).
 
